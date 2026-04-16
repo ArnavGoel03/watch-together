@@ -204,9 +204,13 @@
     try {
       port = chrome.runtime.connect({ name: "content" });
     } catch {
+      port = null;
       setTimeout(connectToBackground, 2000);
       return;
     }
+
+    // Suppress back/forward cache port errors
+    chrome.runtime.lastError;
 
     port.onMessage.addListener((msg) => {
       switch (msg.type) {
@@ -261,6 +265,8 @@
     });
 
     port.onDisconnect.addListener(() => {
+      // Suppress bfcache error
+      if (chrome.runtime.lastError) {}
       port = null;
       setTimeout(connectToBackground, 1000);
     });

@@ -289,8 +289,11 @@
     try {
       port = chrome.runtime.connect({ name: "overlay" });
     } catch {
+      port = null;
+      setTimeout(connectPort, 2000);
       return;
     }
+    chrome.runtime.lastError;
 
     port.onMessage.addListener((msg) => {
       switch (msg.type) {
@@ -364,6 +367,7 @@
     });
 
     port.onDisconnect.addListener(() => {
+      if (chrome.runtime.lastError) {}
       port = null;
       setTimeout(connectPort, 2000);
     });
