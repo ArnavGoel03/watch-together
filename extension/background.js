@@ -149,7 +149,7 @@ chrome.runtime.onConnect.addListener((port) => {
           sendToServer({
             type: "create-room",
             userName: msg.userName,
-            origin: msg.origin || "",
+            videoUrl: msg.videoUrl || "",
           });
         });
         break;

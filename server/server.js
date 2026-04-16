@@ -207,16 +207,13 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Shareable join link: /join/CODE?url=ENCODED_VIDEO_URL
+  // Shareable join link: /join/CODE
   if (req.url.startsWith("/join/")) {
-    const urlParts = req.url.split("/join/")[1] || "";
-    const [codePart, queryString] = urlParts.split("?");
-    const code = codePart.toUpperCase();
-    const params = new URLSearchParams(queryString || "");
-    const videoUrl = params.get("url") || "";
+    const code = (req.url.split("/join/")[1] || "").split("?")[0].toUpperCase();
     const room = rooms.get(code);
     const memberCount = room ? room.members.size : 0;
     const roomExists = !!room;
+    const videoUrl = room ? room.videoUrl : "";
 
     res.writeHead(200, { "Content-Type": "text/html" });
     res.end(`<!DOCTYPE html>
@@ -369,9 +366,12 @@ wss.on("connection", (ws, req) => {
         const roomCode = generateRoomCode();
         userName = sanitize(msg.userName, MAX_USERNAME_LENGTH) || "User";
 
+        const videoUrl = typeof msg.videoUrl === "string" ? msg.videoUrl.substring(0, 2000) : "";
+
         const room = {
           code: roomCode,
           members: new Map([[userId, { ws, userName }]]),
+          videoUrl,
           playbackState: {
             playing: false,
             currentTime: 0,

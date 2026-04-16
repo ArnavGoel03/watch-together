@@ -38,7 +38,11 @@ $("#btnCreate").addEventListener("click", () => {
     return;
   }
   chrome.storage.local.set({ userName: name });
-  port.postMessage({ type: "create-room", userName: name });
+  // Get current tab URL to store with the room
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    const videoUrl = tabs[0]?.url || "";
+    port.postMessage({ type: "create-room", userName: name, videoUrl });
+  });
 });
 
 $("#btnJoin").addEventListener("click", () => {
@@ -74,19 +78,9 @@ $("#btnCopyCode").addEventListener("click", () => {
 });
 
 $("#btnCopyLink").addEventListener("click", () => {
-  // Get current tab URL to include in the share link
-  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-    const tabUrl = tabs[0]?.url || "";
-    const serverBase = "https://watch-together-server-acwi.onrender.com";
-    let link;
-    if (tabUrl && !tabUrl.startsWith("chrome://")) {
-      link = `${serverBase}/join/${currentRoom}?url=${encodeURIComponent(tabUrl)}`;
-    } else {
-      link = `${serverBase}/join/${currentRoom}`;
-    }
-    navigator.clipboard.writeText(link).then(() => {
-      showToast("Link copied!");
-    });
+  const link = `https://watch-together-server-acwi.onrender.com/join/${currentRoom}`;
+  navigator.clipboard.writeText(link).then(() => {
+    showToast("Link copied!");
   });
 });
 
