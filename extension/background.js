@@ -2,7 +2,7 @@
 
 // PRODUCTION: Change this to your deployed server URL (wss:// for secure)
 // e.g. "wss://watch-together-server.onrender.com"
-const DEFAULT_SERVER_URL = "ws://localhost:3000";
+const DEFAULT_SERVER_URL = "wss://watch-together-server-acwi.onrender.com";
 
 let ws = null;
 let serverUrl = DEFAULT_SERVER_URL;

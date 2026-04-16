@@ -1,6 +1,6 @@
 // Firefox background script — same logic as background.js, Manifest V2 compatible
 
-const DEFAULT_SERVER_URL = "ws://localhost:3000";
+const DEFAULT_SERVER_URL = "wss://watch-together-server-acwi.onrender.com";
 
 let ws = null;
 let serverUrl = DEFAULT_SERVER_URL;
