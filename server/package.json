@@ -6,12 +6,15 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "test": "vitest run"
+    "test": "vitest run server.test.js",
+    "test:browser": "vitest run browser.test.js",
+    "test:all": "vitest run"
   },
   "dependencies": {
     "ws": "^8.16.0"
   },
   "devDependencies": {
+    "puppeteer": "^24.41.0",
     "vitest": "^4.1.4"
   }
 }
