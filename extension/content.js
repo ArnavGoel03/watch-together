@@ -110,6 +110,10 @@
       try {
         port.postMessage(msg);
       } catch {
+        // Restore auto-join code so it retries after reconnect
+        if (msg.type === "join-room" && msg.roomCode) {
+          pendingAutoJoinCode = msg.roomCode;
+        }
         connectToBackground();
       }
     }
@@ -119,8 +123,9 @@
   function applySync(msg) {
     const video = activeVideo || findVideo();
     if (!video) {
-      // Video not ready yet — save state and apply when video loads
       pendingPlaybackState = msg;
+      // Clear stale pending state after 30s
+      setTimeout(() => { if (pendingPlaybackState === msg) pendingPlaybackState = null; }, 30000);
       return;
     }
     if (!activeVideo) attachVideoListeners(video);
@@ -301,23 +306,26 @@
 
   observer.observe(document.body, { childList: true, subtree: true });
 
-  // Check for auto-join from share link (URL contains ?wt_room=CODE)
-  let pendingAutoJoinCode = null;
+  // Check for auto-join from share link
+  // Priority: window.__wtAutoJoinCode (set by auto-join-extract.js at document_start)
+  // Fallback: check URL params (in case extract script didn't run)
+  let pendingAutoJoinCode = window.__wtAutoJoinCode || null;
 
-  function extractAutoJoinCode() {
+  if (!pendingAutoJoinCode) {
     const params = new URLSearchParams(window.location.search);
     const code = params.get("wt_room");
     if (code) {
       pendingAutoJoinCode = code.toUpperCase();
-      // Clean URL immediately so it doesn't trigger again on SPA navigation
       const url = new URL(window.location.href);
       url.searchParams.delete("wt_room");
       window.history.replaceState({}, "", url.toString());
     }
   }
+  // Clear the global so it doesn't fire twice
+  window.__wtAutoJoinCode = null;
 
   function executeAutoJoin() {
-    if (!pendingAutoJoinCode) return;
+    if (!pendingAutoJoinCode || inRoom) return;
     const code = pendingAutoJoinCode;
     pendingAutoJoinCode = null;
 
@@ -325,11 +333,15 @@
       const name = data.userName || "User";
       showNotification(`Joining room ${code}...`);
       sendMsg({ type: "join-room", roomCode: code, userName: name });
+
+      // Timeout: if not in room after 15s, show fallback
+      setTimeout(() => {
+        if (!inRoom) {
+          showNotification("Join timed out. Try again via the extension.");
+        }
+      }, 15000);
     });
   }
-
-  // Extract code from URL immediately (before anything can navigate away)
-  extractAutoJoinCode();
 
   // Initialize
   connectToBackground();
@@ -348,10 +360,32 @@
       if (port && pendingAutoJoinCode) {
         executeAutoJoin();
         clearInterval(joinInterval);
-      } else if (joinAttempts > 30) {
+      } else if (joinAttempts > 30 || !pendingAutoJoinCode) {
         clearInterval(joinInterval);
-        showNotification("Could not auto-join. Open the extension and enter the code manually.");
+        if (!inRoom && pendingAutoJoinCode) {
+          showNotification("Could not auto-join. Open the extension and enter the code.");
+        }
       }
     }, 1000);
+  }
+
+  // Handle SPA navigation (YouTube uses pushState)
+  const origPushState = history.pushState;
+  history.pushState = function () {
+    origPushState.apply(this, arguments);
+    checkSpaNavigation();
+  };
+  window.addEventListener("popstate", checkSpaNavigation);
+
+  function checkSpaNavigation() {
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get("wt_room");
+    if (code) {
+      pendingAutoJoinCode = code.toUpperCase();
+      const url = new URL(window.location.href);
+      url.searchParams.delete("wt_room");
+      window.history.replaceState({}, "", url.toString());
+      executeAutoJoin();
+    }
   }
 })();

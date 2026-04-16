@@ -10,9 +10,15 @@ let isHeartbeatLeader = false;
 let reconnectTimer = null;
 let reconnectAttempts = 0;
 let connectedPorts = new Map();
+let pendingJoin = false;
 
-chrome.storage.local.get(["serverUrl"], (data) => {
+chrome.storage.local.get(["serverUrl", "currentRoom", "userId"], (data) => {
   if (data.serverUrl) serverUrl = data.serverUrl;
+  if (data.currentRoom) {
+    currentRoom = data.currentRoom;
+    userId = data.userId;
+    connect();
+  }
 });
 
 function connect() {
@@ -78,6 +84,7 @@ function connect() {
       case "chat":
       case "member-joined":
       case "member-left":
+      case "mode-changed":
       case "error":
         broadcastToAllTabs(msg);
         break;
@@ -110,11 +117,11 @@ function sendToServer(msg) {
 }
 
 function broadcastToAllTabs(msg) {
-  for (const [tabId, port] of connectedPorts) {
+  for (const [key, p] of connectedPorts) {
     try {
-      port.postMessage(msg);
+      p.postMessage(msg);
     } catch {
-      connectedPorts.delete(tabId);
+      connectedPorts.delete(key);
     }
   }
 }
@@ -124,8 +131,9 @@ function saveState() {
 }
 
 chrome.runtime.onConnect.addListener((port) => {
-  const tabId = port.sender?.tab?.id || port.name;
-  connectedPorts.set(tabId, port);
+  const tabId = port.sender?.tab?.id;
+  const portKey = tabId ? `${tabId}:${port.name}` : port.name;
+  connectedPorts.set(portKey, port);
 
   port.onMessage.addListener((msg) => {
     switch (msg.type) {
@@ -141,9 +149,12 @@ chrome.runtime.onConnect.addListener((port) => {
         break;
 
       case "join-room":
+        if (pendingJoin) break;
+        pendingJoin = true;
         connect();
         waitForConnection(() => {
           sendToServer({ type: "join-room", roomCode: msg.roomCode.toUpperCase(), userName: msg.userName });
+          pendingJoin = false;
         });
         break;
 
@@ -164,6 +175,10 @@ chrome.runtime.onConnect.addListener((port) => {
         break;
 
       case "chat":
+        sendToServer(msg);
+        break;
+
+      case "set-mode":
         sendToServer(msg);
         break;
 
@@ -189,7 +204,7 @@ chrome.runtime.onConnect.addListener((port) => {
   });
 
   port.onDisconnect.addListener(() => {
-    connectedPorts.delete(tabId);
+    connectedPorts.delete(portKey);
   });
 });
 

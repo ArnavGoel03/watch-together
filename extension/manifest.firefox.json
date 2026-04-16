@@ -11,6 +11,11 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
+      "js": ["auto-join-extract.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["<all_urls>"],
       "js": ["adapters/generic.js", "adapters/jiohotstar.js", "adapters/netflix.js", "adapters/youtube.js", "content.js", "overlay.js"],
       "run_at": "document_idle"
     }
