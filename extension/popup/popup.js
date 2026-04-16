@@ -35,11 +35,15 @@ const chatInput = $("#chatInput");
 const toastEl = $("#toast");
 const btnCreate = $("#btnCreate");
 
-// Load saved state & check active tab
+// Load saved state & trigger connection
 chrome.storage.local.get(["userName", "serverUrl"], (data) => {
   if (data.userName) userNameInput.value = data.userName;
   if (data.serverUrl) serverUrlInput.value = data.serverUrl;
+  port.postMessage({ type: "connect" }); // Ensure WebSocket connects
   port.postMessage({ type: "get-state" });
+  // Re-check state after a delay (in case join was in progress)
+  setTimeout(() => port.postMessage({ type: "get-state" }), 2000);
+  setTimeout(() => port.postMessage({ type: "get-state" }), 5000);
 });
 
 // Check if current tab is suitable for creating a room
