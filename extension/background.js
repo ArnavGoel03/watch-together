@@ -33,6 +33,17 @@ function connect() {
     console.log("[WatchTogether] Connected to server");
     reconnectAttempts = 0;
     broadcastToAllTabs({ type: "connection-status", connected: true });
+
+    // Auto-rejoin room after reconnect
+    if (currentRoom) {
+      chrome.storage.local.get(["userName"], (data) => {
+        sendToServer({
+          type: "join-room",
+          roomCode: currentRoom,
+          userName: data.userName || "User",
+        });
+      });
+    }
   };
 
   ws.onmessage = (event) => {
@@ -189,9 +200,10 @@ chrome.runtime.onConnect.addListener((port) => {
         break;
 
       case "set-server-url":
+        // Only allow from popup (not content scripts)
+        if (port.name !== "popup") break;
         serverUrl = msg.url;
         chrome.storage.local.set({ serverUrl: msg.url });
-        // Reconnect to new server
         if (ws) ws.close();
         connect();
         break;

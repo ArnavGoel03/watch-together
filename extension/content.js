@@ -72,8 +72,19 @@
     });
   }
 
+  function isAdPlaying() {
+    // YouTube
+    if (document.querySelector(".ad-showing, .ytp-ad-player-overlay")) return true;
+    // JioHotstar — short duration video is usually an ad
+    if (activeVideo && activeVideo.duration && activeVideo.duration < 30) {
+      const host = window.location.hostname;
+      if (host.includes("hotstar") || host.includes("jiohotstar")) return true;
+    }
+    return false;
+  }
+
   function onVideoEvent(e) {
-    if (isSyncing || !inRoom) return;
+    if (isSyncing || !inRoom || isAdPlaying()) return;
 
     const video = e.target;
     const action =
@@ -273,14 +284,19 @@
     }, 3000);
   }
 
-  // Watch for dynamically loaded videos (SPA navigation)
+  // Watch for dynamically loaded videos (SPA navigation) — debounced
+  let mutationTimer = null;
   const observer = new MutationObserver(() => {
-    if (!activeVideo || !document.contains(activeVideo)) {
-      const v = findVideo();
-      if (v && v !== activeVideo) {
-        attachVideoListeners(v);
+    if (mutationTimer) return;
+    mutationTimer = setTimeout(() => {
+      mutationTimer = null;
+      if (!activeVideo || !document.contains(activeVideo)) {
+        const v = findVideo();
+        if (v && v !== activeVideo) {
+          attachVideoListeners(v);
+        }
       }
-    }
+    }, 500);
   });
 
   observer.observe(document.body, { childList: true, subtree: true });

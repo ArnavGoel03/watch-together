@@ -13,10 +13,13 @@ const RATE_LIMIT_WINDOW = 1000; // 1 second
 const RATE_LIMIT_MAX = 20; // max messages per window
 const MAX_CHAT_LENGTH = 500;
 const MAX_USERNAME_LENGTH = 30;
+const MAX_CONNECTIONS_PER_IP = 10;
+const MAX_VIDEO_URL_LENGTH = 2000;
 
 // --- State ---
 const rooms = new Map();
 let totalConnections = 0;
+const connectionsPerIp = new Map(); // ip -> count
 
 // --- Utilities ---
 
@@ -44,6 +47,13 @@ function sanitize(str, maxLen) {
 
 function escapeHtml(str) {
   return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+function validateUrl(str) {
+  if (typeof str !== "string") return "";
+  const trimmed = str.substring(0, MAX_VIDEO_URL_LENGTH).trim();
+  if (trimmed.startsWith("https://") || trimmed.startsWith("http://")) return trimmed;
+  return "";
 }
 
 function broadcastToRoom(roomCode, message, excludeWs = null) {
@@ -186,17 +196,11 @@ const server = http.createServer((req, res) => {
 
 
   if (req.url.startsWith("/room/")) {
+    // Only expose minimal info — no videoUrl, no exact member count
     const code = req.url.split("/room/")[1]?.split("?")[0]?.toUpperCase();
     const room = rooms.get(code);
     res.writeHead(200, headers);
-    res.end(
-      JSON.stringify({
-        exists: !!room,
-        code,
-        members: room ? room.members.size : 0,
-        videoUrl: room ? room.videoUrl : "",
-      })
-    );
+    res.end(JSON.stringify({ exists: !!room, code }));
     return;
   }
 
@@ -209,13 +213,13 @@ const server = http.createServer((req, res) => {
     const memberCount = room ? room.members.size : 0;
     const roomExists = !!room;
     // Prefer room's stored URL, fall back to query param
-    const videoUrl = (room && room.videoUrl) ? room.videoUrl : (params.get("url") || "");
+    const videoUrl = validateUrl((room && room.videoUrl) ? room.videoUrl : (params.get("url") || ""));
 
     const safeCode = escapeHtml(code);
     const safeVideoUrl = escapeHtml(videoUrl);
     const jsVideoUrl = videoUrl.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/'/g, "\\'").replace(/`/g, '\\`').replace(/</g, '\\u003c');
 
-    res.writeHead(200, { "Content-Type": "text/html" });
+    res.writeHead(200, { "Content-Type": "text/html", "X-Frame-Options": "DENY", "Content-Security-Policy": "default-src 'self' 'unsafe-inline'" });
     res.end(`<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -295,7 +299,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  res.writeHead(200, { "Content-Type": "text/html" });
+  res.writeHead(200, { "Content-Type": "text/html", "X-Frame-Options": "DENY", "Content-Security-Policy": "default-src 'self' 'unsafe-inline'" });
   res.end(`<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -343,12 +347,21 @@ wss.on("connection", (ws, req) => {
   let currentRoom = null;
   let userName = "User";
 
-  ws.isAlive = true;
-  totalConnections++;
-
   const clientIp =
     req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
     req.socket.remoteAddress;
+
+  // Per-IP connection limiting
+  const ipCount = (connectionsPerIp.get(clientIp) || 0) + 1;
+  if (ipCount > MAX_CONNECTIONS_PER_IP) {
+    console.log(`[reject] ${clientIp} exceeded max connections (${MAX_CONNECTIONS_PER_IP})`);
+    ws.close(4002, "Too many connections");
+    return;
+  }
+  connectionsPerIp.set(clientIp, ipCount);
+
+  ws.isAlive = true;
+  totalConnections++;
   console.log(`[connect] ${userId} from ${clientIp}. Total: ${totalConnections}`);
 
   ws.on("pong", () => {
@@ -384,7 +397,7 @@ wss.on("connection", (ws, req) => {
         const roomCode = generateRoomCode();
         userName = sanitize(msg.userName, MAX_USERNAME_LENGTH) || "User";
 
-        const videoUrl = typeof msg.videoUrl === "string" ? msg.videoUrl.substring(0, 2000) : "";
+        const videoUrl = validateUrl(msg.videoUrl);
 
         const room = {
           code: roomCode,
@@ -587,6 +600,9 @@ wss.on("connection", (ws, req) => {
 
   ws.on("close", () => {
     totalConnections--;
+    const remaining = (connectionsPerIp.get(clientIp) || 1) - 1;
+    if (remaining <= 0) connectionsPerIp.delete(clientIp);
+    else connectionsPerIp.set(clientIp, remaining);
     console.log(`[disconnect] ${userId}. Total: ${totalConnections}`);
     leaveCurrentRoom();
   });
