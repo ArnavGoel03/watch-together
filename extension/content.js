@@ -224,8 +224,14 @@
         case "room-joined":
           inRoom = true;
           adapter = getAdapter();
+          console.log(`[WatchTogether] ${msg.type}: ${msg.roomCode}, inRoom=true`);
           const v = findVideo();
-          if (v) attachVideoListeners(v);
+          if (v) {
+            attachVideoListeners(v);
+            console.log("[WatchTogether] Video element found and attached");
+          } else {
+            console.log("[WatchTogether] No video element found yet");
+          }
           startHeartbeat();
           showNotification(
             msg.type === "room-created"
@@ -307,9 +313,17 @@
   observer.observe(document.body, { childList: true, subtree: true });
 
   // Check for auto-join from share link
-  // Priority: window.__wtAutoJoinCode (set by auto-join-extract.js at document_start)
-  // Fallback: check URL params (in case extract script didn't run)
+  // Priority 1: window.__wtAutoJoinCode (set by auto-join-extract.js at document_start)
+  // Priority 2: sessionStorage backup
+  // Priority 3: URL params (in case extract script didn't run)
   let pendingAutoJoinCode = window.__wtAutoJoinCode || null;
+
+  if (!pendingAutoJoinCode) {
+    try {
+      const stored = sessionStorage.getItem("__wt_autojoin");
+      if (stored) pendingAutoJoinCode = stored;
+    } catch {}
+  }
 
   if (!pendingAutoJoinCode) {
     const params = new URLSearchParams(window.location.search);
@@ -321,25 +335,34 @@
       window.history.replaceState({}, "", url.toString());
     }
   }
-  // Clear the global so it doesn't fire twice
+
+  // Clear sources so they don't fire twice
   window.__wtAutoJoinCode = null;
+  try { sessionStorage.removeItem("__wt_autojoin"); } catch {}
+
+  if (pendingAutoJoinCode) {
+    console.log("[WatchTogether] Will auto-join room:", pendingAutoJoinCode);
+  }
 
   function executeAutoJoin() {
     if (!pendingAutoJoinCode || inRoom) return;
     const code = pendingAutoJoinCode;
     pendingAutoJoinCode = null;
 
+    console.log("[WatchTogether] Executing auto-join for room:", code);
+
     chrome.storage.local.get(["userName"], (data) => {
       const name = data.userName || "User";
       showNotification(`Joining room ${code}...`);
       sendMsg({ type: "join-room", roomCode: code, userName: name });
+      console.log("[WatchTogether] Sent join-room message as:", name);
 
-      // Timeout: if not in room after 15s, show fallback
       setTimeout(() => {
         if (!inRoom) {
-          showNotification("Join timed out. Try again via the extension.");
+          console.log("[WatchTogether] Auto-join timed out");
+          showNotification("Join timed out. Enter the code manually in the extension.");
         }
-      }, 15000);
+      }, 20000);
     });
   }
 

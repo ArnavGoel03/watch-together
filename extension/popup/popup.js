@@ -143,8 +143,19 @@ $("#btnCopyCode").addEventListener("click", () => {
 $("#btnCopyLink").addEventListener("click", () => {
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     const tabUrl = tabs[0]?.url || "";
-    const base = `https://watch-together-server-acwi.onrender.com/join/${currentRoom}`;
-    const link = isVideoTab(tabUrl) ? `${base}?url=${encodeURIComponent(tabUrl)}` : base;
+    let link;
+    if (isVideoTab(tabUrl)) {
+      // Teleparty-style: just append room code to the video URL
+      try {
+        const url = new URL(tabUrl);
+        url.searchParams.set("wt_room", currentRoom);
+        link = url.toString();
+      } catch {
+        link = `${tabUrl}${tabUrl.includes("?") ? "&" : "?"}wt_room=${currentRoom}`;
+      }
+    } else {
+      link = `https://watch-together-server-acwi.onrender.com/join/${currentRoom}`;
+    }
     navigator.clipboard.writeText(link).then(() => {
       showToast("Share link copied");
       flashButton($("#btnCopyLink"));

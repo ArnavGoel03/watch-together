@@ -148,8 +148,14 @@
     });
     overlayPanel.querySelector("#wt-copy-link").addEventListener("click", (e) => {
       e.stopPropagation();
-      const link = `https://watch-together-server-acwi.onrender.com/join/${currentRoom}?url=${encodeURIComponent(location.href)}`;
-      navigator.clipboard.writeText(link);
+      // Teleparty-style: video URL + room code. No server redirect.
+      try {
+        const url = new URL(location.href);
+        url.searchParams.set("wt_room", currentRoom);
+        navigator.clipboard.writeText(url.toString());
+      } catch {
+        navigator.clipboard.writeText(`${location.href}${location.href.includes("?") ? "&" : "?"}wt_room=${currentRoom}`);
+      }
       flashText(e.target, "Copied!");
     });
     overlayPanel.querySelector("#wt-send").addEventListener("click", (e) => {
