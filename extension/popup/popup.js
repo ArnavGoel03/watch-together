@@ -241,11 +241,12 @@ function shakeElement(el) {
 }
 
 function flashButton(btn) {
-  btn.style.borderColor = "#30d158";
-  btn.style.color = "#30d158";
+  const orig = btn.querySelector("span")?.textContent;
+  if (orig) btn.querySelector("span").textContent = "Done";
+  btn.style.opacity = "0.6";
   setTimeout(() => {
-    btn.style.borderColor = "";
-    btn.style.color = "";
+    if (orig) btn.querySelector("span").textContent = orig;
+    btn.style.opacity = "";
   }, 1000);
 }
 
