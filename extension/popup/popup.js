@@ -39,12 +39,17 @@ const btnCreate = $("#btnCreate");
 chrome.storage.local.get(["userName", "serverUrl"], (data) => {
   if (data.userName) userNameInput.value = data.userName;
   if (data.serverUrl) serverUrlInput.value = data.serverUrl;
-  port.postMessage({ type: "connect" }); // Ensure WebSocket connects
+  port.postMessage({ type: "connect" });
   port.postMessage({ type: "get-state" });
-  // Re-check state after a delay (in case join was in progress)
-  setTimeout(() => port.postMessage({ type: "get-state" }), 2000);
-  setTimeout(() => port.postMessage({ type: "get-state" }), 5000);
 });
+
+// Keep polling state until we're in a room or give up after 30s
+let statePollCount = 0;
+const statePoll = setInterval(() => {
+  statePollCount++;
+  port.postMessage({ type: "get-state" });
+  if (currentRoom || statePollCount > 15) clearInterval(statePoll);
+}, 2000);
 
 // Check if current tab is suitable for creating a room
 chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {

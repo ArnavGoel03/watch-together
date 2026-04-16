@@ -148,15 +148,17 @@ chrome.runtime.onConnect.addListener((port) => {
         });
         break;
 
-      case "join-room":
-        if (pendingJoin) break;
+      case "join-room": {
+        const roomCode = msg.roomCode?.toUpperCase();
+        if (!roomCode) break;
         pendingJoin = true;
         connect();
         waitForConnection(() => {
-          sendToServer({ type: "join-room", roomCode: msg.roomCode.toUpperCase(), userName: msg.userName });
+          sendToServer({ type: "join-room", roomCode, userName: msg.userName || "User" });
           pendingJoin = false;
         });
         break;
+      }
 
       case "leave-room":
         sendToServer({ type: "leave-room" });
@@ -217,6 +219,7 @@ function waitForConnection(callback, retries = 60) {
     }
     setTimeout(() => waitForConnection(callback, retries - 1), 1000);
   } else {
+    pendingJoin = false;
     broadcastToAllTabs({ type: "error", message: "Could not connect to server. Try again." });
   }
 }
