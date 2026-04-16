@@ -577,16 +577,36 @@ wss.on("connection", (ws, req) => {
     if (!currentRoom) return;
     const room = rooms.get(currentRoom);
     if (room) {
+      const wasHost = room.hostId === userId;
       room.members.delete(userId);
+
       broadcastToRoom(currentRoom, {
         type: "member-left",
         userId,
         userName,
         memberCount: room.members.size,
       });
-      // If the leader left, reassign
+
       if (room.members.size > 0) {
+        // Reassign heartbeat leader
         notifyHeartbeatLeader(room);
+
+        // If the host left, transfer host to next member and switch to everyone mode
+        if (wasHost) {
+          const nextHostId = room.members.keys().next().value;
+          room.hostId = nextHostId;
+          room.mode = "everyone";
+          broadcastToRoom(currentRoom, {
+            type: "mode-changed",
+            mode: "everyone",
+            fromUser: "System",
+          });
+          // Notify new host
+          const newHost = room.members.get(nextHostId);
+          if (newHost) {
+            sendTo(newHost.ws, { type: "host-transferred", isHost: true });
+          }
+        }
       }
       cleanupRoom(currentRoom);
     }

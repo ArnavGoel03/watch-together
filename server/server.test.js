@@ -412,10 +412,19 @@ describe("Host mode", () => {
   it("creates in host mode", async () => {
     const h = await host("H", "host");
     expect(h.msg.mode).toBe("host");
+    expect(h.msg.isHost).toBe(true);
     close(h);
   });
 
-  it("blocks guest sync", async () => {
+  it("guest sees host mode on join", async () => {
+    const h = await host("H", "host");
+    const g = await guest(h.code);
+    expect(g.msg.mode).toBe("host");
+    expect(g.msg.isHost).toBe(false);
+    close(h, g);
+  });
+
+  it("blocks guest sync in host mode", async () => {
     const h = await host("H", "host"); const g = await guest(h.code); await sleep(30);
     sync(g.ws, "play", 50);
     const e = await wait(g.ws, "error");
@@ -423,7 +432,22 @@ describe("Host mode", () => {
     close(h, g);
   });
 
-  it("allows host sync", async () => {
+  it("blocks all guests, not just one", async () => {
+    const h = await host("H", "host");
+    const g1 = await guest(h.code, "G1");
+    const g2 = await guest(h.code, "G2");
+    await sleep(30);
+
+    sync(g1.ws, "play", 50);
+    expect((await wait(g1.ws, "error")).message).toContain("host");
+
+    sync(g2.ws, "seek", 100);
+    expect((await wait(g2.ws, "error")).message).toContain("host");
+
+    close(h, g1, g2);
+  });
+
+  it("allows host sync in host mode", async () => {
     const h = await host("H", "host"); const g = await guest(h.code); await sleep(30);
     sync(h.ws, "play", 75);
     const s = await wait(g.ws, "sync");
@@ -431,20 +455,68 @@ describe("Host mode", () => {
     close(h, g);
   });
 
-  it("toggle host → everyone → host", async () => {
+  it("host sync reaches all guests", async () => {
+    const h = await host("H", "host");
+    const g1 = await guest(h.code, "G1");
+    const g2 = await guest(h.code, "G2");
+    await sleep(30);
+
+    sync(h.ws, "seek", 200);
+    expect((await wait(g1.ws, "sync")).currentTime).toBe(200);
+    expect((await wait(g2.ws, "sync")).currentTime).toBe(200);
+    close(h, g1, g2);
+  });
+
+  it("switch host → everyone: guest can now sync", async () => {
     const h = await host("H", "host"); const g = await guest(h.code); await sleep(30);
 
+    // Guest blocked
+    sync(g.ws, "play", 50);
+    expect((await wait(g.ws, "error")).message).toContain("host");
+
+    // Switch to everyone
     h.ws.send(JSON.stringify({ type: "set-mode", mode: "everyone" }));
     expect((await wait(g.ws, "mode-changed")).mode).toBe("everyone");
 
+    // Guest now works
     sync(g.ws, "pause", 60, false);
     expect((await wait(h.ws, "sync")).currentTime).toBe(60);
+    close(h, g);
+  });
 
+  it("switch everyone → host: guest gets blocked", async () => {
+    const h = await host("H", "everyone"); const g = await guest(h.code); await sleep(30);
+
+    // Guest works
+    sync(g.ws, "play", 50);
+    expect((await wait(h.ws, "sync")).currentTime).toBe(50);
+
+    // Switch to host
     h.ws.send(JSON.stringify({ type: "set-mode", mode: "host" }));
     expect((await wait(g.ws, "mode-changed")).mode).toBe("host");
 
-    sync(g.ws, "play", 70);
+    // Guest blocked
+    sync(g.ws, "pause", 60, false);
     expect((await wait(g.ws, "error")).message).toContain("host");
+    close(h, g);
+  });
+
+  it("rapid mode toggling stays consistent", async () => {
+    const h = await host("H", "host"); const g = await guest(h.code); await sleep(30);
+
+    // Toggle 5 times rapidly
+    for (let i = 0; i < 5; i++) {
+      h.ws.send(JSON.stringify({ type: "set-mode", mode: i % 2 === 0 ? "everyone" : "host" }));
+      await sleep(50);
+    }
+    await sleep(200);
+
+    // Final mode should be "host" (last toggle: i=4, even, so "everyone")
+    // Actually i=0→everyone, i=1→host, i=2→everyone, i=3→host, i=4→everyone
+    // So final should be everyone
+    sync(g.ws, "play", 100);
+    const s = await wait(h.ws, "sync");
+    expect(s.currentTime).toBe(100); // Guest can sync = everyone mode
     close(h, g);
   });
 
@@ -454,6 +526,124 @@ describe("Host mode", () => {
     await sleep(100);
     sync(g.ws, "play", 10);
     expect((await wait(g.ws, "error")).message).toContain("host");
+    close(h, g);
+  });
+
+  it("second guest also cannot change mode", async () => {
+    const h = await host("H", "host");
+    const g1 = await guest(h.code, "G1");
+    const g2 = await guest(h.code, "G2");
+    await sleep(30);
+    g2.ws.send(JSON.stringify({ type: "set-mode", mode: "everyone" }));
+    await sleep(100);
+    sync(g2.ws, "play", 10);
+    expect((await wait(g2.ws, "error")).message).toContain("host");
+    close(h, g1, g2);
+  });
+
+  it("host leaves → mode switches to everyone automatically", { timeout: 10000 }, async () => {
+    const h = await host("H", "host");
+    const g1 = await guest(h.code, "G1");
+    const g2 = await guest(h.code, "G2");
+    await sleep(50);
+
+    // Guest blocked while host is here
+    sync(g1.ws, "play", 50);
+    expect((await wait(g1.ws, "error")).message).toContain("host");
+
+    // Host leaves
+    h.ws.close();
+    await wait(g1.ws, "member-left");
+
+    // Mode should auto-switch to everyone
+    const modeMsg = await wait(g1.ws, "mode-changed");
+    expect(modeMsg.mode).toBe("everyone");
+
+    // Now guests can sync
+    sync(g1.ws, "play", 100);
+    const s = await wait(g2.ws, "sync");
+    expect(s.currentTime).toBe(100);
+
+    close(g1, g2);
+  });
+
+  it("host disconnect → mode switches to everyone automatically", { timeout: 10000 }, async () => {
+    const h = await host("H", "host");
+    const g = await guest(h.code);
+    await sleep(50);
+
+    // Host disconnects abruptly
+    h.ws.terminate();
+    await wait(g.ws, "member-left");
+    const modeMsg = await wait(g.ws, "mode-changed");
+    expect(modeMsg.mode).toBe("everyone");
+
+    close(g);
+  });
+
+  it("mode preserved for late joiners", async () => {
+    const h = await host("H", "host");
+    const g1 = await guest(h.code, "G1");
+    await sleep(30);
+
+    // Switch to everyone
+    h.ws.send(JSON.stringify({ type: "set-mode", mode: "everyone" }));
+    await wait(g1.ws, "mode-changed");
+
+    // Late joiner sees everyone mode
+    const g2 = await guest(h.code, "G2");
+    expect(g2.msg.mode).toBe("everyone");
+
+    // Switch back to host
+    h.ws.send(JSON.stringify({ type: "set-mode", mode: "host" }));
+    await wait(g1.ws, "mode-changed");
+
+    // Another late joiner sees host mode
+    const g3 = await guest(h.code, "G3");
+    expect(g3.msg.mode).toBe("host");
+
+    close(h, g1, g2, g3);
+  });
+
+  it("everyone mode: all 3 users can sync", async () => {
+    const h = await host("H", "everyone");
+    const g1 = await guest(h.code, "G1");
+    const g2 = await guest(h.code, "G2");
+    await sleep(50);
+
+    // Host syncs
+    sync(h.ws, "play", 10);
+    expect((await wait(g1.ws, "sync")).currentTime).toBe(10);
+    expect((await wait(g2.ws, "sync")).currentTime).toBe(10);
+
+    // G1 syncs
+    sync(g1.ws, "seek", 100);
+    expect((await wait(h.ws, "sync")).currentTime).toBe(100);
+    expect((await wait(g2.ws, "sync")).currentTime).toBe(100);
+
+    // G2 syncs
+    sync(g2.ws, "pause", 200, false);
+    expect((await wait(h.ws, "sync")).currentTime).toBe(200);
+    expect((await wait(g1.ws, "sync")).currentTime).toBe(200);
+
+    close(h, g1, g2);
+  });
+
+  it("host mode: rapid syncs from host all reach guests", { timeout: 10000 }, async () => {
+    const h = await host("H", "host");
+    const g = await guest(h.code);
+    await sleep(50);
+    g.ws.msgs = [];
+
+    for (let i = 0; i < 20; i++) {
+      sync(h.ws, "seek", i * 30);
+      await sleep(10);
+    }
+    await sleep(1000);
+
+    const syncs = g.ws.msgs.filter((m) => m.type === "sync");
+    expect(syncs.length).toBe(20);
+    expect(syncs[19].currentTime).toBe(570);
     close(h, g);
   });
 });
