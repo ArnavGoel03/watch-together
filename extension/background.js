@@ -246,6 +246,10 @@ function waitForConnection(callback, retries = 60) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     callback();
   } else if (retries > 0) {
+    // Keep trying to connect if WebSocket is dead
+    if (!ws || ws.readyState === WebSocket.CLOSED) {
+      connect();
+    }
     setTimeout(() => waitForConnection(callback, retries - 1), 1000);
   } else {
     broadcastToAllTabs({ type: "error", message: "Could not connect to server. Try again." });
