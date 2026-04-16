@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Watch Together</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Watch Together</h1>
+      <div id="status" class="status disconnected">Disconnected</div>
+    </header>
+
+    <!-- Landing view -->
+    <div id="view-landing" class="view active">
+      <div class="input-group">
+        <label for="userName">Your Name</label>
+        <input type="text" id="userName" placeholder="Enter your name" maxlength="30">
+      </div>
+
+      <button id="btnCreate" class="btn btn-primary">Create Room</button>
+
+      <div class="divider"><span>or</span></div>
+
+      <div class="input-group">
+        <label for="roomCode">Room Code</label>
+        <input type="text" id="roomCode" placeholder="e.g. ABC123" maxlength="6" style="text-transform: uppercase">
+      </div>
+      <button id="btnJoin" class="btn btn-secondary">Join Room</button>
+
+      <details class="server-config">
+        <summary>Server Settings</summary>
+        <div class="input-group" style="margin-top: 8px;">
+          <label for="serverUrl">Server URL</label>
+          <input type="text" id="serverUrl" placeholder="wss://your-server.com">
+          <button id="btnSaveServer" class="btn btn-small" style="margin-top: 6px;">Save & Reconnect</button>
+        </div>
+      </details>
+    </div>
+
+    <!-- Room view -->
+    <div id="view-room" class="view">
+      <div class="room-info">
+        <div class="room-code-display">
+          <span class="label">Room Code</span>
+          <span id="displayRoomCode" class="code"></span>
+        </div>
+        <div class="room-actions">
+          <button id="btnCopyCode" class="btn-small" title="Copy room code">Copy Code</button>
+          <button id="btnCopyLink" class="btn-small" title="Copy shareable link">Copy Link</button>
+        </div>
+      </div>
+
+      <div class="members-bar">
+        <span id="memberCount">1</span> watching
+        <span id="leaderBadge" class="leader-badge" style="display:none">You sync others</span>
+      </div>
+
+      <div id="membersList" class="members-list"></div>
+
+      <!-- Chat -->
+      <div class="chat-container">
+        <div id="chatMessages" class="chat-messages"></div>
+        <div class="chat-input-row">
+          <input type="text" id="chatInput" placeholder="Type a message..." maxlength="500">
+          <button id="btnSend" class="btn-send">Send</button>
+        </div>
+      </div>
+
+      <button id="btnLeave" class="btn btn-danger">Leave Room</button>
+    </div>
+
+    <div id="toast" class="toast"></div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

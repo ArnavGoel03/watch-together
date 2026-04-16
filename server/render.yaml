@@ -1,0 +1,17 @@
+# One-click deploy to Render (https://render.com)
+# Click "New Web Service" > connect repo > select server/ directory
+services:
+  - type: web
+    name: watch-together-server
+    runtime: node
+    plan: free
+    buildCommand: npm ci --production
+    startCommand: node server.js
+    envVars:
+      - key: PORT
+        value: 3000
+      - key: MAX_ROOMS
+        value: 10000
+      - key: MAX_ROOM_MEMBERS
+        value: 50
+    healthCheckPath: /health

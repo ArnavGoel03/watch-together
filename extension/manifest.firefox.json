@@ -1,0 +1,37 @@
+{
+  "manifest_version": 2,
+  "name": "Watch Together",
+  "version": "1.0.0",
+  "description": "Sync video playback across devices — watch anything together in real time",
+  "permissions": ["storage", "activeTab", "tabs", "<all_urls>"],
+  "background": {
+    "scripts": ["background-firefox.js"],
+    "persistent": false
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["adapters/generic.js", "adapters/jiohotstar.js", "adapters/netflix.js", "adapters/youtube.js", "content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "browser_action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "watch-together@extension",
+      "strict_min_version": "109.0"
+    }
+  }
+}
