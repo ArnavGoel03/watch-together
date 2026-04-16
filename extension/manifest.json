@@ -16,7 +16,8 @@
         "adapters/jiohotstar.js",
         "adapters/netflix.js",
         "adapters/youtube.js",
-        "content.js"
+        "content.js",
+        "overlay.js"
       ],
       "run_at": "document_idle"
     }
