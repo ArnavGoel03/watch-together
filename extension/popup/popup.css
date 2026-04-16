@@ -303,6 +303,43 @@ header {
   color: var(--label);
 }
 
+.mode-toggle {
+  display: flex;
+  gap: 0;
+  margin-bottom: 12px;
+  border-radius: var(--radius-xs);
+  overflow: hidden;
+  border: 1px solid rgba(120,120,128,0.24);
+}
+
+.mode-btn {
+  flex: 1;
+  padding: 8px;
+  border: none;
+  background: transparent;
+  color: var(--label-tertiary);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.mode-btn.mode-active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.room-mode {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: var(--label-tertiary);
+}
+
 .tab-hint {
   text-align: center;
   font-size: 12px;

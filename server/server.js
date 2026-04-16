@@ -162,6 +162,37 @@ setInterval(() => {
   rateLimiter.cleanup();
 }, ROOM_CLEANUP_INTERVAL);
 
+// --- Join Page (fallback when no video URL or bad URL) ---
+function serveJoinPage(res, code, roomExists, memberCount) {
+  const safeCode = escapeHtml(code);
+  res.writeHead(200, { "Content-Type": "text/html", "X-Frame-Options": "DENY", "Content-Security-Policy": "default-src 'self' 'unsafe-inline'" });
+  res.end(`<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Join Watch Together — ${safeCode}</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#1c1c1e;color:#fff;min-height:100vh;display:flex;align-items:center;justify-content:center;-webkit-font-smoothing:antialiased}
+.card{background:#2c2c2e;border-radius:16px;padding:44px 36px;max-width:400px;width:90%;text-align:center}
+h1{font-size:20px;font-weight:700;margin-bottom:4px}
+.sub{color:rgba(235,235,245,.5);font-size:14px;margin-bottom:24px}
+.code{font-size:38px;font-weight:800;color:#a78bfa;letter-spacing:8px;margin:12px 0 8px}
+.st{font-size:13px;font-weight:500;margin-bottom:24px;color:${roomExists ? "#30d158" : "rgba(235,235,245,.4)"}}
+.err{color:#ff453a;font-size:14px;margin-bottom:20px}
+.btn{display:block;padding:14px;background:linear-gradient(135deg,#7c3aed,#a78bfa);color:#fff;text-decoration:none;border-radius:10px;font-size:16px;font-weight:600;cursor:pointer;border:none;width:100%;margin-bottom:10px}
+.btn:hover{opacity:.9}
+.hint{font-size:12px;color:rgba(235,235,245,.3);margin-top:16px;line-height:1.6}
+</style></head><body>
+<div class="card">
+  <h1>Watch Together</h1>
+  <p class="sub">You've been invited to watch together</p>
+  <div class="code">${safeCode}</div>
+  <div class="st">${roomExists ? memberCount + " watching now" : "Waiting for host"}</div>
+  ${!roomExists ? '<p class="err">Room not found — the host may have left.</p>' : ""}
+  <button class="btn" onclick="navigator.clipboard.writeText('${safeCode}').then(function(){this.textContent='Copied!'}.bind(this))">Copy Room Code</button>
+  <p class="hint">Open the video, click Watch Together, and paste this code.</p>
+</div></body></html>`);
+}
+
 // --- HTTP Server ---
 const server = http.createServer((req, res) => {
   const headers = {
@@ -215,87 +246,20 @@ const server = http.createServer((req, res) => {
     // Prefer room's stored URL, fall back to query param
     const videoUrl = validateUrl((room && room.videoUrl) ? room.videoUrl : (params.get("url") || ""));
 
-    const safeCode = escapeHtml(code);
-    const safeVideoUrl = escapeHtml(videoUrl);
-    const jsVideoUrl = videoUrl.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/'/g, "\\'").replace(/`/g, '\\`').replace(/</g, '\\u003c');
-
-    res.writeHead(200, { "Content-Type": "text/html", "X-Frame-Options": "DENY", "Content-Security-Policy": "default-src 'self' 'unsafe-inline'" });
-    res.end(`<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Join Watch Together — ${safeCode}</title>
-  <meta name="description" content="Watch together in real-time with friends">
-  <meta property="og:title" content="Watch Together — join room ${safeCode}">
-  <meta property="og:description" content="${memberCount > 0 ? memberCount + " watching now. " : ""}Join and watch in sync!">
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif; background: #1c1c1e; color: #fff; min-height: 100vh; display: flex; align-items: center; justify-content: center; -webkit-font-smoothing: antialiased; }
-    .card { background: #2c2c2e; border-radius: 16px; padding: 44px 36px; max-width: 400px; width: 90%; text-align: center; }
-    h1 { font-size: 20px; font-weight: 700; margin-bottom: 4px; letter-spacing: -0.3px; }
-    .subtitle { color: rgba(235,235,245,0.5); font-size: 14px; margin-bottom: 28px; }
-    .room-code { font-size: 38px; font-weight: 800; color: #a78bfa; letter-spacing: 8px; margin: 12px 0 8px; font-variant-numeric: tabular-nums; }
-    .status { font-size: 13px; font-weight: 500; margin-bottom: 28px; }
-    .status.live { color: #30d158; }
-    .status.waiting { color: rgba(235,235,245,0.4); }
-    .btn { display: block; padding: 14px; background: linear-gradient(135deg, #7c3aed, #a78bfa); color: #fff; text-decoration: none; border-radius: 10px; font-size: 16px; font-weight: 600; cursor: pointer; border: none; width: 100%; margin-bottom: 10px; transition: opacity 0.15s; letter-spacing: -0.2px; }
-    .btn:hover { opacity: 0.9; }
-    .btn:active { transform: scale(0.98); }
-    .btn-secondary { background: rgba(120,120,128,0.24); color: #fff; }
-    .btn-secondary:hover { background: rgba(120,120,128,0.36); }
-    .code-copy { font-size: 13px; color: rgba(235,235,245,0.4); margin-top: 16px; }
-    .code-copy span { color: #a78bfa; font-weight: 600; cursor: pointer; }
-    .code-copy span:hover { text-decoration: underline; }
-    .hint { font-size: 12px; color: rgba(235,235,245,0.3); margin-top: 20px; line-height: 1.6; }
-    .hint a { color: #a78bfa; text-decoration: none; }
-    .hint a:hover { text-decoration: underline; }
-    .copied { color: #30d158 !important; }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h1>Watch Together</h1>
-    <p class="subtitle">You've been invited to watch together</p>
-    <div class="room-code">${safeCode}</div>
-    <div class="status ${roomExists ? "live" : "waiting"}">${roomExists ? memberCount + " watching now" : "Waiting for host"}</div>
-
-    ${videoUrl ? `<a href="${safeVideoUrl}" id="joinBtn" class="btn">Open Video &amp; Watch Together</a>` : ""}
-    <button id="copyBtn" class="btn ${videoUrl ? "btn-secondary" : ""}" onclick="copyCode(this)">Copy Room Code</button>
-
-    <p class="code-copy">Room code: <span onclick="copyCode(this)">${safeCode}</span></p>
-    <p class="hint">Open the extension, paste the code, and you're in sync.<br>Don't have it? <a href="#">Get Watch Together</a></p>
-  </div>
-
-  <script>
-    const code = "${safeCode}";
-    const videoUrl = "${jsVideoUrl}";
-
-    function copyCode(el) {
-      navigator.clipboard.writeText(code).then(function() {
-        el.textContent = "Copied!";
-        el.classList.add("copied");
-        setTimeout(function() {
-          el.textContent = el.tagName === "BUTTON" ? "Copy Room Code" : code;
-          el.classList.remove("copied");
-        }, 1500);
-      });
+    // If video URL exists, auto-redirect to the video with wt_room param
+    if (videoUrl) {
+      try {
+        const redirectUrl = new URL(videoUrl);
+        redirectUrl.searchParams.set("wt_room", code);
+        res.writeHead(302, { "Location": redirectUrl.toString() });
+        res.end();
+      } catch {
+        // Bad URL, fall through to manual page
+        serveJoinPage(res, code, roomExists, memberCount);
+      }
+    } else {
+      serveJoinPage(res, code, roomExists, memberCount);
     }
-
-    // If there's a video URL, add room code param for auto-join
-    var joinBtn = document.getElementById("joinBtn");
-    if (joinBtn && videoUrl) {
-      joinBtn.addEventListener("click", function(e) {
-        try {
-          var url = new URL(videoUrl);
-          url.searchParams.set("wt_room", code);
-          joinBtn.href = url.toString();
-        } catch(err) {}
-      });
-    }
-  </script>
-</body>
-</html>`);
     return;
   }
 
@@ -399,8 +363,13 @@ wss.on("connection", (ws, req) => {
 
         const videoUrl = validateUrl(msg.videoUrl);
 
+        // mode: "everyone" (default) or "host" (only creator controls)
+        const mode = msg.mode === "host" ? "host" : "everyone";
+
         const room = {
           code: roomCode,
+          hostId: userId,
+          mode,
           members: new Map([[userId, { ws, userName }]]),
           videoUrl,
           playbackState: {
@@ -419,6 +388,8 @@ wss.on("connection", (ws, req) => {
           type: "room-created",
           roomCode,
           userId,
+          mode: room.mode,
+          isHost: true,
         });
 
         notifyHeartbeatLeader(room);
@@ -452,6 +423,8 @@ wss.on("connection", (ws, req) => {
           type: "room-joined",
           roomCode: code,
           userId,
+          mode: room.mode,
+          isHost: userId === room.hostId,
           playbackState: {
             ...room.playbackState,
             timestamp: room.playbackState.lastUpdate,
@@ -484,6 +457,12 @@ wss.on("connection", (ws, req) => {
         if (!currentRoom) return;
         const room = rooms.get(currentRoom);
         if (!room) return;
+
+        // In host mode, only the host can control playback
+        if (room.mode === "host" && room.hostId !== userId) {
+          sendTo(ws, { type: "error", message: "Only the host can control playback" });
+          return;
+        }
 
         const currentTime = parseFloat(msg.currentTime);
         const playbackRate = parseFloat(msg.playbackRate) || 1;
@@ -567,6 +546,22 @@ wss.on("connection", (ws, req) => {
           userName,
           userId,
           timestamp: Date.now(),
+        });
+        break;
+      }
+
+      case "set-mode": {
+        if (!currentRoom) return;
+        const modeRoom = rooms.get(currentRoom);
+        if (!modeRoom) return;
+        // Only the host can change mode
+        if (modeRoom.hostId !== userId) return;
+        const newMode = msg.mode === "host" ? "host" : "everyone";
+        modeRoom.mode = newMode;
+        broadcastToRoom(currentRoom, {
+          type: "mode-changed",
+          mode: newMode,
+          fromUser: userName,
         });
         break;
       }

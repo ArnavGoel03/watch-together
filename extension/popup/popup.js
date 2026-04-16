@@ -6,6 +6,9 @@ const port = chrome.runtime.connect({ name: "popup" });
 let currentRoom = null;
 let members = [];
 let activeTabUrl = "";
+let selectedMode = "everyone";
+let isHost = false;
+let currentMode = "everyone";
 
 // Internal/useless URL patterns
 const BLOCKED_PREFIXES = ["chrome", "about:", "edge:", "moz-extension:", "chrome-extension:", "file:", "brave:"];
@@ -73,7 +76,22 @@ btnCreate.addEventListener("click", () => {
     return;
   }
   chrome.storage.local.set({ userName: name });
-  port.postMessage({ type: "create-room", userName: name, videoUrl: activeTabUrl });
+  port.postMessage({ type: "create-room", userName: name, videoUrl: activeTabUrl, mode: selectedMode });
+});
+
+// Mode selection buttons
+document.querySelectorAll(".mode-btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".mode-btn").forEach((b) => b.classList.remove("mode-active"));
+    btn.classList.add("mode-active");
+    selectedMode = btn.dataset.mode;
+  });
+});
+
+// Toggle mode in active room (host only)
+$("#btnToggleMode").addEventListener("click", () => {
+  const newMode = currentMode === "everyone" ? "host" : "everyone";
+  port.postMessage({ type: "set-mode", mode: newMode });
 });
 
 $("#btnJoin").addEventListener("click", joinRoom);
@@ -259,9 +277,12 @@ port.onMessage.addListener((msg) => {
 
     case "room-created":
       currentRoom = msg.roomCode;
+      isHost = true;
+      currentMode = msg.mode || "everyone";
       displayRoomCode.textContent = msg.roomCode;
       members = [{ id: msg.userId, userName: getUserName() }];
       updateMembersList();
+      updateModeUI();
       showView("room");
       addSystemMessage("Room created");
       showToast("Room created — share the code!");
@@ -269,11 +290,20 @@ port.onMessage.addListener((msg) => {
 
     case "room-joined":
       currentRoom = msg.roomCode;
+      isHost = msg.isHost || false;
+      currentMode = msg.mode || "everyone";
       displayRoomCode.textContent = msg.roomCode;
       members = msg.members || [];
       updateMembersList();
+      updateModeUI();
       showView("room");
       addSystemMessage(`Joined with ${members.length} watching`);
+      break;
+
+    case "mode-changed":
+      currentMode = msg.mode;
+      updateModeUI();
+      addSystemMessage(`${msg.fromUser} switched to ${msg.mode === "host" ? "host only" : "everyone"} controls`);
       break;
 
     case "member-joined":
@@ -301,6 +331,13 @@ port.onMessage.addListener((msg) => {
       break;
   }
 });
+
+function updateModeUI() {
+  const modeLabel = $("#modeLabel");
+  const toggleBtn = $("#btnToggleMode");
+  modeLabel.textContent = currentMode === "host" ? "Host controls only" : "Everyone controls";
+  toggleBtn.style.display = isHost ? "inline-flex" : "none";
+}
 
 function updateConnectionStatus(connected) {
   statusEl.className = `status-pill ${connected ? "connected" : "disconnected"}`;

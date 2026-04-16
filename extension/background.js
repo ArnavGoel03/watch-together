@@ -88,6 +88,7 @@ function connect() {
       case "chat":
       case "member-joined":
       case "member-left":
+      case "mode-changed":
       case "error":
         broadcastToAllTabs(msg);
         break;
@@ -161,6 +162,7 @@ chrome.runtime.onConnect.addListener((port) => {
             type: "create-room",
             userName: msg.userName,
             videoUrl: msg.videoUrl || "",
+            mode: msg.mode || "everyone",
           });
         });
         break;
@@ -196,6 +198,10 @@ chrome.runtime.onConnect.addListener((port) => {
         break;
 
       case "chat":
+        sendToServer(msg);
+        break;
+
+      case "set-mode":
         sendToServer(msg);
         break;
 

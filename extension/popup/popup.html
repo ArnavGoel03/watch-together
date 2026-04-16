@@ -42,6 +42,11 @@
         </div>
       </div>
 
+      <div class="mode-toggle">
+        <button id="modeEveryone" class="mode-btn mode-active" data-mode="everyone">Everyone controls</button>
+        <button id="modeHost" class="mode-btn" data-mode="host">Only I control</button>
+      </div>
+
       <button id="btnCreate" class="btn btn-glow">
         <span class="btn-content">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v8m-4-4h8"/></svg>
@@ -89,6 +94,10 @@
         <div class="room-header">
           <span class="room-label">ROOM</span>
           <div id="displayRoomCode" class="room-code"></div>
+          <div class="room-mode" id="roomMode">
+            <span id="modeLabel">Everyone controls</span>
+            <button id="btnToggleMode" class="action-btn" style="display:none" title="Toggle control mode">Switch</button>
+          </div>
           <div class="room-actions">
             <button id="btnCopyCode" class="action-btn" title="Copy code">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
