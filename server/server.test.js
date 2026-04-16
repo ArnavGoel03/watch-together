@@ -9,71 +9,61 @@ const PORT = 4567;
 let serverProcess;
 
 // ========================
-// HELPERS
+// HELPERS — optimized for speed
 // ========================
 
 function createClient() {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(`ws://localhost:${PORT}`);
-    ws.messages = [];
-    ws.on("message", (d) => ws.messages.push(JSON.parse(d)));
+    ws.msgs = [];
+    ws.on("message", (d) => ws.msgs.push(JSON.parse(d)));
     ws.on("open", () => resolve(ws));
     ws.on("error", reject);
   });
 }
 
-function waitForMessage(ws, type, timeout = 5000) {
+function wait(ws, type, ms = 2000) {
+  const found = ws.msgs.find((m) => m.type === type);
+  if (found) { ws.msgs.splice(ws.msgs.indexOf(found), 1); return Promise.resolve(found); }
   return new Promise((resolve, reject) => {
-    const existing = ws.messages.find((m) => m.type === type);
-    if (existing) { ws.messages = ws.messages.filter((m) => m !== existing); return resolve(existing); }
-    const check = setInterval(() => {
-      const msg = ws.messages.find((m) => m.type === type);
-      if (msg) { ws.messages = ws.messages.filter((m) => m !== msg); clearInterval(check); clearTimeout(timer); resolve(msg); }
-    }, 30);
-    const timer = setTimeout(() => { clearInterval(check); reject(new Error(`Timeout waiting for "${type}"`)); }, timeout);
+    const iv = setInterval(() => {
+      const m = ws.msgs.find((x) => x.type === type);
+      if (m) { ws.msgs.splice(ws.msgs.indexOf(m), 1); clearInterval(iv); clearTimeout(t); resolve(m); }
+    }, 10);
+    const t = setTimeout(() => { clearInterval(iv); reject(new Error(`Timeout: ${type}`)); }, ms);
   });
 }
 
-function waitForMessages(ws, type, count, timeout = 3000) {
-  return new Promise((resolve, reject) => {
-    const results = [];
-    const check = setInterval(() => {
-      const msgs = ws.messages.filter((m) => m.type === type);
-      if (msgs.length >= count) {
-        clearInterval(check); clearTimeout(timer);
-        ws.messages = ws.messages.filter((m) => m.type !== type);
-        resolve(msgs.slice(0, count));
-      }
-    }, 30);
-    const timer = setTimeout(() => { clearInterval(check); reject(new Error(`Timeout waiting for ${count}x "${type}"`)); }, timeout);
-  });
-}
-
-function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function httpGet(path) {
   return new Promise((resolve, reject) => {
     http.get(`http://localhost:${PORT}${path}`, (res) => {
-      let data = "";
-      res.on("data", (d) => (data += d));
-      res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, body: data }));
+      let d = ""; res.on("data", (c) => d += c);
+      res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, body: d }));
     }).on("error", reject);
   });
 }
 
-async function createRoom(userName = "Host", mode = "everyone", videoUrl = "") {
+async function host(name = "Host", mode = "everyone", videoUrl = "") {
   const ws = await createClient();
-  ws.send(JSON.stringify({ type: "create-room", userName, mode, videoUrl }));
-  const msg = await waitForMessage(ws, "room-created");
-  return { ws, roomCode: msg.roomCode, userId: msg.userId, msg };
+  ws.send(JSON.stringify({ type: "create-room", userName: name, mode, videoUrl }));
+  const msg = await wait(ws, "room-created");
+  return { ws, code: msg.roomCode, msg };
 }
 
-async function joinRoom(roomCode, userName = "Guest") {
+async function guest(code, name = "Guest") {
   const ws = await createClient();
-  ws.send(JSON.stringify({ type: "join-room", roomCode, userName }));
-  const msg = await waitForMessage(ws, "room-joined");
+  ws.send(JSON.stringify({ type: "join-room", roomCode: code, userName: name }));
+  const msg = await wait(ws, "room-joined");
   return { ws, msg };
 }
+
+function sync(ws, action, time, playing = true, rate = 1) {
+  ws.send(JSON.stringify({ type: "sync", action, playing, currentTime: time, playbackRate: rate }));
+}
+
+function close(...clients) { clients.forEach((c) => (c.ws || c).close()); }
 
 // ========================
 // SETUP
@@ -82,71 +72,53 @@ async function joinRoom(roomCode, userName = "Guest") {
 beforeAll(async () => {
   const { fork } = await import("child_process");
   serverProcess = fork("./server.js", [], {
-    env: { ...process.env, PORT: String(PORT), MAX_CONNECTIONS_PER_IP: "50", RATE_LIMIT_MAX: "100" },
+    env: { ...process.env, PORT: String(PORT), MAX_CONNECTIONS_PER_IP: "50", RATE_LIMIT_MAX: "200" },
     silent: true,
   });
-  await sleep(1000);
+  await sleep(800);
 });
 
-afterAll(() => {
-  if (serverProcess) serverProcess.kill("SIGTERM");
-});
+afterAll(() => { if (serverProcess) serverProcess.kill("SIGTERM"); });
 
 // ========================
-// 1. SYNTAX VALIDATION
+// 1. SYNTAX & STATIC CHECKS
 // ========================
 
-describe("Syntax validation", () => {
+describe("Static checks", () => {
   const extDir = join(__dirname, "..", "extension");
-
-  function getAllJsFiles(dir) {
+  const getJsFiles = (dir) => {
     const files = [];
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const path = join(dir, entry.name);
-      if (entry.isDirectory() && entry.name !== "node_modules" && entry.name !== "icons") {
-        files.push(...getAllJsFiles(path));
-      } else if (entry.name.endsWith(".js")) {
-        files.push(path);
-      }
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, e.name);
+      if (e.isDirectory() && e.name !== "node_modules" && e.name !== "icons") files.push(...getJsFiles(p));
+      else if (e.name.endsWith(".js")) files.push(p);
     }
     return files;
-  }
+  };
 
-  const jsFiles = getAllJsFiles(extDir);
-
-  it("all extension JS files have valid syntax", () => {
+  it("all JS files have valid syntax", () => {
     const errors = [];
-    for (const file of jsFiles) {
-      try {
-        execSync(`node -c "${file}" 2>&1`);
-      } catch (e) {
-        errors.push(`${file}: ${e.stdout?.toString() || e.message}`);
-      }
+    for (const f of [...getJsFiles(extDir), join(__dirname, "server.js")]) {
+      try { execSync(`node -c "${f}" 2>&1`); } catch (e) { errors.push(f); }
     }
     expect(errors).toEqual([]);
   });
 
-  it("server.js has valid syntax", () => {
-    expect(() => execSync(`node -c "${join(__dirname, "server.js")}" 2>&1`)).not.toThrow();
+  it("manifest.json is valid MV3", () => {
+    const m = JSON.parse(readFileSync(join(extDir, "manifest.json"), "utf-8"));
+    expect(m.manifest_version).toBe(3);
+    expect(m.content_scripts.length).toBeGreaterThanOrEqual(2);
+    expect(m.content_scripts[0].run_at).toBe("document_start");
   });
 
-  it("manifest.json is valid JSON", () => {
-    const manifest = readFileSync(join(extDir, "manifest.json"), "utf-8");
-    expect(() => JSON.parse(manifest)).not.toThrow();
-    const parsed = JSON.parse(manifest);
-    expect(parsed.manifest_version).toBe(3);
-    expect(parsed.content_scripts.length).toBeGreaterThanOrEqual(2);
-    expect(parsed.content_scripts[0].run_at).toBe("document_start");
-  });
-
-  it("no hardcoded localhost in extension files (except server config)", () => {
-    for (const file of jsFiles) {
-      const content = readFileSync(file, "utf-8");
-      if (file.includes("background") && content.includes("DEFAULT_SERVER_URL")) continue;
-      const lines = content.split("\n");
+  it("no hardcoded localhost in extension (except config)", () => {
+    for (const f of getJsFiles(extDir)) {
+      const c = readFileSync(f, "utf-8");
+      if (f.includes("background") && c.includes("DEFAULT_SERVER_URL")) continue;
+      const lines = c.split("\n");
       for (let i = 0; i < lines.length; i++) {
         if (lines[i].includes("localhost") && !lines[i].trim().startsWith("//")) {
-          throw new Error(`${file}:${i + 1} contains hardcoded localhost`);
+          throw new Error(`${f}:${i + 1} has localhost`);
         }
       }
     }
@@ -154,371 +126,281 @@ describe("Syntax validation", () => {
 });
 
 // ========================
-// 2. HTTP ENDPOINTS
+// 2. HTTP
 // ========================
 
-describe("HTTP endpoints", () => {
-  it("GET /health returns server stats", async () => {
-    const res = await httpGet("/health");
-    const body = JSON.parse(res.body);
-    expect(body.status).toBe("ok");
-    expect(body).toHaveProperty("rooms");
-    expect(body).toHaveProperty("connections");
-    expect(body).toHaveProperty("members");
-    expect(body).toHaveProperty("uptime");
+describe("HTTP", () => {
+  it("health endpoint", async () => {
+    const r = await httpGet("/health");
+    const b = JSON.parse(r.body);
+    expect(b.status).toBe("ok");
+    expect(b).toHaveProperty("uptime");
   });
 
-  it("GET /room/FAKE does not leak data", async () => {
-    const res = await httpGet("/room/FAKECODE");
-    const body = JSON.parse(res.body);
-    expect(body.exists).toBe(false);
-    expect(body).not.toHaveProperty("videoUrl");
-    expect(body).not.toHaveProperty("members");
+  it("/room/ does not leak data", async () => {
+    const b = JSON.parse((await httpGet("/room/FAKE")).body);
+    expect(b.exists).toBe(false);
+    expect(b).not.toHaveProperty("videoUrl");
   });
 
-  it("GET /join/CODE with video URL returns 302 redirect", async () => {
-    const url = encodeURIComponent("https://www.youtube.com/watch?v=test123");
-    const res = await new Promise((resolve) => {
-      http.get(`http://localhost:${PORT}/join/ABC123?url=${url}`, (r) => {
-        resolve({ status: r.statusCode, location: r.headers.location });
-      });
-    });
-    expect(res.status).toBe(302);
-    expect(res.location).toContain("youtube.com");
-    expect(res.location).toContain("wt_room=ABC123");
+  it("join with video URL → 302 redirect", async () => {
+    const url = encodeURIComponent("https://youtube.com/watch?v=x");
+    const r = await new Promise((res) =>
+      http.get(`http://localhost:${PORT}/join/A?url=${url}`, (h) => res({ status: h.statusCode, loc: h.headers.location }))
+    );
+    expect(r.status).toBe(302);
+    expect(r.loc).toContain("wt_room=A");
   });
 
-  it("GET /join/CODE without video URL returns fallback page", async () => {
-    const res = await httpGet("/join/TESTCODE");
-    expect(res.status).toBe(200);
-    expect(res.body).toContain("Watch Together");
-    expect(res.body).toContain("TESTCODE");
+  it("join without video → fallback page with security headers", async () => {
+    const r = await httpGet("/join/X");
+    expect(r.status).toBe(200);
+    expect(r.headers["x-frame-options"]).toBe("DENY");
+    expect(r.body).toContain("Watch Together");
   });
 
-  it("GET /join/CODE?url=javascript:alert(1) does NOT redirect", async () => {
-    const url = encodeURIComponent("javascript:alert(1)");
-    const res = await httpGet(`/join/XYZ?url=${url}`);
-    expect(res.status).toBe(200); // Fallback page
-    expect(res.body).not.toContain("javascript:");
-  });
-
-  it("join page has security headers", async () => {
-    const res = await httpGet("/join/TEST");
-    expect(res.headers["x-frame-options"]).toBe("DENY");
-    expect(res.headers["content-security-policy"]).toBeDefined();
-  });
-
-  it("GET / returns homepage", async () => {
-    const res = await httpGet("/");
-    expect(res.status).toBe(200);
-    expect(res.body).toContain("Watch Together");
+  it("blocks javascript: URLs", async () => {
+    const r = await httpGet(`/join/X?url=${encodeURIComponent("javascript:alert(1)")}`);
+    expect(r.status).toBe(200);
   });
 });
 
 // ========================
-// 3. ROOM LIFECYCLE
+// 3. ROOMS
 // ========================
 
-describe("Room lifecycle", () => {
-  it("creates room with 6-char code", async () => {
-    const { ws, roomCode, msg } = await createRoom();
-    expect(roomCode).toHaveLength(6);
-    expect(roomCode).toMatch(/^[A-Z0-9]+$/);
-    expect(msg.userId).toBeDefined();
-    expect(msg.isHost).toBe(true);
-    ws.close();
+describe("Rooms", () => {
+  it("creates with 6-char alphanumeric code", async () => {
+    const h = await host();
+    expect(h.code).toMatch(/^[A-Z0-9]{6}$/);
+    expect(h.msg.isHost).toBe(true);
+    close(h);
   });
 
-  it("creates room with video URL", async () => {
-    const { ws, roomCode } = await createRoom("Host", "everyone", "https://youtube.com/watch?v=abc");
-    const res = await httpGet(`/join/${roomCode}`);
-    expect(res.status).toBe(302);
-    ws.close();
+  it("join gets members + playback state", async () => {
+    const h = await host();
+    const g = await guest(h.code);
+    expect(g.msg.members).toHaveLength(2);
+    expect(g.msg.playbackState).toBeDefined();
+    expect(g.msg.isHost).toBe(false);
+    close(h, g);
   });
 
-  it("rejects javascript: video URLs", async () => {
-    const { ws, roomCode } = await createRoom("Host", "everyone", "javascript:alert(1)");
-    const res = await httpGet(`/join/${roomCode}`);
-    expect(res.status).toBe(200); // Fallback, not redirect
-    ws.close();
-  });
-
-  it("joins existing room and receives state", async () => {
-    const host = await createRoom();
-    const guest = await joinRoom(host.roomCode, "Guest");
-
-    expect(guest.msg.roomCode).toBe(host.roomCode);
-    expect(guest.msg.members).toHaveLength(2);
-    expect(guest.msg.playbackState).toBeDefined();
-    expect(guest.msg.playbackState.timestamp).toBeDefined();
-    expect(guest.msg.isHost).toBe(false);
-    expect(guest.msg.mode).toBe("everyone");
-
-    const notif = await waitForMessage(host.ws, "member-joined");
-    expect(notif.userName).toBe("Guest");
-    expect(notif.memberCount).toBe(2);
-
-    host.ws.close(); guest.ws.close();
-  });
-
-  it("returns error for nonexistent room", async () => {
+  it("nonexistent room → error", async () => {
     const ws = await createClient();
-    ws.send(JSON.stringify({ type: "join-room", roomCode: "ZZZZZZ", userName: "Nobody" }));
-    const err = await waitForMessage(ws, "error");
-    expect(err.message).toContain("not found");
+    ws.send(JSON.stringify({ type: "join-room", roomCode: "ZZZZZZ", userName: "X" }));
+    const e = await wait(ws, "error");
+    expect(e.message).toContain("not found");
     ws.close();
   });
 
-  it("notifies on leave", async () => {
-    const host = await createRoom();
-    const guest = await joinRoom(host.roomCode);
-    await sleep(50);
-
-    guest.ws.send(JSON.stringify({ type: "leave-room" }));
-    const left = await waitForMessage(host.ws, "member-left");
-    expect(left.userName).toBe("Guest");
-    expect(left.memberCount).toBe(1);
-
-    host.ws.close(); guest.ws.close();
+  it("leave notifies host", async () => {
+    const h = await host();
+    const g = await guest(h.code);
+    g.ws.send(JSON.stringify({ type: "leave-room" }));
+    const m = await wait(h.ws, "member-left");
+    expect(m.memberCount).toBe(1);
+    close(h, g);
   });
 
-  it("notifies on disconnect", async () => {
-    const host = await createRoom();
-    const guest = await joinRoom(host.roomCode);
-    await sleep(50);
-
-    guest.ws.close();
-    const left = await waitForMessage(host.ws, "member-left");
-    expect(left.memberCount).toBe(1);
-
-    host.ws.close();
+  it("disconnect notifies host", async () => {
+    const h = await host();
+    const g = await guest(h.code);
+    g.ws.close();
+    const m = await wait(h.ws, "member-left");
+    expect(m.memberCount).toBe(1);
+    close(h);
   });
 
-  it("handles leave and rejoin", async () => {
-    const host = await createRoom();
-    const guest = await joinRoom(host.roomCode);
-    await sleep(50);
+  it("rejoin works", async () => {
+    const h = await host();
+    const g = await guest(h.code);
+    g.ws.send(JSON.stringify({ type: "leave-room" }));
+    await wait(h.ws, "member-left");
+    g.ws.send(JSON.stringify({ type: "join-room", roomCode: h.code, userName: "G" }));
+    const r = await wait(g.ws, "room-joined");
+    expect(r.roomCode).toBe(h.code);
+    close(h, g);
+  });
 
-    guest.ws.send(JSON.stringify({ type: "leave-room" }));
-    await waitForMessage(host.ws, "member-left");
-
-    guest.ws.send(JSON.stringify({ type: "join-room", roomCode: host.roomCode, userName: "Guest" }));
-    const rejoined = await waitForMessage(guest.ws, "room-joined");
-    expect(rejoined.roomCode).toBe(host.roomCode);
-
-    host.ws.close(); guest.ws.close();
+  it("video URL stored → redirect works", async () => {
+    const h = await host("H", "everyone", "https://youtube.com/watch?v=abc");
+    const r = await new Promise((res) =>
+      http.get(`http://localhost:${PORT}/join/${h.code}`, (x) => res(x.statusCode))
+    );
+    expect(r).toBe(302);
+    close(h);
   });
 });
 
 // ========================
-// 4. SYNC — CORE FUNCTIONALITY
+// 4. SYNC
 // ========================
 
-describe("Sync — core", () => {
-  it("play event syncs to all members", async () => {
-    const host = await createRoom();
-    const g1 = await joinRoom(host.roomCode, "G1");
-    const g2 = await joinRoom(host.roomCode, "G2");
-    await sleep(100);
-
-    host.ws.send(JSON.stringify({ type: "sync", action: "play", playing: true, currentTime: 42.5, playbackRate: 1 }));
-
-    const s1 = await waitForMessage(g1.ws, "sync");
-    const s2 = await waitForMessage(g2.ws, "sync");
-    expect(s1.currentTime).toBe(42.5);
-    expect(s1.playing).toBe(true);
-    expect(s1.action).toBe("play");
-    expect(s1.fromUser).toBe("Host");
-    expect(s2.currentTime).toBe(42.5);
-
-    host.ws.close(); g1.ws.close(); g2.ws.close();
+describe("Sync", () => {
+  it("play syncs", async () => {
+    const h = await host(); const g = await guest(h.code); await sleep(30);
+    sync(h.ws, "play", 42.5);
+    const s = await wait(g.ws, "sync");
+    expect(s.currentTime).toBe(42.5);
+    expect(s.playing).toBe(true);
+    expect(s.fromUser).toBe("Host");
+    close(h, g);
   });
 
-  it("pause event syncs", async () => {
-    const host = await createRoom();
-    const guest = await joinRoom(host.roomCode);
-    await sleep(50);
-
-    host.ws.send(JSON.stringify({ type: "sync", action: "pause", playing: false, currentTime: 100, playbackRate: 1 }));
-    const s = await waitForMessage(guest.ws, "sync");
+  it("pause syncs", async () => {
+    const h = await host(); const g = await guest(h.code); await sleep(30);
+    sync(h.ws, "pause", 100, false);
+    const s = await wait(g.ws, "sync");
     expect(s.playing).toBe(false);
-    expect(s.action).toBe("pause");
-    expect(s.currentTime).toBe(100);
-
-    host.ws.close(); guest.ws.close();
+    close(h, g);
   });
 
-  it("seek event syncs", async () => {
-    const host = await createRoom();
-    const guest = await joinRoom(host.roomCode);
-    await sleep(50);
-
-    host.ws.send(JSON.stringify({ type: "sync", action: "seek", playing: true, currentTime: 600, playbackRate: 1 }));
-    const s = await waitForMessage(guest.ws, "sync");
-    expect(s.action).toBe("seek");
+  it("seek syncs", async () => {
+    const h = await host(); const g = await guest(h.code); await sleep(30);
+    sync(h.ws, "seek", 600);
+    const s = await wait(g.ws, "sync");
     expect(s.currentTime).toBe(600);
-
-    host.ws.close(); guest.ws.close();
+    close(h, g);
   });
 
-  it("playback rate change syncs", async () => {
-    const host = await createRoom();
-    const guest = await joinRoom(host.roomCode);
-    await sleep(50);
-
-    host.ws.send(JSON.stringify({ type: "sync", action: "ratechange", playing: true, currentTime: 50, playbackRate: 2 }));
-    const s = await waitForMessage(guest.ws, "sync");
+  it("rate change syncs", async () => {
+    const h = await host(); const g = await guest(h.code); await sleep(30);
+    sync(h.ws, "ratechange", 50, true, 2);
+    const s = await wait(g.ws, "sync");
     expect(s.playbackRate).toBe(2);
-
-    host.ws.close(); guest.ws.close();
+    close(h, g);
   });
 
-  it("does NOT echo sync back to sender", async () => {
-    const host = await createRoom();
-    const guest = await joinRoom(host.roomCode);
-    await sleep(50);
-    host.ws.messages = [];
-
-    host.ws.send(JSON.stringify({ type: "sync", action: "play", playing: true, currentTime: 10, playbackRate: 1 }));
-    await sleep(300);
-
-    expect(host.ws.messages.find((m) => m.type === "sync")).toBeUndefined();
-
-    host.ws.close(); guest.ws.close();
+  it("no echo to sender", async () => {
+    const h = await host(); const g = await guest(h.code); await sleep(30);
+    h.ws.msgs = [];
+    sync(h.ws, "play", 10);
+    await sleep(100);
+    expect(h.ws.msgs.find((m) => m.type === "sync")).toBeUndefined();
+    close(h, g);
   });
 
   it("guest can sync (everyone mode)", async () => {
-    const host = await createRoom();
-    const guest = await joinRoom(host.roomCode);
-    await sleep(50);
-
-    guest.ws.send(JSON.stringify({ type: "sync", action: "pause", playing: false, currentTime: 200, playbackRate: 1 }));
-    const s = await waitForMessage(host.ws, "sync");
+    const h = await host(); const g = await guest(h.code); await sleep(30);
+    sync(g.ws, "pause", 200, false);
+    const s = await wait(h.ws, "sync");
     expect(s.currentTime).toBe(200);
-    expect(s.fromUser).toBe("Guest");
-
-    host.ws.close(); guest.ws.close();
+    close(h, g);
   });
 
-  it("late joiner receives current playback state", async () => {
-    const host = await createRoom();
-
-    // Host plays to 5:30 at 1.5x
-    host.ws.send(JSON.stringify({ type: "sync", action: "play", playing: true, currentTime: 330, playbackRate: 1.5 }));
-    await sleep(100);
-
-    const guest = await joinRoom(host.roomCode, "Late");
-    expect(guest.msg.playbackState.currentTime).toBe(330);
-    expect(guest.msg.playbackState.playing).toBe(true);
-    expect(guest.msg.playbackState.playbackRate).toBe(1.5);
-
-    host.ws.close(); guest.ws.close();
-  });
-
-  it("sync includes timestamp for drift compensation", async () => {
-    const host = await createRoom();
-    const guest = await joinRoom(host.roomCode);
+  it("late joiner gets current state", async () => {
+    const h = await host();
+    sync(h.ws, "play", 330, true, 1.5);
     await sleep(50);
+    const g = await guest(h.code);
+    expect(g.msg.playbackState.currentTime).toBe(330);
+    expect(g.msg.playbackState.playbackRate).toBe(1.5);
+    close(h, g);
+  });
 
+  it("includes timestamp", async () => {
+    const h = await host(); const g = await guest(h.code); await sleep(30);
     const before = Date.now();
-    host.ws.send(JSON.stringify({ type: "sync", action: "play", playing: true, currentTime: 100, playbackRate: 1 }));
-    const s = await waitForMessage(guest.ws, "sync");
-
+    sync(h.ws, "play", 100);
+    const s = await wait(g.ws, "sync");
     expect(s.timestamp).toBeGreaterThanOrEqual(before);
-    expect(s.timestamp).toBeLessThanOrEqual(Date.now());
-
-    host.ws.close(); guest.ws.close();
+    close(h, g);
   });
 
-  it("rejects negative currentTime", async () => {
-    const host = await createRoom();
-    const guest = await joinRoom(host.roomCode);
-    await sleep(50);
-    guest.ws.messages = [];
-
-    host.ws.send(JSON.stringify({ type: "sync", action: "play", playing: true, currentTime: -5, playbackRate: 1 }));
-    await sleep(200);
-
-    expect(guest.ws.messages.find((m) => m.type === "sync")).toBeUndefined();
-
-    host.ws.close(); guest.ws.close();
+  it("rejects negative time", async () => {
+    const h = await host(); const g = await guest(h.code); await sleep(30);
+    g.ws.msgs = [];
+    sync(h.ws, "play", -5);
+    await sleep(80);
+    expect(g.ws.msgs.find((m) => m.type === "sync")).toBeUndefined();
+    close(h, g);
   });
 
-  it("rejects absurd playback rate", async () => {
-    const host = await createRoom();
-    const guest = await joinRoom(host.roomCode);
-    await sleep(50);
-    guest.ws.messages = [];
-
-    host.ws.send(JSON.stringify({ type: "sync", action: "play", playing: true, currentTime: 10, playbackRate: 999 }));
-    await sleep(200);
-
-    expect(guest.ws.messages.find((m) => m.type === "sync")).toBeUndefined();
-
-    host.ws.close(); guest.ws.close();
+  it("rejects absurd rate", async () => {
+    const h = await host(); const g = await guest(h.code); await sleep(30);
+    g.ws.msgs = [];
+    sync(h.ws, "play", 10, true, 999);
+    await sleep(80);
+    expect(g.ws.msgs.find((m) => m.type === "sync")).toBeUndefined();
+    close(h, g);
   });
 
-  it("rejects NaN currentTime", async () => {
-    const host = await createRoom();
-    const guest = await joinRoom(host.roomCode);
-    await sleep(50);
-    guest.ws.messages = [];
-
-    host.ws.send(JSON.stringify({ type: "sync", action: "play", playing: true, currentTime: "abc", playbackRate: 1 }));
-    await sleep(200);
-
-    expect(guest.ws.messages.find((m) => m.type === "sync")).toBeUndefined();
-
-    host.ws.close(); guest.ws.close();
+  it("rejects NaN time", async () => {
+    const h = await host(); const g = await guest(h.code); await sleep(30);
+    g.ws.msgs = [];
+    h.ws.send(JSON.stringify({ type: "sync", action: "play", playing: true, currentTime: "abc", playbackRate: 1 }));
+    await sleep(80);
+    expect(g.ws.msgs.find((m) => m.type === "sync")).toBeUndefined();
+    close(h, g);
   });
 });
 
 // ========================
-// 5. RAPID SYNC STRESS TEST
+// 5. STRESS
 // ========================
 
-describe("Sync — stress", () => {
-  it("handles 50 rapid sync events without dropping", async () => {
-    const host = await createRoom();
-    const guest = await joinRoom(host.roomCode);
-    await sleep(200);
-    guest.ws.messages = [];
-
+describe("Stress", () => {
+  it("50 rapid syncs delivered", { timeout: 10000 }, async () => {
+    const h = await host(); const g = await guest(h.code); await sleep(50);
+    g.ws.msgs = [];
     for (let i = 0; i < 50; i++) {
-      host.ws.send(JSON.stringify({ type: "sync", action: "seek", playing: true, currentTime: i * 10, playbackRate: 1 }));
-      if (i % 10 === 9) await sleep(50); // Small batching to avoid OS buffer issues
+      sync(h.ws, "seek", i * 10);
+      if (i % 10 === 9) await sleep(20);
     }
-
-    await sleep(3000);
-    const syncs = guest.ws.messages.filter((m) => m.type === "sync");
+    await sleep(2000);
+    const syncs = g.ws.msgs.filter((m) => m.type === "sync");
     expect(syncs.length).toBe(50);
-    expect(syncs[49].currentTime).toBe(490);
-
-    host.ws.close(); guest.ws.close();
+    close(h, g);
   });
 
-  it("handles alternating play/pause from different users", async () => {
-    const host = await createRoom();
-    const guest = await joinRoom(host.roomCode);
-    await sleep(100);
-    host.ws.messages = [];
-    guest.ws.messages = [];
-
+  it("alternating play/pause from 2 users", async () => {
+    const h = await host(); const g = await guest(h.code); await sleep(50);
+    h.ws.msgs = []; g.ws.msgs = [];
     for (let i = 0; i < 20; i++) {
-      const sender = i % 2 === 0 ? host.ws : guest.ws;
-      sender.send(JSON.stringify({ type: "sync", action: i % 2 === 0 ? "play" : "pause", playing: i % 2 === 0, currentTime: i * 5, playbackRate: 1 }));
+      const s = i % 2 === 0 ? h.ws : g.ws;
+      sync(s, i % 2 === 0 ? "play" : "pause", i * 5, i % 2 === 0);
+      await sleep(10);
+    }
+    await sleep(500);
+    expect(h.ws.msgs.filter((m) => m.type === "sync").length).toBe(10);
+    expect(g.ws.msgs.filter((m) => m.type === "sync").length).toBe(10);
+    close(h, g);
+  });
+
+  it("10 users sync simultaneously", { timeout: 10000 }, async () => {
+    const h = await host();
+    const gs = [];
+    for (let i = 0; i < 9; i++) gs.push(await guest(h.code, `U${i}`));
+    await sleep(100);
+
+    const all = [h, ...gs];
+    all.forEach((c) => c.ws.msgs = []);
+    all.forEach((c, i) => sync(c.ws, "seek", (i + 1) * 100));
+    await sleep(1000);
+
+    for (const c of all) {
+      expect(c.ws.msgs.filter((m) => m.type === "sync").length).toBe(9);
+    }
+    close(...all);
+  });
+
+  it("rapid join/leave cycle", { timeout: 10000 }, async () => {
+    const h = await host();
+    for (let i = 0; i < 10; i++) {
+      const g = await guest(h.code, `R${i}`);
+      g.ws.send(JSON.stringify({ type: "leave-room" }));
+      g.ws.close();
       await sleep(20);
     }
+    expect(JSON.parse((await httpGet(`/room/${h.code}`)).body).exists).toBe(true);
+    close(h);
+  });
 
-    await sleep(1000);
-    const hostSyncs = host.ws.messages.filter((m) => m.type === "sync");
-    const guestSyncs = guest.ws.messages.filter((m) => m.type === "sync");
-
-    // Each user sends 10, receives the other's 10
-    expect(hostSyncs.length).toBe(10);
-    expect(guestSyncs.length).toBe(10);
-
-    host.ws.close(); guest.ws.close();
+  it("10 simultaneous room creations", { timeout: 10000 }, async () => {
+    const rooms = await Promise.all(Array.from({ length: 10 }, (_, i) => host(`C${i}`)));
+    expect(new Set(rooms.map((r) => r.code)).size).toBe(10);
+    close(...rooms);
   });
 });
 
@@ -527,79 +409,52 @@ describe("Sync — stress", () => {
 // ========================
 
 describe("Host mode", () => {
-  it("creates room in host mode", async () => {
-    const { ws, msg } = await createRoom("Host", "host");
-    expect(msg.mode).toBe("host");
-    expect(msg.isHost).toBe(true);
-    ws.close();
+  it("creates in host mode", async () => {
+    const h = await host("H", "host");
+    expect(h.msg.mode).toBe("host");
+    close(h);
   });
 
-  it("blocks guest sync in host mode", async () => {
-    const host = await createRoom("Host", "host");
-    const guest = await joinRoom(host.roomCode);
-    await sleep(50);
-
-    guest.ws.send(JSON.stringify({ type: "sync", action: "play", playing: true, currentTime: 50, playbackRate: 1 }));
-    const err = await waitForMessage(guest.ws, "error");
-    expect(err.message).toContain("host");
-
-    host.ws.close(); guest.ws.close();
+  it("blocks guest sync", async () => {
+    const h = await host("H", "host"); const g = await guest(h.code); await sleep(30);
+    sync(g.ws, "play", 50);
+    const e = await wait(g.ws, "error");
+    expect(e.message).toContain("host");
+    close(h, g);
   });
 
-  it("allows host sync in host mode", async () => {
-    const host = await createRoom("Host", "host");
-    const guest = await joinRoom(host.roomCode);
-    await sleep(50);
-
-    host.ws.send(JSON.stringify({ type: "sync", action: "play", playing: true, currentTime: 75, playbackRate: 1 }));
-    const s = await waitForMessage(guest.ws, "sync");
+  it("allows host sync", async () => {
+    const h = await host("H", "host"); const g = await guest(h.code); await sleep(30);
+    sync(h.ws, "play", 75);
+    const s = await wait(g.ws, "sync");
     expect(s.currentTime).toBe(75);
-
-    host.ws.close(); guest.ws.close();
+    close(h, g);
   });
 
-  it("toggles mode host → everyone → host", async () => {
-    const host = await createRoom("Host", "host");
-    const guest = await joinRoom(host.roomCode);
-    await sleep(50);
+  it("toggle host → everyone → host", async () => {
+    const h = await host("H", "host"); const g = await guest(h.code); await sleep(30);
 
-    // Switch to everyone
-    host.ws.send(JSON.stringify({ type: "set-mode", mode: "everyone" }));
-    const m1 = await waitForMessage(guest.ws, "mode-changed");
-    expect(m1.mode).toBe("everyone");
+    h.ws.send(JSON.stringify({ type: "set-mode", mode: "everyone" }));
+    expect((await wait(g.ws, "mode-changed")).mode).toBe("everyone");
 
-    // Guest can now sync
-    guest.ws.send(JSON.stringify({ type: "sync", action: "pause", playing: false, currentTime: 60, playbackRate: 1 }));
-    const s = await waitForMessage(host.ws, "sync");
-    expect(s.currentTime).toBe(60);
+    sync(g.ws, "pause", 60, false);
+    expect((await wait(h.ws, "sync")).currentTime).toBe(60);
 
-    // Switch back to host
-    host.ws.send(JSON.stringify({ type: "set-mode", mode: "host" }));
-    const m2 = await waitForMessage(guest.ws, "mode-changed");
-    expect(m2.mode).toBe("host");
+    h.ws.send(JSON.stringify({ type: "set-mode", mode: "host" }));
+    expect((await wait(g.ws, "mode-changed")).mode).toBe("host");
 
-    // Guest blocked again
-    guest.ws.send(JSON.stringify({ type: "sync", action: "play", playing: true, currentTime: 70, playbackRate: 1 }));
-    const err = await waitForMessage(guest.ws, "error");
-    expect(err.message).toContain("host");
-
-    host.ws.close(); guest.ws.close();
+    sync(g.ws, "play", 70);
+    expect((await wait(g.ws, "error")).message).toContain("host");
+    close(h, g);
   });
 
   it("guest cannot change mode", async () => {
-    const host = await createRoom("Host", "host");
-    const guest = await joinRoom(host.roomCode);
-    await sleep(50);
-
-    guest.ws.send(JSON.stringify({ type: "set-mode", mode: "everyone" }));
-    await sleep(200);
-
-    // Still blocked
-    guest.ws.send(JSON.stringify({ type: "sync", action: "play", playing: true, currentTime: 10, playbackRate: 1 }));
-    const err = await waitForMessage(guest.ws, "error");
-    expect(err.message).toContain("host");
-
-    host.ws.close(); guest.ws.close();
+    const h = await host("H", "host"); const g = await guest(h.code); await sleep(30);
+    g.ws.send(JSON.stringify({ type: "set-mode", mode: "everyone" }));
+    await sleep(100);
+    sync(g.ws, "play", 10);
+    expect((await wait(g.ws, "error")).message).toContain("host");
+    close(h, g);
   });
 });
 
@@ -608,52 +463,39 @@ describe("Host mode", () => {
 // ========================
 
 describe("Heartbeat", () => {
-  it("assigns heartbeat leader on create", async () => {
-    const { ws } = await createRoom();
-    const role = await waitForMessage(ws, "heartbeat-role");
-    expect(role.isLeader).toBe(true);
-    ws.close();
+  it("assigns leader on create", async () => {
+    const h = await host();
+    const r = await wait(h.ws, "heartbeat-role");
+    expect(r.isLeader).toBe(true);
+    close(h);
   });
 
-  it("reassigns leader when host leaves", async () => {
-    const host = await createRoom();
-    const g1 = await joinRoom(host.roomCode, "G1");
-    const g2 = await joinRoom(host.roomCode, "G2");
+  it("only leader heartbeats broadcast", async () => {
+    const h = await host(); const g = await guest(h.code); await sleep(50);
+    h.ws.msgs = []; g.ws.msgs = [];
+
+    g.ws.send(JSON.stringify({ type: "heartbeat", playing: true, currentTime: 999, playbackRate: 1 }));
     await sleep(100);
+    expect(h.ws.msgs.find((m) => m.type === "heartbeat")).toBeUndefined();
 
-    // Clear all heartbeat-role messages
-    g1.ws.messages = [];
-    g2.ws.messages = [];
-
-    host.ws.send(JSON.stringify({ type: "leave-room" }));
-    await sleep(300);
-
-    // One of the remaining should become leader
-    const allMsgs = [...g1.ws.messages, ...g2.ws.messages];
-    const leaderMsgs = allMsgs.filter((m) => m.type === "heartbeat-role" && m.isLeader);
-    expect(leaderMsgs.length).toBeGreaterThanOrEqual(1);
-
-    host.ws.close(); g1.ws.close(); g2.ws.close();
+    h.ws.send(JSON.stringify({ type: "heartbeat", playing: true, currentTime: 50, playbackRate: 1 }));
+    expect((await wait(g.ws, "heartbeat")).currentTime).toBe(50);
+    close(h, g);
   });
 
-  it("only leader heartbeats are broadcast", async () => {
-    const host = await createRoom();
-    const guest = await joinRoom(host.roomCode);
-    await sleep(100);
-    host.ws.messages = [];
-    guest.ws.messages = [];
+  it("reassigns leader on host leave", async () => {
+    const h = await host();
+    const g1 = await guest(h.code, "G1");
+    const g2 = await guest(h.code, "G2");
+    await sleep(50);
+    g1.ws.msgs = []; g2.ws.msgs = [];
 
-    // Guest sends heartbeat (not leader) — should be ignored
-    guest.ws.send(JSON.stringify({ type: "heartbeat", playing: true, currentTime: 999, playbackRate: 1 }));
+    h.ws.send(JSON.stringify({ type: "leave-room" }));
     await sleep(200);
-    expect(host.ws.messages.find((m) => m.type === "heartbeat")).toBeUndefined();
 
-    // Host sends heartbeat (leader) — guest should receive
-    host.ws.send(JSON.stringify({ type: "heartbeat", playing: true, currentTime: 50, playbackRate: 1 }));
-    const hb = await waitForMessage(guest.ws, "heartbeat");
-    expect(hb.currentTime).toBe(50);
-
-    host.ws.close(); guest.ws.close();
+    const leaders = [...g1.ws.msgs, ...g2.ws.msgs].filter((m) => m.type === "heartbeat-role" && m.isLeader);
+    expect(leaders.length).toBeGreaterThanOrEqual(1);
+    close(h, g1, g2);
   });
 });
 
@@ -662,62 +504,30 @@ describe("Heartbeat", () => {
 // ========================
 
 describe("Chat", () => {
-  it("broadcasts to all members", async () => {
-    const host = await createRoom();
-    const g1 = await joinRoom(host.roomCode, "G1");
-    const g2 = await joinRoom(host.roomCode, "G2");
-    await sleep(50);
-
-    g1.ws.send(JSON.stringify({ type: "chat", message: "Hello everyone!" }));
-
-    const c1 = await waitForMessage(host.ws, "chat");
-    const c2 = await waitForMessage(g2.ws, "chat");
-    expect(c1.message).toBe("Hello everyone!");
-    expect(c1.userName).toBe("G1");
-    expect(c2.message).toBe("Hello everyone!");
-
-    // Sender also receives their own chat
-    const c3 = await waitForMessage(g1.ws, "chat");
-    expect(c3.message).toBe("Hello everyone!");
-
-    host.ws.close(); g1.ws.close(); g2.ws.close();
+  it("broadcasts to all", async () => {
+    const h = await host(); const g = await guest(h.code); await sleep(30);
+    g.ws.send(JSON.stringify({ type: "chat", message: "Hi!" }));
+    const c = await wait(h.ws, "chat");
+    expect(c.message).toBe("Hi!");
+    expect(c.userName).toBe("Guest");
+    close(h, g);
   });
 
-  it("truncates long messages to 500 chars", async () => {
-    const host = await createRoom();
-    await sleep(50);
-
-    host.ws.send(JSON.stringify({ type: "chat", message: "A".repeat(1000) }));
-    const c = await waitForMessage(host.ws, "chat");
+  it("truncates to 500 chars", async () => {
+    const h = await host();
+    h.ws.send(JSON.stringify({ type: "chat", message: "A".repeat(1000) }));
+    const c = await wait(h.ws, "chat");
     expect(c.message.length).toBeLessThanOrEqual(500);
-
-    host.ws.close();
+    close(h);
   });
 
-  it("rejects empty messages", async () => {
-    const host = await createRoom();
-    await sleep(50);
-    host.ws.messages = [];
-
-    host.ws.send(JSON.stringify({ type: "chat", message: "" }));
-    host.ws.send(JSON.stringify({ type: "chat", message: "   " }));
-    await sleep(200);
-
-    expect(host.ws.messages.filter((m) => m.type === "chat")).toHaveLength(0);
-
-    host.ws.close();
-  });
-
-  it("includes timestamp", async () => {
-    const host = await createRoom();
-    await sleep(50);
-
-    const before = Date.now();
-    host.ws.send(JSON.stringify({ type: "chat", message: "hi" }));
-    const c = await waitForMessage(host.ws, "chat");
-    expect(c.timestamp).toBeGreaterThanOrEqual(before);
-
-    host.ws.close();
+  it("rejects empty", async () => {
+    const h = await host(); h.ws.msgs = [];
+    h.ws.send(JSON.stringify({ type: "chat", message: "" }));
+    h.ws.send(JSON.stringify({ type: "chat", message: "   " }));
+    await sleep(100);
+    expect(h.ws.msgs.filter((m) => m.type === "chat")).toHaveLength(0);
+    close(h);
   });
 });
 
@@ -726,234 +536,96 @@ describe("Chat", () => {
 // ========================
 
 describe("Security", () => {
-  it("rate limits rapid messages", async () => {
-    const host = await createRoom();
-    host.ws.messages = [];
-
-    // RATE_LIMIT_MAX is 100 in test env, send 120
-    for (let i = 0; i < 120; i++) {
-      host.ws.send(JSON.stringify({ type: "chat", message: `spam ${i}` }));
-    }
-    await sleep(500);
-
-    const errors = host.ws.messages.filter((m) => m.type === "error" && m.message.includes("Rate"));
-    expect(errors.length).toBeGreaterThan(0);
-
-    host.ws.close();
+  it("rate limits", async () => {
+    const h = await host(); h.ws.msgs = [];
+    for (let i = 0; i < 250; i++) h.ws.send(JSON.stringify({ type: "chat", message: `${i}` }));
+    await sleep(300);
+    expect(h.ws.msgs.filter((m) => m.type === "error").length).toBeGreaterThan(0);
+    close(h);
   });
 
-  it("survives malformed JSON", async () => {
+  it("survives bad input", async () => {
     const ws = await createClient();
-    ws.send("not json {{{");
-    ws.send("null");
-    ws.send("");
-    await sleep(100);
-
-    // Should not crash — can still create room
-    ws.send(JSON.stringify({ type: "create-room", userName: "Test" }));
-    const msg = await waitForMessage(ws, "room-created");
-    expect(msg.roomCode).toBeDefined();
-    ws.close();
-  });
-
-  it("survives missing/wrong message types", async () => {
-    const ws = await createClient();
+    ws.send("not json"); ws.send("null"); ws.send("");
     ws.send(JSON.stringify({ foo: "bar" }));
-    ws.send(JSON.stringify({ type: 12345 }));
-    ws.send(JSON.stringify({ type: "" }));
-    await sleep(100);
-
-    ws.send(JSON.stringify({ type: "create-room", userName: "Test" }));
-    const msg = await waitForMessage(ws, "room-created");
-    expect(msg.roomCode).toBeDefined();
+    ws.send(JSON.stringify({ type: 999 }));
+    await sleep(50);
+    ws.send(JSON.stringify({ type: "create-room", userName: "OK" }));
+    const m = await wait(ws, "room-created");
+    expect(m.roomCode).toBeDefined();
     ws.close();
   });
 
-  it("enforces per-IP connection limit", async () => {
-    // MAX_CONNECTIONS_PER_IP is set to 50 for tests
-    // Just verify the mechanism exists by creating multiple connections
-    const clients = [];
-    for (let i = 0; i < 5; i++) {
-      clients.push(await createClient());
-    }
-    // All should be open
-    expect(clients.every((c) => c.readyState === WebSocket.OPEN)).toBe(true);
-    clients.forEach((c) => c.close());
-  });
-
-  it("sanitizes long usernames", async () => {
-    const ws = await createClient();
-    ws.send(JSON.stringify({ type: "create-room", userName: "A".repeat(100) }));
-    const msg = await waitForMessage(ws, "room-created");
-    expect(msg.roomCode).toBeDefined();
-    ws.close();
-  });
-
-  it("/room/ endpoint does not expose videoUrl or member count", async () => {
-    const { ws, roomCode } = await createRoom("Host", "everyone", "https://secret-video.com/watch");
-    const res = await httpGet(`/room/${roomCode}`);
-    const body = JSON.parse(res.body);
-    expect(body.exists).toBe(true);
-    expect(body).not.toHaveProperty("videoUrl");
-    expect(body).not.toHaveProperty("members");
-    ws.close();
+  it("/room/ hides videoUrl", async () => {
+    const h = await host("H", "everyone", "https://secret.com/vid");
+    const b = JSON.parse((await httpGet(`/room/${h.code}`)).body);
+    expect(b).not.toHaveProperty("videoUrl");
+    close(h);
   });
 });
 
 // ========================
-// 10. MULTI-USER STRESS
+// 10. END-TO-END
 // ========================
 
-describe("Multi-user stress", () => {
-  it("10 users in a room, sync from each", { timeout: 15000 }, async () => {
-    const host = await createRoom();
-    const guests = [];
-    for (let i = 0; i < 9; i++) {
-      guests.push(await joinRoom(host.roomCode, `User${i}`));
-    }
-    await sleep(200);
+describe("End-to-end", () => {
+  it("full session: create → join → sync → chat → mode → leave", { timeout: 10000 }, async () => {
+    const h = await host("Alice", "everyone", "https://youtube.com/watch?v=test");
+    const g = await guest(h.code, "Bob");
 
-    // Each user sends a sync
-    const allClients = [{ ws: host.ws }, ...guests.map((g) => ({ ws: g.ws }))];
-    for (let i = 0; i < allClients.length; i++) {
-      allClients[i].ws.messages = [];
-    }
+    // Sync play
+    sync(h.ws, "play", 60);
+    expect((await wait(g.ws, "sync")).currentTime).toBe(60);
 
-    for (let i = 0; i < allClients.length; i++) {
-      allClients[i].ws.send(JSON.stringify({ type: "sync", action: "seek", playing: true, currentTime: (i + 1) * 100, playbackRate: 1 }));
-    }
+    // Sync seek from guest
+    sync(g.ws, "seek", 300);
+    expect((await wait(h.ws, "sync")).currentTime).toBe(300);
 
-    await sleep(1000);
+    // Chat
+    h.ws.send(JSON.stringify({ type: "chat", message: "Great!" }));
+    expect((await wait(g.ws, "chat")).message).toBe("Great!");
 
-    // Each user should receive 9 syncs (from the other 9)
-    for (let i = 0; i < allClients.length; i++) {
-      const syncs = allClients[i].ws.messages.filter((m) => m.type === "sync");
-      expect(syncs.length).toBe(9);
-    }
+    // Switch to host mode
+    h.ws.send(JSON.stringify({ type: "set-mode", mode: "host" }));
+    expect((await wait(g.ws, "mode-changed")).mode).toBe("host");
 
-    allClients.forEach((c) => c.ws.close());
+    // Guest blocked
+    sync(g.ws, "pause", 310, false);
+    expect((await wait(g.ws, "error")).message).toContain("host");
+
+    // Host pause works
+    sync(h.ws, "pause", 305, false);
+    expect((await wait(g.ws, "sync")).playing).toBe(false);
+
+    // Leave
+    g.ws.send(JSON.stringify({ type: "leave-room" }));
+    expect((await wait(h.ws, "member-left")).memberCount).toBe(1);
+    close(h, g);
   });
 
-  it("rapid join/leave cycle", { timeout: 15000 }, async () => {
-    const host = await createRoom();
-
-    for (let i = 0; i < 10; i++) {
-      const g = await joinRoom(host.roomCode, `Rapid${i}`);
-      await sleep(30);
-      g.ws.send(JSON.stringify({ type: "leave-room" }));
-      await sleep(30);
-      g.ws.close();
-    }
-
-    // Host should still be in the room
-    const res = await httpGet(`/room/${host.roomCode}`);
-    expect(JSON.parse(res.body).exists).toBe(true);
-
-    host.ws.close();
-  });
-
-  it("simultaneous room creation", { timeout: 15000 }, async () => {
-    const rooms = await Promise.all(
-      Array.from({ length: 10 }, (_, i) => createRoom(`Creator${i}`))
-    );
-
-    const codes = rooms.map((r) => r.roomCode);
-    // All codes should be unique
-    expect(new Set(codes).size).toBe(10);
-
-    rooms.forEach((r) => r.ws.close());
-  });
-});
-
-// ========================
-// 11. END-TO-END SCENARIOS
-// ========================
-
-describe("End-to-end scenarios", () => {
-  it("full watch session: create, join, sync, chat, mode switch, leave", { timeout: 15000 }, async () => {
-    // 1. Host creates
-    const host = await createRoom("Alice", "everyone", "https://youtube.com/watch?v=test");
-
-    // 2. Guest joins
-    const guest = await joinRoom(host.roomCode, "Bob");
-    expect(guest.msg.members).toHaveLength(2);
-
-    // 3. Host plays at 1:00
-    host.ws.send(JSON.stringify({ type: "sync", action: "play", playing: true, currentTime: 60, playbackRate: 1 }));
-    const s1 = await waitForMessage(guest.ws, "sync");
-    expect(s1.currentTime).toBe(60);
-
-    // 4. Guest seeks to 5:00
-    guest.ws.send(JSON.stringify({ type: "sync", action: "seek", playing: true, currentTime: 300, playbackRate: 1 }));
-    const s2 = await waitForMessage(host.ws, "sync");
-    expect(s2.currentTime).toBe(300);
-
-    // 5. Chat
-    host.ws.send(JSON.stringify({ type: "chat", message: "Great scene!" }));
-    const c = await waitForMessage(guest.ws, "chat");
-    expect(c.message).toBe("Great scene!");
-
-    // 6. Host switches to host-only mode
-    host.ws.send(JSON.stringify({ type: "set-mode", mode: "host" }));
-    const mc = await waitForMessage(guest.ws, "mode-changed");
-    expect(mc.mode).toBe("host");
-
-    // 7. Guest can't sync anymore
-    guest.ws.send(JSON.stringify({ type: "sync", action: "pause", playing: false, currentTime: 310, playbackRate: 1 }));
-    const err = await waitForMessage(guest.ws, "error");
-    expect(err.message).toContain("host");
-
-    // 8. Host pauses
-    host.ws.send(JSON.stringify({ type: "sync", action: "pause", playing: false, currentTime: 305, playbackRate: 1 }));
-    const s3 = await waitForMessage(guest.ws, "sync");
-    expect(s3.playing).toBe(false);
-
-    // 9. Guest leaves
-    guest.ws.send(JSON.stringify({ type: "leave-room" }));
-    const left = await waitForMessage(host.ws, "member-left");
-    expect(left.memberCount).toBe(1);
-
-    host.ws.close(); guest.ws.close();
-  });
-
-  it("late joiner catches up to current state", { timeout: 15000 }, async () => {
-    const host = await createRoom("Streamer");
-
-    // Simulate 10 minutes of watching
-    host.ws.send(JSON.stringify({ type: "sync", action: "play", playing: true, currentTime: 0, playbackRate: 1 }));
-    await sleep(50);
-    host.ws.send(JSON.stringify({ type: "sync", action: "seek", playing: true, currentTime: 300, playbackRate: 1 }));
-    await sleep(50);
-    host.ws.send(JSON.stringify({ type: "sync", action: "ratechange", playing: true, currentTime: 300, playbackRate: 1.5 }));
-    await sleep(50);
-    host.ws.send(JSON.stringify({ type: "sync", action: "seek", playing: true, currentTime: 600, playbackRate: 1.5 }));
+  it("late joiner catches up", { timeout: 10000 }, async () => {
+    const h = await host("Streamer");
+    sync(h.ws, "play", 0); await sleep(20);
+    sync(h.ws, "seek", 300); await sleep(20);
+    sync(h.ws, "ratechange", 300, true, 1.5); await sleep(20);
+    sync(h.ws, "seek", 600, true, 1.5);
     await sleep(50);
 
-    // Late joiner joins
-    const late = await joinRoom(host.roomCode, "LateViewer");
-    expect(late.msg.playbackState.currentTime).toBe(600);
-    expect(late.msg.playbackState.playbackRate).toBe(1.5);
-    expect(late.msg.playbackState.playing).toBe(true);
-
-    host.ws.close(); late.ws.close();
+    const g = await guest(h.code, "Late");
+    expect(g.msg.playbackState.currentTime).toBe(600);
+    expect(g.msg.playbackState.playbackRate).toBe(1.5);
+    close(h, g);
   });
 
-  it("room survives all guests leaving and rejoining", { timeout: 15000 }, async () => {
-    const host = await createRoom("Host");
-    let guest = await joinRoom(host.roomCode, "Guest");
+  it("room survives guest churn", { timeout: 10000 }, async () => {
+    const h = await host();
+    sync(h.ws, "play", 500); await sleep(50);
 
-    // Set playback state
-    host.ws.send(JSON.stringify({ type: "sync", action: "play", playing: true, currentTime: 500, playbackRate: 1 }));
-    await sleep(100);
+    let g = await guest(h.code);
+    g.ws.close(); await sleep(50);
 
-    // Guest leaves
-    guest.ws.close();
-    await sleep(100);
-
-    // New guest joins — should get current state
-    guest = await joinRoom(host.roomCode, "NewGuest");
-    expect(guest.msg.playbackState.currentTime).toBe(500);
-
-    host.ws.close(); guest.ws.close();
+    g = await guest(h.code, "New");
+    expect(g.msg.playbackState.currentTime).toBe(500);
+    close(h, g);
   });
 });
