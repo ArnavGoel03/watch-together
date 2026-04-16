@@ -5,9 +5,13 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "node server.js",
+    "test": "vitest run"
   },
   "dependencies": {
     "ws": "^8.16.0"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.4"
   }
 }
