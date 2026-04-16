@@ -5,7 +5,7 @@ const { WebSocketServer } = require("ws");
 const PORT = process.env.PORT || 3000;
 const MAX_ROOM_MEMBERS = parseInt(process.env.MAX_ROOM_MEMBERS) || 50;
 const MAX_ROOMS = parseInt(process.env.MAX_ROOMS) || 10000;
-const ROOM_TTL_MS = parseInt(process.env.ROOM_TTL_HOURS) * 3600000 || 12 * 3600000; // 12h default
+const ROOM_TTL_MS = (parseInt(process.env.ROOM_TTL_HOURS, 10) || 12) * 3600000; // 12h default
 const ROOM_CLEANUP_INTERVAL = 60000; // check every minute
 const WS_PING_INTERVAL = 30000; // ping every 30s to detect dead connections
 const MAX_MESSAGE_SIZE = 4096; // bytes
@@ -39,7 +39,11 @@ function generateUserId() {
 
 function sanitize(str, maxLen) {
   if (typeof str !== "string") return "";
-  return str.replace(/[<>&"']/g, "").substring(0, maxLen).trim();
+  return str.substring(0, maxLen).trim();
+}
+
+function escapeHtml(str) {
+  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
 function broadcastToRoom(roomCode, message, excludeWs = null) {
@@ -179,19 +183,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  if (req.url === "/stats") {
-    const roomStats = [];
-    for (const [code, room] of rooms) {
-      roomStats.push({
-        code,
-        members: room.members.size,
-        ageMinutes: Math.floor((Date.now() - room.createdAt) / 60000),
-      });
-    }
-    res.writeHead(200, headers);
-    res.end(JSON.stringify({ rooms: roomStats }));
-    return;
-  }
+
 
   if (req.url.startsWith("/room/")) {
     const code = req.url.split("/room/")[1]?.split("?")[0]?.toUpperCase();
@@ -219,8 +211,9 @@ const server = http.createServer((req, res) => {
     // Prefer room's stored URL, fall back to query param
     const videoUrl = (room && room.videoUrl) ? room.videoUrl : (params.get("url") || "");
 
-    const safeVideoUrl = videoUrl.replace(/"/g, '&quot;').replace(/</g, '&lt;');
-    const jsVideoUrl = videoUrl.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/</g, '\\u003c');
+    const safeCode = escapeHtml(code);
+    const safeVideoUrl = escapeHtml(videoUrl);
+    const jsVideoUrl = videoUrl.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/'/g, "\\'").replace(/`/g, '\\`').replace(/</g, '\\u003c');
 
     res.writeHead(200, { "Content-Type": "text/html" });
     res.end(`<!DOCTYPE html>
@@ -228,9 +221,9 @@ const server = http.createServer((req, res) => {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Join Watch Together — ${code}</title>
+  <title>Join Watch Together — ${safeCode}</title>
   <meta name="description" content="Watch together in real-time with friends">
-  <meta property="og:title" content="Watch Together — join room ${code}">
+  <meta property="og:title" content="Watch Together — join room ${safeCode}">
   <meta property="og:description" content="${memberCount > 0 ? memberCount + " watching now. " : ""}Join and watch in sync!">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -247,7 +240,6 @@ const server = http.createServer((req, res) => {
     .btn:active { transform: scale(0.98); }
     .btn-secondary { background: rgba(120,120,128,0.24); color: #fff; }
     .btn-secondary:hover { background: rgba(120,120,128,0.36); }
-    .code-copy { font-size: 13px; color: rgba(235,235,245,0.4); margin-top: 20px; }
     .code-copy { font-size: 13px; color: rgba(235,235,245,0.4); margin-top: 16px; }
     .code-copy span { color: #a78bfa; font-weight: 600; cursor: pointer; }
     .code-copy span:hover { text-decoration: underline; }
@@ -261,18 +253,18 @@ const server = http.createServer((req, res) => {
   <div class="card">
     <h1>Watch Together</h1>
     <p class="subtitle">You've been invited to watch together</p>
-    <div class="room-code">${code}</div>
+    <div class="room-code">${safeCode}</div>
     <div class="status ${roomExists ? "live" : "waiting"}">${roomExists ? memberCount + " watching now" : "Waiting for host"}</div>
 
     ${videoUrl ? `<a href="${safeVideoUrl}" id="joinBtn" class="btn">Open Video &amp; Watch Together</a>` : ""}
     <button id="copyBtn" class="btn ${videoUrl ? "btn-secondary" : ""}" onclick="copyCode(this)">Copy Room Code</button>
 
-    <p class="code-copy">Room code: <span onclick="copyCode(this)">${code}</span></p>
+    <p class="code-copy">Room code: <span onclick="copyCode(this)">${safeCode}</span></p>
     <p class="hint">Open the extension, paste the code, and you're in sync.<br>Don't have it? <a href="#">Get Watch Together</a></p>
   </div>
 
   <script>
-    const code = "${code}";
+    const code = "${safeCode}";
     const videoUrl = "${jsVideoUrl}";
 
     function copyCode(el) {

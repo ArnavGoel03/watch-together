@@ -303,6 +303,13 @@ header {
   color: var(--label);
 }
 
+.tab-hint {
+  text-align: center;
+  font-size: 12px;
+  color: var(--label-tertiary);
+  margin-top: 8px;
+}
+
 /* === DIVIDER === */
 .divider {
   text-align: center;

@@ -5,6 +5,15 @@ const port = chrome.runtime.connect({ name: "popup" });
 
 let currentRoom = null;
 let members = [];
+let activeTabUrl = "";
+
+// Internal/useless URL patterns
+const BLOCKED_PREFIXES = ["chrome", "about:", "edge:", "moz-extension:", "chrome-extension:", "file:", "brave:"];
+
+function isVideoTab(url) {
+  if (!url) return false;
+  return !BLOCKED_PREFIXES.some((p) => url.startsWith(p));
+}
 
 // Elements
 const viewLanding = $("#view-landing");
@@ -21,17 +30,41 @@ const leaderBadge = $("#leaderBadge");
 const chatMessages = $("#chatMessages");
 const chatInput = $("#chatInput");
 const toastEl = $("#toast");
+const btnCreate = $("#btnCreate");
 
-// Load saved state
+// Load saved state & check active tab
 chrome.storage.local.get(["userName", "serverUrl"], (data) => {
   if (data.userName) userNameInput.value = data.userName;
   if (data.serverUrl) serverUrlInput.value = data.serverUrl;
   port.postMessage({ type: "get-state" });
 });
 
+// Check if current tab is suitable for creating a room
+chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+  activeTabUrl = tabs[0]?.url || "";
+  updateCreateButton();
+});
+
+function updateCreateButton() {
+  const hint = $("#tab-hint");
+  if (isVideoTab(activeTabUrl)) {
+    btnCreate.disabled = false;
+    btnCreate.style.opacity = "1";
+    if (hint) hint.style.display = "none";
+  } else {
+    btnCreate.disabled = true;
+    btnCreate.style.opacity = "0.35";
+    if (hint) hint.style.display = "block";
+  }
+}
+
 // --- Event Listeners ---
 
-$("#btnCreate").addEventListener("click", () => {
+btnCreate.addEventListener("click", () => {
+  if (!isVideoTab(activeTabUrl)) {
+    showToast("Open a video first");
+    return;
+  }
   const name = getUserName();
   if (!name) {
     showToast("Enter your name first");
@@ -40,10 +73,7 @@ $("#btnCreate").addEventListener("click", () => {
     return;
   }
   chrome.storage.local.set({ userName: name });
-  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-    const videoUrl = tabs[0]?.url || "";
-    port.postMessage({ type: "create-room", userName: name, videoUrl });
-  });
+  port.postMessage({ type: "create-room", userName: name, videoUrl: activeTabUrl });
 });
 
 $("#btnJoin").addEventListener("click", joinRoom);
@@ -87,9 +117,7 @@ $("#btnCopyLink").addEventListener("click", () => {
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     const tabUrl = tabs[0]?.url || "";
     const base = `https://watch-together-server-acwi.onrender.com/join/${currentRoom}`;
-    // Include video URL as fallback if it looks like a real page
-    const isUseful = tabUrl && !tabUrl.startsWith("chrome") && !tabUrl.startsWith("about");
-    const link = isUseful ? `${base}?url=${encodeURIComponent(tabUrl)}` : base;
+    const link = isVideoTab(tabUrl) ? `${base}?url=${encodeURIComponent(tabUrl)}` : base;
     navigator.clipboard.writeText(link).then(() => {
       showToast("Share link copied");
       flashButton($("#btnCopyLink"));
@@ -125,8 +153,7 @@ roomCodeInput.addEventListener("input", () => {
 // --- Functions ---
 
 function getUserName() {
-  const name = userNameInput.value.trim();
-  return name || "";
+  return userNameInput.value.trim() || "";
 }
 
 function showView(name) {
@@ -146,7 +173,14 @@ function sendChatMessage() {
 function addChatMessage(name, text, isOwn = false) {
   const div = document.createElement("div");
   div.className = "chat-msg";
-  div.innerHTML = `<span class="name ${isOwn ? "own" : "other"}">${escapeHtml(name)}</span> <span class="text">${escapeHtml(text)}</span>`;
+  const nameSpan = document.createElement("span");
+  nameSpan.className = `name ${isOwn ? "own" : "other"}`;
+  nameSpan.textContent = name;
+  const textSpan = document.createElement("span");
+  textSpan.className = "text";
+  textSpan.textContent = " " + text;
+  div.appendChild(nameSpan);
+  div.appendChild(textSpan);
   chatMessages.appendChild(div);
   chatMessages.scrollTop = chatMessages.scrollHeight;
 
@@ -164,9 +198,13 @@ function addSystemMessage(text) {
 }
 
 function updateMembersList() {
-  membersListEl.innerHTML = members
-    .map((m) => `<span class="member-tag">${escapeHtml(m.userName)}</span>`)
-    .join("");
+  membersListEl.innerHTML = "";
+  members.forEach((m) => {
+    const span = document.createElement("span");
+    span.className = "member-tag";
+    span.textContent = m.userName;
+    membersListEl.appendChild(span);
+  });
   memberCountEl.textContent = members.length;
 }
 
@@ -179,27 +217,21 @@ function showToast(text) {
 
 function shakeElement(el) {
   el.style.animation = "none";
-  el.offsetHeight; // trigger reflow
+  el.offsetHeight;
   el.style.animation = "shake 0.4s ease";
   setTimeout(() => { el.style.animation = ""; }, 400);
 }
 
 function flashButton(btn) {
-  btn.style.borderColor = "var(--success)";
-  btn.style.color = "var(--success)";
+  btn.style.borderColor = "#30d158";
+  btn.style.color = "#30d158";
   setTimeout(() => {
     btn.style.borderColor = "";
     btn.style.color = "";
   }, 1000);
 }
 
-function escapeHtml(str) {
-  const div = document.createElement("div");
-  div.textContent = str;
-  return div.innerHTML;
-}
-
-// Add shake animation
+// Shake animation
 const style = document.createElement("style");
 style.textContent = `@keyframes shake { 0%,100%{transform:translateX(0)} 20%,60%{transform:translateX(-4px)} 40%,80%{transform:translateX(4px)} }`;
 document.head.appendChild(style);

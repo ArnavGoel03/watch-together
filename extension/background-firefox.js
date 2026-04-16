@@ -126,7 +126,7 @@ chrome.runtime.onConnect.addListener((port) => {
       case "create-room":
         connect();
         waitForConnection(() => {
-          sendToServer({ type: "create-room", userName: msg.userName, origin: msg.origin || "" });
+          sendToServer({ type: "create-room", userName: msg.userName, videoUrl: msg.videoUrl || "" });
         });
         break;
 
