@@ -110,9 +110,11 @@
       try {
         port.postMessage(msg);
       } catch {
-        // Restore auto-join code so it retries after reconnect
+        // Re-store pending join so it retries after reconnect
         if (msg.type === "join-room" && msg.roomCode) {
-          pendingAutoJoinCode = msg.roomCode;
+          chrome.storage.local.set({
+            pendingJoin: { roomCode: msg.roomCode, timestamp: Date.now() },
+          });
         }
         connectToBackground();
       }
@@ -312,55 +314,37 @@
 
   observer.observe(document.body, { childList: true, subtree: true });
 
-  // Check for auto-join from share link
-  // Priority 1: window.__wtAutoJoinCode (set by auto-join-extract.js at document_start)
-  // Priority 2: sessionStorage backup
-  // Priority 3: URL params (in case extract script didn't run)
-  let pendingAutoJoinCode = window.__wtAutoJoinCode || null;
+  // --- Auto-join via chrome.storage.local (bulletproof) ---
+  // auto-join-extract.js writes { pendingJoin: { roomCode, timestamp } } to chrome.storage
+  // We read it here, join the room, then clear it.
 
-  if (!pendingAutoJoinCode) {
-    try {
-      const stored = sessionStorage.getItem("__wt_autojoin");
-      if (stored) pendingAutoJoinCode = stored;
-    } catch {}
-  }
+  function checkPendingJoin() {
+    chrome.storage.local.get(["pendingJoin", "userName"], (data) => {
+      if (!data.pendingJoin) return;
+      if (inRoom) return;
 
-  if (!pendingAutoJoinCode) {
-    const params = new URLSearchParams(window.location.search);
-    const code = params.get("wt_room");
-    if (code) {
-      pendingAutoJoinCode = code.toUpperCase();
-      const url = new URL(window.location.href);
-      url.searchParams.delete("wt_room");
-      window.history.replaceState({}, "", url.toString());
-    }
-  }
+      const { roomCode, timestamp } = data.pendingJoin;
 
-  // Clear sources so they don't fire twice
-  window.__wtAutoJoinCode = null;
-  try { sessionStorage.removeItem("__wt_autojoin"); } catch {}
+      // Ignore stale joins (older than 2 minutes)
+      if (Date.now() - timestamp > 120000) {
+        chrome.storage.local.remove("pendingJoin");
+        return;
+      }
 
-  if (pendingAutoJoinCode) {
-    console.log("[WatchTogether] Will auto-join room:", pendingAutoJoinCode);
-  }
+      console.log("[WatchTogether] Found pending join:", roomCode);
 
-  function executeAutoJoin() {
-    if (!pendingAutoJoinCode || inRoom) return;
-    const code = pendingAutoJoinCode;
-    pendingAutoJoinCode = null;
+      // Clear it so other tabs don't also try to join
+      chrome.storage.local.remove("pendingJoin");
 
-    console.log("[WatchTogether] Executing auto-join for room:", code);
-
-    chrome.storage.local.get(["userName"], (data) => {
       const name = data.userName || "User";
-      showNotification(`Joining room ${code}...`);
-      sendMsg({ type: "join-room", roomCode: code, userName: name });
-      console.log("[WatchTogether] Sent join-room message as:", name);
+      showNotification(`Joining room ${roomCode}...`);
+      sendMsg({ type: "join-room", roomCode, userName: name });
+      console.log("[WatchTogether] Sent join-room as:", name);
 
+      // Timeout fallback
       setTimeout(() => {
         if (!inRoom) {
-          console.log("[WatchTogether] Auto-join timed out");
-          showNotification("Join timed out. Enter the code manually in the extension.");
+          showNotification("Join timed out. Enter the code in the extension.");
         }
       }, 20000);
     });
@@ -375,40 +359,22 @@
     if (v) attachVideoListeners(v);
   }, 1000);
 
-  // Execute auto-join after port is connected (retry up to 30 seconds)
-  if (pendingAutoJoinCode) {
-    let joinAttempts = 0;
-    const joinInterval = setInterval(() => {
-      joinAttempts++;
-      if (port && pendingAutoJoinCode) {
-        executeAutoJoin();
-        clearInterval(joinInterval);
-      } else if (joinAttempts > 30 || !pendingAutoJoinCode) {
-        clearInterval(joinInterval);
-        if (!inRoom && pendingAutoJoinCode) {
-          showNotification("Could not auto-join. Open the extension and enter the code.");
-        }
-      }
-    }, 1000);
-  }
+  // Check for pending join — retry until port is ready
+  let joinCheckCount = 0;
+  const joinCheck = setInterval(() => {
+    joinCheckCount++;
+    if (port && !inRoom) {
+      checkPendingJoin();
+    }
+    if (inRoom || joinCheckCount > 30) {
+      clearInterval(joinCheck);
+    }
+  }, 1000);
 
-  // Handle SPA navigation (YouTube uses pushState)
-  const origPushState = history.pushState;
-  history.pushState = function () {
-    origPushState.apply(this, arguments);
-    checkSpaNavigation();
-  };
-  window.addEventListener("popstate", checkSpaNavigation);
-
-  function checkSpaNavigation() {
-    const params = new URLSearchParams(window.location.search);
-    const code = params.get("wt_room");
-    if (code) {
-      pendingAutoJoinCode = code.toUpperCase();
-      const url = new URL(window.location.href);
-      url.searchParams.delete("wt_room");
-      window.history.replaceState({}, "", url.toString());
-      executeAutoJoin();
+  // Also check on storage changes (for SPA navigation)
+  chrome.storage.onChanged.addListener((changes) => {
+    if (changes.pendingJoin && changes.pendingJoin.newValue && !inRoom && port) {
+      checkPendingJoin();
     }
   }
 })();
