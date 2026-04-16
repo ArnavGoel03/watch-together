@@ -6,6 +6,7 @@
 
   const DRIFT_THRESHOLD = 0.5; // seconds — correct if drift exceeds this
   const HEARTBEAT_INTERVAL = 5000; // 5 seconds
+  const HEARTBEAT_COOLDOWN = 2000; // skip heartbeat for 2s after receiving/sending a sync
 
   let port = null;
   let activeVideo = null;
@@ -15,6 +16,7 @@
   let inRoom = false;
   let isHeartbeatLeader = false;
   let pendingPlaybackState = null; // for applying sync after video loads
+  let lastSyncTime = 0; // timestamp of last sync event (sent or received)
 
   // Pick the right adapter for this site
   function getAdapter() {
@@ -96,6 +98,7 @@
             ? "seek"
             : "ratechange";
 
+    lastSyncTime = Date.now();
     sendMsg({
       type: "sync",
       action,
@@ -143,6 +146,7 @@
     }
 
     isSyncing = true;
+    lastSyncTime = Date.now();
 
     // Compensate for network/server delay if timestamp is available
     let targetTime = msg.currentTime;
@@ -183,6 +187,9 @@
       const video = activeVideo || findVideo();
       if (!video || !inRoom) return;
 
+      // Skip heartbeat if a sync event happened recently — prevents overriding other users' actions
+      if (Date.now() - lastSyncTime < HEARTBEAT_COOLDOWN) return;
+
       sendMsg({
         type: "heartbeat",
         playing: !video.paused,
@@ -219,6 +226,8 @@
           break;
 
         case "heartbeat":
+          // Ignore heartbeats if we just sent or received a sync — prevents overriding actions
+          if (Date.now() - lastSyncTime < HEARTBEAT_COOLDOWN) break;
           applySync(msg);
           break;
 
