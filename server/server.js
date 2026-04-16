@@ -194,7 +194,7 @@ const server = http.createServer((req, res) => {
   }
 
   if (req.url.startsWith("/room/")) {
-    const code = req.url.split("/room/")[1]?.toUpperCase();
+    const code = req.url.split("/room/")[1]?.split("?")[0]?.toUpperCase();
     const room = rooms.get(code);
     res.writeHead(200, headers);
     res.end(
@@ -207,8 +207,100 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  res.writeHead(200, { "Content-Type": "text/plain" });
-  res.end("Watch Together Sync Server v1.0");
+  // Shareable join link: /join/CODE?url=ENCODED_VIDEO_URL
+  if (req.url.startsWith("/join/")) {
+    const urlParts = req.url.split("/join/")[1] || "";
+    const [codePart, queryString] = urlParts.split("?");
+    const code = codePart.toUpperCase();
+    const params = new URLSearchParams(queryString || "");
+    const videoUrl = params.get("url") || "";
+    const room = rooms.get(code);
+    const memberCount = room ? room.members.size : 0;
+    const roomExists = !!room;
+
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Join Watch Together Room ${code}</title>
+  <meta name="description" content="Join a Watch Together room and watch videos in sync with friends!">
+  <meta property="og:title" content="Join my Watch Together room!">
+  <meta property="og:description" content="Watch videos together in real-time. Room code: ${code}${memberCount > 0 ? " — " + memberCount + " watching now" : ""}">
+  <meta property="og:type" content="website">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f0f0f; color: #e0e0e0; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+    .card { background: #1a1a1a; border-radius: 16px; padding: 40px; max-width: 420px; width: 90%; text-align: center; box-shadow: 0 8px 32px rgba(0,0,0,0.4); }
+    h1 { font-size: 24px; margin-bottom: 8px; color: #fff; }
+    .subtitle { color: #888; margin-bottom: 24px; font-size: 14px; }
+    .room-code { font-size: 36px; font-weight: 700; color: #6c63ff; letter-spacing: 6px; margin: 16px 0; }
+    .status { font-size: 13px; color: ${roomExists ? "#4caf50" : "#f44336"}; margin-bottom: 24px; }
+    .btn { display: inline-block; padding: 14px 32px; background: #6c63ff; color: #fff; text-decoration: none; border-radius: 8px; font-size: 16px; font-weight: 600; transition: background 0.2s; cursor: pointer; border: none; width: 100%; margin-bottom: 12px; }
+    .btn:hover { background: #5a52d5; }
+    .btn-outline { background: transparent; border: 1px solid #444; color: #ccc; }
+    .btn-outline:hover { background: #2a2a2a; }
+    .steps { text-align: left; margin: 20px 0; padding: 16px; background: #111; border-radius: 8px; font-size: 13px; line-height: 1.8; color: #aaa; }
+    .steps b { color: #fff; }
+    .redirect-msg { color: #4caf50; font-size: 14px; margin-top: 16px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Watch Together</h1>
+    <p class="subtitle">You've been invited to watch together!</p>
+    <div class="room-code">${code}</div>
+    <div class="status">${roomExists ? memberCount + " watching now" : "Waiting for host to start"}</div>
+    ${videoUrl ? `<a href="${videoUrl}" class="btn" id="joinBtn">Open Video & Join Room</a>` : ""}
+    <div class="steps">
+      <b>How to join:</b><br>
+      1. Install the <a href="#" style="color:#6c63ff">Watch Together</a> extension<br>
+      2. ${videoUrl ? 'Click the button above — the video will open' : 'Open the same video as your friend'}<br>
+      3. Click the extension icon → enter code <b>${code}</b><br>
+      4. You're in sync!
+    </div>
+    ${videoUrl ? '<p class="redirect-msg" id="redirectMsg" style="display:none">Opening video...</p>' : ""}
+  </div>
+  <script>
+    const code = "${code}";
+    const videoUrl = "${videoUrl.replace(/"/g, '\\"')}";
+    // Store room code so the extension can auto-join
+    if (videoUrl) {
+      document.getElementById("joinBtn").addEventListener("click", function(e) {
+        // Set a flag in localStorage for the extension to pick up
+        try {
+          localStorage.setItem("watchtogether_autojoin", JSON.stringify({ code: code, url: videoUrl, ts: Date.now() }));
+        } catch(e) {}
+      });
+    }
+  </script>
+</body>
+</html>`);
+    return;
+  }
+
+  res.writeHead(200, { "Content-Type": "text/html" });
+  res.end(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Watch Together</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; background: #0f0f0f; color: #fff; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+    .card { text-align: center; }
+    h1 { font-size: 32px; margin-bottom: 8px; }
+    p { color: #888; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Watch Together</h1>
+    <p>Sync video playback with friends worldwide</p>
+  </div>
+</body>
+</html>`);
 });
 
 // --- WebSocket Server ---

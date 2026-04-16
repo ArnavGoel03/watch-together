@@ -74,9 +74,19 @@ $("#btnCopyCode").addEventListener("click", () => {
 });
 
 $("#btnCopyLink").addEventListener("click", () => {
-  const link = `Join my Watch Together room!\nCode: ${currentRoom}\n\nInstall the extension and enter this code to watch together.`;
-  navigator.clipboard.writeText(link).then(() => {
-    showToast("Shareable link copied!");
+  // Get current tab URL to include in the share link
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    const tabUrl = tabs[0]?.url || "";
+    const serverBase = "https://watch-together-server-acwi.onrender.com";
+    let link;
+    if (tabUrl && !tabUrl.startsWith("chrome://")) {
+      link = `${serverBase}/join/${currentRoom}?url=${encodeURIComponent(tabUrl)}`;
+    } else {
+      link = `${serverBase}/join/${currentRoom}`;
+    }
+    navigator.clipboard.writeText(link).then(() => {
+      showToast("Link copied!");
+    });
   });
 });
 

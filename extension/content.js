@@ -254,6 +254,20 @@
 
   observer.observe(document.body, { childList: true, subtree: true });
 
+  // Check for auto-join from share link (URL contains ?wt_room=CODE)
+  function checkAutoJoin() {
+    const params = new URLSearchParams(window.location.search);
+    const roomCode = params.get("wt_room");
+    if (roomCode && port) {
+      const name = localStorage.getItem("wt_username") || "User";
+      sendMsg({ type: "join-room", roomCode: roomCode.toUpperCase(), userName: name });
+      // Clean the URL param so it doesn't re-join on refresh
+      const url = new URL(window.location.href);
+      url.searchParams.delete("wt_room");
+      window.history.replaceState({}, "", url.toString());
+    }
+  }
+
   // Initialize
   connectToBackground();
 
@@ -262,4 +276,7 @@
     const v = findVideo();
     if (v) attachVideoListeners(v);
   }, 1000);
+
+  // Check for auto-join after a short delay (wait for background connection)
+  setTimeout(checkAutoJoin, 1500);
 })();
