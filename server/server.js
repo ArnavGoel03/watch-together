@@ -202,18 +202,22 @@ const server = http.createServer((req, res) => {
         exists: !!room,
         code,
         members: room ? room.members.size : 0,
+        videoUrl: room ? room.videoUrl : "",
       })
     );
     return;
   }
 
-  // Shareable join link: /join/CODE
+  // Shareable join link: /join/CODE or /join/CODE?url=ENCODED_URL
   if (req.url.startsWith("/join/")) {
-    const code = (req.url.split("/join/")[1] || "").split("?")[0].toUpperCase();
+    const urlParts = (req.url.split("/join/")[1] || "").split("?");
+    const code = urlParts[0].toUpperCase();
+    const params = new URLSearchParams(urlParts[1] || "");
     const room = rooms.get(code);
     const memberCount = room ? room.members.size : 0;
     const roomExists = !!room;
-    const videoUrl = room ? room.videoUrl : "";
+    // Prefer room's stored URL, fall back to query param
+    const videoUrl = (room && room.videoUrl) ? room.videoUrl : (params.get("url") || "");
 
     const safeVideoUrl = videoUrl.replace(/"/g, '&quot;').replace(/</g, '&lt;');
     const jsVideoUrl = videoUrl.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/</g, '\\u003c');
