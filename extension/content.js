@@ -382,5 +382,5 @@
     if (changes.pendingJoin && changes.pendingJoin.newValue && !inRoom && port) {
       checkPendingJoin();
     }
-  }
+  });
 })();
