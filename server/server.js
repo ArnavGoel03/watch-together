@@ -636,4 +636,13 @@ process.on("SIGINT", () => shutdown("SIGINT"));
 server.listen(PORT, () => {
   console.log(`[start] Watch Together server running on port ${PORT}`);
   console.log(`[start] Max rooms: ${MAX_ROOMS}, Max members/room: ${MAX_ROOM_MEMBERS}, Room TTL: ${ROOM_TTL_MS / 3600000}h`);
+
+  // Keep-alive: ping self every 13 minutes to prevent Render free tier from sleeping
+  const KEEP_ALIVE_INTERVAL = 13 * 60 * 1000;
+  setInterval(() => {
+    http.get(`http://localhost:${PORT}/health`, (res) => {
+      res.resume();
+      console.log(`[keep-alive] Pinged at ${new Date().toISOString()}`);
+    }).on("error", () => {});
+  }, KEEP_ALIVE_INTERVAL);
 });
