@@ -302,22 +302,34 @@
   observer.observe(document.body, { childList: true, subtree: true });
 
   // Check for auto-join from share link (URL contains ?wt_room=CODE)
-  function checkAutoJoin() {
+  let pendingAutoJoinCode = null;
+
+  function extractAutoJoinCode() {
     const params = new URLSearchParams(window.location.search);
-    const roomCode = params.get("wt_room");
-    if (!roomCode || !port) return;
-
-    // Get saved name from chrome.storage (not localStorage)
-    chrome.storage.local.get(["userName"], (data) => {
-      const name = data.userName || "User";
-      sendMsg({ type: "join-room", roomCode: roomCode.toUpperCase(), userName: name });
-
-      // Clean the URL param so it doesn't re-join on refresh
+    const code = params.get("wt_room");
+    if (code) {
+      pendingAutoJoinCode = code.toUpperCase();
+      // Clean URL immediately so it doesn't trigger again on SPA navigation
       const url = new URL(window.location.href);
       url.searchParams.delete("wt_room");
       window.history.replaceState({}, "", url.toString());
+    }
+  }
+
+  function executeAutoJoin() {
+    if (!pendingAutoJoinCode) return;
+    const code = pendingAutoJoinCode;
+    pendingAutoJoinCode = null;
+
+    chrome.storage.local.get(["userName"], (data) => {
+      const name = data.userName || "User";
+      showNotification(`Joining room ${code}...`);
+      sendMsg({ type: "join-room", roomCode: code, userName: name });
     });
   }
+
+  // Extract code from URL immediately (before anything can navigate away)
+  extractAutoJoinCode();
 
   // Initialize
   connectToBackground();
@@ -328,16 +340,18 @@
     if (v) attachVideoListeners(v);
   }, 1000);
 
-  // Check for auto-join — retry a few times since video pages load slowly
-  function tryAutoJoin(attempts) {
-    if (attempts <= 0) return;
-    const params = new URLSearchParams(window.location.search);
-    if (!params.get("wt_room")) return;
-    if (port) {
-      checkAutoJoin();
-    } else {
-      setTimeout(() => tryAutoJoin(attempts - 1), 1000);
-    }
+  // Execute auto-join after port is connected (retry up to 30 seconds)
+  if (pendingAutoJoinCode) {
+    let joinAttempts = 0;
+    const joinInterval = setInterval(() => {
+      joinAttempts++;
+      if (port && pendingAutoJoinCode) {
+        executeAutoJoin();
+        clearInterval(joinInterval);
+      } else if (joinAttempts > 30) {
+        clearInterval(joinInterval);
+        showNotification("Could not auto-join. Open the extension and enter the code manually.");
+      }
+    }, 1000);
   }
-  setTimeout(() => tryAutoJoin(5), 1500);
 })();

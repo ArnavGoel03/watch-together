@@ -193,10 +193,12 @@ chrome.runtime.onConnect.addListener((port) => {
   });
 });
 
-function waitForConnection(callback, retries = 15) {
+function waitForConnection(callback, retries = 60) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     callback();
   } else if (retries > 0) {
-    setTimeout(() => waitForConnection(callback, retries - 1), 300);
+    setTimeout(() => waitForConnection(callback, retries - 1), 1000);
+  } else {
+    broadcastToAllTabs({ type: "error", message: "Could not connect to server. Try again." });
   }
 }
