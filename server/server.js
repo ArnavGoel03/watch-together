@@ -244,11 +244,13 @@ const server = http.createServer((req, res) => {
     .btn-secondary { background: rgba(120,120,128,0.24); color: #fff; }
     .btn-secondary:hover { background: rgba(120,120,128,0.36); }
     .code-copy { font-size: 13px; color: rgba(235,235,245,0.4); margin-top: 20px; }
+    .code-copy { font-size: 13px; color: rgba(235,235,245,0.4); margin-top: 16px; }
     .code-copy span { color: #a78bfa; font-weight: 600; cursor: pointer; }
     .code-copy span:hover { text-decoration: underline; }
-    .installed { display: none; }
-    .not-installed { display: none; }
-    .show { display: block; }
+    .hint { font-size: 12px; color: rgba(235,235,245,0.3); margin-top: 20px; line-height: 1.6; }
+    .hint a { color: #a78bfa; text-decoration: none; }
+    .hint a:hover { text-decoration: underline; }
+    .copied { color: #30d158 !important; }
   </style>
 </head>
 <body>
@@ -258,67 +260,37 @@ const server = http.createServer((req, res) => {
     <div class="room-code">${code}</div>
     <div class="status ${roomExists ? "live" : "waiting"}">${roomExists ? memberCount + " watching now" : "Waiting for host"}</div>
 
-    <div id="hasExtension" class="installed">
-      ${videoUrl ? `<a href="${safeVideoUrl}" id="joinBtn" class="btn">Open Video &amp; Watch Together</a>` : `<button onclick="copyCode()" class="btn">Copy Code &amp; Join</button>`}
-    </div>
+    ${videoUrl ? `<a href="${safeVideoUrl}" id="joinBtn" class="btn">Open Video &amp; Watch Together</a>` : ""}
+    <button id="copyBtn" class="btn ${videoUrl ? "btn-secondary" : ""}" onclick="copyCode(this)">Copy Room Code</button>
 
-    <div id="noExtension" class="not-installed">
-      <a href="#" class="btn" id="installBtn">Get Watch Together Extension</a>
-      ${videoUrl ? `<a href="${safeVideoUrl}" class="btn btn-secondary">Open Video</a>` : ""}
-      <p class="code-copy">Then enter code <span onclick="copyCode()">${code}</span></p>
-    </div>
+    <p class="code-copy">Room code: <span onclick="copyCode(this)">${code}</span></p>
+    <p class="hint">Open the extension, paste the code, and you're in sync.<br>Don't have it? <a href="#">Get Watch Together</a></p>
   </div>
 
   <script>
     const code = "${code}";
     const videoUrl = "${jsVideoUrl}";
 
-    // Detect if extension is installed by checking for injected marker
-    let detected = false;
-    function checkExtension() {
-      // The content script sets window.__watchTogetherLoaded
-      // We can also check by trying to send a message
-      if (window.__watchTogetherLoaded) {
-        showInstalled();
-        detected = true;
-      }
-    }
-
-    function showInstalled() {
-      document.getElementById("hasExtension").classList.add("show");
-      document.getElementById("noExtension").classList.remove("show");
-    }
-
-    function showNotInstalled() {
-      document.getElementById("noExtension").classList.add("show");
-      document.getElementById("hasExtension").classList.remove("show");
-    }
-
-    function copyCode() {
+    function copyCode(el) {
       navigator.clipboard.writeText(code).then(function() {
-        var el = event.target;
-        var orig = el.textContent;
         el.textContent = "Copied!";
-        setTimeout(function() { el.textContent = orig; }, 1500);
+        el.classList.add("copied");
+        setTimeout(function() {
+          el.textContent = el.tagName === "BUTTON" ? "Copy Room Code" : code;
+          el.classList.remove("copied");
+        }, 1500);
       });
     }
 
-    // Check immediately and after a delay (content script may load late)
-    checkExtension();
-    setTimeout(function() {
-      if (!detected) checkExtension();
-      if (!detected) showNotInstalled();
-    }, 1000);
-
-    // If extension is installed and there's a video URL, the join button
-    // redirects to the video with the room code for auto-join
+    // If there's a video URL, add room code param for auto-join
     var joinBtn = document.getElementById("joinBtn");
     if (joinBtn && videoUrl) {
-      joinBtn.addEventListener("click", function() {
-        // Add room code as URL param for the extension to pick up
-        var url = new URL(videoUrl);
-        url.searchParams.set("wt_room", code);
-        joinBtn.href = url.toString();
+      joinBtn.addEventListener("click", function(e) {
+        try {
+          var url = new URL(videoUrl);
+          url.searchParams.set("wt_room", code);
+          joinBtn.href = url.toString();
+        } catch(err) {}
       });
     }
   </script>
