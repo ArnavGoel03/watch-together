@@ -7,69 +7,131 @@
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
+  <div class="bg-grid"></div>
+  <div class="glow glow-1"></div>
+  <div class="glow glow-2"></div>
+
   <div class="container">
     <header>
-      <h1>Watch Together</h1>
-      <div id="status" class="status disconnected">Disconnected</div>
+      <div class="logo">
+        <div class="logo-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+            <path d="M8 5.14v14l11-7-11-7z" fill="url(#grad)"/>
+            <defs><linearGradient id="grad" x1="8" y1="5" x2="19" y2="12"><stop stop-color="#a78bfa"/><stop offset="1" stop-color="#6c63ff"/></linearGradient></defs>
+          </svg>
+        </div>
+        <span class="logo-text">Watch Together</span>
+      </div>
+      <div id="status" class="status-pill disconnected">
+        <span class="status-dot"></span>
+        <span id="statusText">Offline</span>
+      </div>
     </header>
 
-    <!-- Landing view -->
+    <!-- Landing View -->
     <div id="view-landing" class="view active">
-      <div class="input-group">
-        <label for="userName">Your Name</label>
-        <input type="text" id="userName" placeholder="Enter your name" maxlength="30">
+      <div class="hero">
+        <p class="hero-text">Watch anything, with anyone, anywhere.</p>
       </div>
 
-      <button id="btnCreate" class="btn btn-primary">Create Room</button>
+      <div class="input-group">
+        <div class="input-wrapper">
+          <input type="text" id="userName" placeholder=" " maxlength="30" autocomplete="off">
+          <label for="userName">Your name</label>
+          <div class="input-highlight"></div>
+        </div>
+      </div>
 
-      <div class="divider"><span>or</span></div>
+      <button id="btnCreate" class="btn btn-glow">
+        <span class="btn-content">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v8m-4-4h8"/></svg>
+          Create Room
+        </span>
+        <div class="btn-shimmer"></div>
+      </button>
+
+      <div class="divider"><span>or join a room</span></div>
 
       <div class="input-group">
-        <label for="roomCode">Room Code</label>
-        <input type="text" id="roomCode" placeholder="e.g. ABC123" maxlength="6" style="text-transform: uppercase">
+        <div class="input-wrapper">
+          <input type="text" id="roomCode" placeholder=" " maxlength="6" style="text-transform: uppercase; letter-spacing: 4px; font-weight: 600;" autocomplete="off">
+          <label for="roomCode">Room code</label>
+          <div class="input-highlight"></div>
+        </div>
       </div>
-      <button id="btnJoin" class="btn btn-secondary">Join Room</button>
+
+      <button id="btnJoin" class="btn btn-glass">
+        <span class="btn-content">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h4a2 2 0 012 2v14a2 2 0 01-2 2h-4m-5-4l5-5-5-5m5 5H3"/></svg>
+          Join Room
+        </span>
+      </button>
 
       <details class="server-config">
-        <summary>Server Settings</summary>
-        <div class="input-group" style="margin-top: 8px;">
-          <label for="serverUrl">Server URL</label>
-          <input type="text" id="serverUrl" placeholder="wss://your-server.com">
-          <button id="btnSaveServer" class="btn btn-small" style="margin-top: 6px;">Save & Reconnect</button>
+        <summary>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v6m0 6v6m-7-3.5l5.2-3m1.6-.9L17 3.5m-14 0l5.2 3m1.6.9L17 16.5"/></svg>
+          Server
+        </summary>
+        <div class="config-body">
+          <div class="input-wrapper small">
+            <input type="text" id="serverUrl" placeholder=" ">
+            <label>Server URL</label>
+          </div>
+          <button id="btnSaveServer" class="btn btn-micro">Save</button>
         </div>
       </details>
     </div>
 
-    <!-- Room view -->
+    <!-- Room View -->
     <div id="view-room" class="view">
-      <div class="room-info">
-        <div class="room-code-display">
-          <span class="label">Room Code</span>
-          <span id="displayRoomCode" class="code"></span>
+      <div class="room-card">
+        <div class="room-header">
+          <span class="room-label">ROOM</span>
+          <div id="displayRoomCode" class="room-code"></div>
+          <div class="room-actions">
+            <button id="btnCopyCode" class="action-btn" title="Copy code">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+              <span>Code</span>
+            </button>
+            <button id="btnCopyLink" class="action-btn" title="Copy link">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>
+              <span>Link</span>
+            </button>
+          </div>
         </div>
-        <div class="room-actions">
-          <button id="btnCopyCode" class="btn-small" title="Copy room code">Copy Code</button>
-          <button id="btnCopyLink" class="btn-small" title="Copy shareable link">Copy Link</button>
+
+        <div class="watchers">
+          <div class="watchers-header">
+            <div class="pulse-ring"></div>
+            <span id="memberCount">1</span> watching
+            <span id="leaderBadge" class="leader-badge" style="display:none">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+              Sync leader
+            </span>
+          </div>
+          <div id="membersList" class="members-list"></div>
         </div>
       </div>
-
-      <div class="members-bar">
-        <span id="memberCount">1</span> watching
-        <span id="leaderBadge" class="leader-badge" style="display:none">You sync others</span>
-      </div>
-
-      <div id="membersList" class="members-list"></div>
 
       <!-- Chat -->
-      <div class="chat-container">
+      <div class="chat-card">
+        <div class="chat-header">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+          Chat
+        </div>
         <div id="chatMessages" class="chat-messages"></div>
         <div class="chat-input-row">
-          <input type="text" id="chatInput" placeholder="Type a message..." maxlength="500">
-          <button id="btnSend" class="btn-send">Send</button>
+          <input type="text" id="chatInput" placeholder="Say something..." maxlength="500">
+          <button id="btnSend" class="send-btn">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+          </button>
         </div>
       </div>
 
-      <button id="btnLeave" class="btn btn-danger">Leave Room</button>
+      <button id="btnLeave" class="btn btn-danger-glass">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4m7 14l5-5-5-5m5 5H9"/></svg>
+        Leave Room
+      </button>
     </div>
 
     <div id="toast" class="toast"></div>

@@ -1,4 +1,4 @@
-// Popup script — room management, chat, server config
+// Popup — Room management, chat, and server config
 
 const $ = (sel) => document.querySelector(sel);
 const port = chrome.runtime.connect({ name: "popup" });
@@ -10,6 +10,7 @@ let members = [];
 const viewLanding = $("#view-landing");
 const viewRoom = $("#view-room");
 const statusEl = $("#status");
+const statusText = $("#statusText");
 const userNameInput = $("#userName");
 const roomCodeInput = $("#roomCode");
 const serverUrlInput = $("#serverUrl");
@@ -32,35 +33,39 @@ chrome.storage.local.get(["userName", "serverUrl"], (data) => {
 
 $("#btnCreate").addEventListener("click", () => {
   const name = getUserName();
-  if (!name || name === "User") {
+  if (!name) {
     showToast("Enter your name first");
     userNameInput.focus();
+    shakeElement(userNameInput.parentElement);
     return;
   }
   chrome.storage.local.set({ userName: name });
-  // Get current tab URL to store with the room
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     const videoUrl = tabs[0]?.url || "";
     port.postMessage({ type: "create-room", userName: name, videoUrl });
   });
 });
 
-$("#btnJoin").addEventListener("click", () => {
+$("#btnJoin").addEventListener("click", joinRoom);
+
+function joinRoom() {
   const code = roomCodeInput.value.trim().toUpperCase();
   if (!code || code.length < 4) {
     showToast("Enter a valid room code");
     roomCodeInput.focus();
+    shakeElement(roomCodeInput.parentElement);
     return;
   }
   const name = getUserName();
-  if (!name || name === "User") {
+  if (!name) {
     showToast("Enter your name first");
     userNameInput.focus();
+    shakeElement(userNameInput.parentElement);
     return;
   }
   chrome.storage.local.set({ userName: name });
   port.postMessage({ type: "join-room", roomCode: code, userName: name });
-});
+}
 
 $("#btnLeave").addEventListener("click", () => {
   port.postMessage({ type: "leave-room" });
@@ -73,14 +78,16 @@ $("#btnLeave").addEventListener("click", () => {
 
 $("#btnCopyCode").addEventListener("click", () => {
   navigator.clipboard.writeText(currentRoom).then(() => {
-    showToast("Room code copied!");
+    showToast("Room code copied");
+    flashButton($("#btnCopyCode"));
   });
 });
 
 $("#btnCopyLink").addEventListener("click", () => {
   const link = `https://watch-together-server-acwi.onrender.com/join/${currentRoom}`;
   navigator.clipboard.writeText(link).then(() => {
-    showToast("Link copied!");
+    showToast("Share link copied");
+    flashButton($("#btnCopyLink"));
   });
 });
 
@@ -91,21 +98,29 @@ $("#btnSaveServer").addEventListener("click", () => {
     return;
   }
   port.postMessage({ type: "set-server-url", url });
-  showToast("Server updated — reconnecting...");
+  showToast("Server updated");
 });
 
 $("#btnSend").addEventListener("click", sendChatMessage);
+
 chatInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter") sendChatMessage();
 });
+
 roomCodeInput.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") $("#btnJoin").click();
+  if (e.key === "Enter") joinRoom();
+});
+
+// Auto-format room code input
+roomCodeInput.addEventListener("input", () => {
+  roomCodeInput.value = roomCodeInput.value.toUpperCase().replace(/[^A-Z0-9]/g, "");
 });
 
 // --- Functions ---
 
 function getUserName() {
-  return userNameInput.value.trim() || "User";
+  const name = userNameInput.value.trim();
+  return name || "";
 }
 
 function showView(name) {
@@ -125,11 +140,10 @@ function sendChatMessage() {
 function addChatMessage(name, text, isOwn = false) {
   const div = document.createElement("div");
   div.className = "chat-msg";
-  div.innerHTML = `<span class="name" style="${isOwn ? "color: #4caf50" : ""}">${escapeHtml(name)}</span>: <span class="text">${escapeHtml(text)}</span>`;
+  div.innerHTML = `<span class="name ${isOwn ? "own" : "other"}">${escapeHtml(name)}</span> <span class="text">${escapeHtml(text)}</span>`;
   chatMessages.appendChild(div);
   chatMessages.scrollTop = chatMessages.scrollHeight;
 
-  // Keep max 200 messages in DOM
   while (chatMessages.children.length > 200) {
     chatMessages.removeChild(chatMessages.firstChild);
   }
@@ -153,7 +167,24 @@ function updateMembersList() {
 function showToast(text) {
   toastEl.textContent = text;
   toastEl.classList.add("show");
-  setTimeout(() => toastEl.classList.remove("show"), 2500);
+  clearTimeout(toastEl._timer);
+  toastEl._timer = setTimeout(() => toastEl.classList.remove("show"), 2500);
+}
+
+function shakeElement(el) {
+  el.style.animation = "none";
+  el.offsetHeight; // trigger reflow
+  el.style.animation = "shake 0.4s ease";
+  setTimeout(() => { el.style.animation = ""; }, 400);
+}
+
+function flashButton(btn) {
+  btn.style.borderColor = "var(--success)";
+  btn.style.color = "var(--success)";
+  setTimeout(() => {
+    btn.style.borderColor = "";
+    btn.style.color = "";
+  }, 1000);
 }
 
 function escapeHtml(str) {
@@ -162,13 +193,17 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
+// Add shake animation
+const style = document.createElement("style");
+style.textContent = `@keyframes shake { 0%,100%{transform:translateX(0)} 20%,60%{transform:translateX(-4px)} 40%,80%{transform:translateX(4px)} }`;
+document.head.appendChild(style);
+
 // --- Messages from background ---
 
 port.onMessage.addListener((msg) => {
   switch (msg.type) {
     case "state":
-      statusEl.textContent = msg.connected ? "Connected" : "Disconnected";
-      statusEl.className = `status ${msg.connected ? "connected" : "disconnected"}`;
+      updateConnectionStatus(msg.connected);
       if (msg.serverUrl) serverUrlInput.value = msg.serverUrl;
       if (msg.currentRoom) {
         currentRoom = msg.currentRoom;
@@ -176,13 +211,12 @@ port.onMessage.addListener((msg) => {
         showView("room");
       }
       if (msg.isHeartbeatLeader) {
-        leaderBadge.style.display = "inline";
+        leaderBadge.style.display = "inline-flex";
       }
       break;
 
     case "connection-status":
-      statusEl.textContent = msg.connected ? "Connected" : "Disconnected";
-      statusEl.className = `status ${msg.connected ? "connected" : "disconnected"}`;
+      updateConnectionStatus(msg.connected);
       break;
 
     case "room-created":
@@ -191,8 +225,8 @@ port.onMessage.addListener((msg) => {
       members = [{ id: msg.userId, userName: getUserName() }];
       updateMembersList();
       showView("room");
-      addSystemMessage(`Room created: ${msg.roomCode}`);
-      showToast("Room created!");
+      addSystemMessage("Room created");
+      showToast("Room created — share the code!");
       break;
 
     case "room-joined":
@@ -201,23 +235,23 @@ port.onMessage.addListener((msg) => {
       members = msg.members || [];
       updateMembersList();
       showView("room");
-      addSystemMessage(`Joined room with ${members.length} member(s)`);
+      addSystemMessage(`Joined with ${members.length} watching`);
       break;
 
     case "member-joined":
       members.push({ id: msg.userId, userName: msg.userName });
       updateMembersList();
-      addSystemMessage(`${msg.userName} joined (${msg.memberCount} watching)`);
+      addSystemMessage(`${msg.userName} joined`);
       break;
 
     case "member-left":
       members = members.filter((m) => m.id !== msg.userId);
       updateMembersList();
-      addSystemMessage(`${msg.userName} left (${msg.memberCount} watching)`);
+      addSystemMessage(`${msg.userName} left`);
       break;
 
     case "heartbeat-role":
-      leaderBadge.style.display = msg.isLeader ? "inline" : "none";
+      leaderBadge.style.display = msg.isLeader ? "inline-flex" : "none";
       break;
 
     case "chat":
@@ -229,3 +263,8 @@ port.onMessage.addListener((msg) => {
       break;
   }
 });
+
+function updateConnectionStatus(connected) {
+  statusEl.className = `status-pill ${connected ? "connected" : "disconnected"}`;
+  statusText.textContent = connected ? "Live" : "Offline";
+}
