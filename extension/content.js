@@ -14,6 +14,7 @@
   let heartbeatTimer = null;
   let inRoom = false;
   let isHeartbeatLeader = false;
+  let pendingPlaybackState = null; // for applying sync after video loads
 
   // Pick the right adapter for this site
   function getAdapter() {
@@ -55,6 +56,12 @@
     events.forEach((event) => {
       video.addEventListener(event, onVideoEvent);
     });
+
+    // If we have a pending playback state, apply it now
+    if (pendingPlaybackState) {
+      applySync(pendingPlaybackState);
+      pendingPlaybackState = null;
+    }
   }
 
   function detachVideoListeners(video) {
@@ -100,16 +107,41 @@
   // Apply sync state from another user
   function applySync(msg) {
     const video = activeVideo || findVideo();
-    if (!video) return;
+    if (!video) {
+      // Video not ready yet — save state and apply when video loads
+      pendingPlaybackState = msg;
+      return;
+    }
     if (!activeVideo) attachVideoListeners(video);
+
+    // Wait for video to have metadata before seeking
+    if (!video.duration || video.readyState < 1) {
+      pendingPlaybackState = msg;
+      video.addEventListener("loadedmetadata", function onMeta() {
+        video.removeEventListener("loadedmetadata", onMeta);
+        applySync(msg);
+      });
+      return;
+    }
 
     isSyncing = true;
 
+    // Compensate for network/server delay if timestamp is available
+    let targetTime = msg.currentTime;
+    if (msg.playing && msg.timestamp) {
+      const elapsedSec = (Date.now() - msg.timestamp) / 1000;
+      targetTime += elapsedSec * (msg.playbackRate || 1);
+      // Don't seek past end
+      if (video.duration && targetTime > video.duration) {
+        targetTime = video.duration - 0.5;
+      }
+    }
+
     if (adapter && adapter.applyState) {
-      adapter.applyState(video, msg);
+      adapter.applyState(video, { ...msg, currentTime: targetTime });
     } else {
-      if (Math.abs(video.currentTime - msg.currentTime) > DRIFT_THRESHOLD) {
-        video.currentTime = msg.currentTime;
+      if (Math.abs(video.currentTime - targetTime) > DRIFT_THRESHOLD) {
+        video.currentTime = targetTime;
       }
       if (msg.playbackRate && video.playbackRate !== msg.playbackRate) {
         video.playbackRate = msg.playbackRate;
@@ -133,7 +165,6 @@
       const video = activeVideo || findVideo();
       if (!video || !inRoom) return;
 
-      // Always send — background.js will filter based on leader role
       sendMsg({
         type: "heartbeat",
         playing: !video.paused,
@@ -187,7 +218,7 @@
           );
           // If joining, apply the room's current playback state
           if (msg.type === "room-joined" && msg.playbackState) {
-            setTimeout(() => applySync(msg.playbackState), 500);
+            applySync(msg.playbackState);
           }
           break;
 
@@ -258,14 +289,18 @@
   function checkAutoJoin() {
     const params = new URLSearchParams(window.location.search);
     const roomCode = params.get("wt_room");
-    if (roomCode && port) {
-      const name = localStorage.getItem("wt_username") || "User";
+    if (!roomCode || !port) return;
+
+    // Get saved name from chrome.storage (not localStorage)
+    chrome.storage.local.get(["userName"], (data) => {
+      const name = data.userName || "User";
       sendMsg({ type: "join-room", roomCode: roomCode.toUpperCase(), userName: name });
+
       // Clean the URL param so it doesn't re-join on refresh
       const url = new URL(window.location.href);
       url.searchParams.delete("wt_room");
       window.history.replaceState({}, "", url.toString());
-    }
+    });
   }
 
   // Initialize
@@ -277,6 +312,16 @@
     if (v) attachVideoListeners(v);
   }, 1000);
 
-  // Check for auto-join after a short delay (wait for background connection)
-  setTimeout(checkAutoJoin, 1500);
+  // Check for auto-join — retry a few times since video pages load slowly
+  function tryAutoJoin(attempts) {
+    if (attempts <= 0) return;
+    const params = new URLSearchParams(window.location.search);
+    if (!params.get("wt_room")) return;
+    if (port) {
+      checkAutoJoin();
+    } else {
+      setTimeout(() => tryAutoJoin(attempts - 1), 1000);
+    }
+  }
+  setTimeout(() => tryAutoJoin(5), 1500);
 })();

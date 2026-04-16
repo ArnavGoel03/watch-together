@@ -439,7 +439,10 @@ wss.on("connection", (ws, req) => {
           type: "room-joined",
           roomCode: code,
           userId,
-          playbackState: room.playbackState,
+          playbackState: {
+            ...room.playbackState,
+            timestamp: room.playbackState.lastUpdate,
+          },
           members: Array.from(room.members.entries()).map(([id, m]) => ({
             id,
             userName: m.userName,
