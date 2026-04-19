@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Watch Together - Sync Videos with Friends",
-  "version": "1.0.0",
-  "description": "Watch videos together in real-time. Sync Netflix, YouTube, JioHotstar & any video with friends. Chat included.",
+  "version": "1.0.1",
+  "description": "Sync video playback with friends in real-time. Works on any video site, with shared controls and built-in chat.",
   "permissions": ["storage", "activeTab", "tabs"],
   "host_permissions": ["<all_urls>"],
   "background": {
