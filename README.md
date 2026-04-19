@@ -1,6 +1,9 @@
 # Watch Together
 
-Sync video playback across any number of devices worldwide. Watch Netflix, YouTube, JioHotstar, Disney+, HBO Max, Amazon Prime Video, and any site with an HTML5 video player — together in real time.
+[![Server status](https://img.shields.io/website?url=https%3A%2F%2Fwatch-together-server-acwi.onrender.com%2Fhealth&up_message=up&down_message=down&label=server)](https://watch-together-server-acwi.onrender.com/health)
+[![Latest release](https://img.shields.io/github/v/release/ArnavGoel03/watch-together?label=release)](https://github.com/ArnavGoel03/watch-together/releases/latest)
+
+Sync video playback across any number of devices worldwide. Works on any website with an HTML5 video player — together in real time.
 
 ## How It Works
 
