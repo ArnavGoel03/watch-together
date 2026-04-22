@@ -1,5 +1,7 @@
 # Watch Together
 
+[![CI](https://github.com/ArnavGoel03/watch-together/actions/workflows/ci.yml/badge.svg)](https://github.com/ArnavGoel03/watch-together/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 [![Server status](https://img.shields.io/website?url=https%3A%2F%2Fwatch-together-server-acwi.onrender.com%2Fhealth&up_message=up&down_message=down&label=server)](https://watch-together-server-acwi.onrender.com/health)
 [![Latest release](https://img.shields.io/github/v/release/ArnavGoel03/watch-together?label=release)](https://github.com/ArnavGoel03/watch-together/releases/latest)
 
