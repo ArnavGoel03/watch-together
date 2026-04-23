@@ -1,0 +1,29 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "Watch Together: Real-Time Cross-Site Video Playback Synchronization"
+abstract: >-
+  A browser-extension-based system for synchronizing HTML5 video playback
+  across multiple devices in real time. Works on any website with an HTML5
+  video player — including Netflix, YouTube, JioHotstar, and others — by
+  proxying play, pause, and seek events through a relay server with
+  heartbeat-based drift correction. Includes a synchronized chat channel
+  between participants. The sync server runs on Render and exposes a
+  public health endpoint.
+type: software
+authors:
+  - family-names: Goel
+    given-names: Arnav
+    orcid: "https://orcid.org/0009-0007-6477-6501"
+    affiliation: "University of California, San Diego"
+    email: a2goel@ucsd.edu
+repository-code: "https://github.com/ArnavGoel03/watch-together"
+license: MIT
+keywords:
+  - real-time systems
+  - WebSocket
+  - browser extension
+  - video synchronization
+  - HTML5 video
+  - full-stack
+  - JavaScript
+  - distributed systems
