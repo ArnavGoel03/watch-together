@@ -13,6 +13,9 @@ let reconnectTimer = null;
 let reconnectAttempts = 0;
 let connectedPorts = new Map(); // "tabId:portName" -> port
 let pendingJoin = false;
+let cachedMembers = []; // Latest known room members for serving popup re-opens
+let cachedMode = "everyone";
+let cachedIsHost = false;
 
 // Restore state from storage (survives MV3 service worker restarts)
 chrome.storage.local.get(["serverUrl", "currentRoom", "userId"], (data) => {
@@ -64,6 +67,9 @@ function connect() {
       case "room-created":
         currentRoom = msg.roomCode;
         userId = msg.userId;
+        cachedMembers = [{ id: msg.userId, userName: "" }];
+        cachedMode = msg.mode || "everyone";
+        cachedIsHost = true;
         saveState();
         broadcastToAllTabs(msg);
         break;
@@ -71,7 +77,32 @@ function connect() {
       case "room-joined":
         currentRoom = msg.roomCode;
         userId = msg.userId;
+        cachedMembers = Array.isArray(msg.members) ? msg.members.slice() : [];
+        cachedMode = msg.mode || "everyone";
+        cachedIsHost = !!msg.isHost;
         saveState();
+        broadcastToAllTabs(msg);
+        break;
+
+      case "member-joined":
+        if (!cachedMembers.some((m) => m.id === msg.userId)) {
+          cachedMembers.push({ id: msg.userId, userName: msg.userName });
+        }
+        broadcastToAllTabs(msg);
+        break;
+
+      case "member-left":
+        cachedMembers = cachedMembers.filter((m) => m.id !== msg.userId);
+        broadcastToAllTabs(msg);
+        break;
+
+      case "mode-changed":
+        cachedMode = msg.mode;
+        broadcastToAllTabs(msg);
+        break;
+
+      case "host-transferred":
+        cachedIsHost = !!msg.isHost;
         broadcastToAllTabs(msg);
         break;
 
@@ -92,9 +123,7 @@ function connect() {
         break;
 
       case "chat":
-      case "member-joined":
-      case "member-left":
-      case "mode-changed":
+      case "navigate":
       case "error":
         broadcastToAllTabs(msg);
         break;
@@ -195,6 +224,9 @@ chrome.runtime.onConnect.addListener((port) => {
         currentRoom = null;
         userId = null;
         isHeartbeatLeader = false;
+        cachedMembers = [];
+        cachedMode = "everyone";
+        cachedIsHost = false;
         saveState();
         break;
 
@@ -210,6 +242,10 @@ chrome.runtime.onConnect.addListener((port) => {
         break;
 
       case "chat":
+        sendToServer(msg);
+        break;
+
+      case "navigate":
         sendToServer(msg);
         break;
 
@@ -234,6 +270,9 @@ chrome.runtime.onConnect.addListener((port) => {
           connected: ws && ws.readyState === WebSocket.OPEN,
           isHeartbeatLeader,
           serverUrl,
+          members: cachedMembers,
+          mode: cachedMode,
+          isHost: cachedIsHost,
         });
         break;
     }

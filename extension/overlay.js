@@ -11,6 +11,56 @@
   let currentRoom = null;
   let userName = "";
   let isConnected = false;
+  let memberCount = 1;
+  let pendingEnterSend = false; // true if user pressed Enter during IME composition
+  const inFlight = new Set();
+
+  // Robust clipboard write — must run synchronously inside the click handler
+  // (Chrome rejects clipboard writes outside the user-gesture context).
+  async function safeCopy(text) {
+    if (!text) return false;
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch { /* fall through to execCommand */ }
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.cssText = "position:fixed;top:0;left:0;opacity:0;pointer-events:none;z-index:-1";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+
+  function withInFlight(key, btn, fn) {
+    if (inFlight.has(key)) return;
+    inFlight.add(key);
+    if (btn) btn.disabled = true;
+    Promise.resolve(fn()).finally(() => {
+      inFlight.delete(key);
+      if (btn) btn.disabled = false;
+    });
+  }
+
+  function safePost(msg) {
+    try {
+      if (!port) { connectPort(); return false; }
+      port.postMessage(msg);
+      return true;
+    } catch {
+      port = null;
+      connectPort();
+      return false;
+    }
+  }
 
   // Site-specific selectors for where to inject the button
   const SITE_CONFIGS = {
@@ -141,30 +191,53 @@
     overlayPanel.querySelector("#wt-code").addEventListener("keydown", (e) => {
       if (e.key === "Enter") joinRoom();
     });
-    overlayPanel.querySelector("#wt-copy-code").addEventListener("click", (e) => {
+
+    const copyCodeBtn = overlayPanel.querySelector("#wt-copy-code");
+    copyCodeBtn.addEventListener("click", async (e) => {
       e.stopPropagation();
-      navigator.clipboard.writeText(currentRoom);
-      flashText(e.target, "Copied!");
+      if (!currentRoom) { flashText(copyCodeBtn, "No room"); return; }
+      const ok = await safeCopy(currentRoom);
+      flashText(copyCodeBtn, ok ? "Copied!" : "Failed");
     });
-    overlayPanel.querySelector("#wt-copy-link").addEventListener("click", (e) => {
+
+    const copyLinkBtn = overlayPanel.querySelector("#wt-copy-link");
+    copyLinkBtn.addEventListener("click", async (e) => {
       e.stopPropagation();
-      // Teleparty-style: video URL + room code. No server redirect.
+      if (!currentRoom) { flashText(copyLinkBtn, "No room"); return; }
+      let link;
       try {
         const url = new URL(location.href);
         url.searchParams.set("wt_room", currentRoom);
-        navigator.clipboard.writeText(url.toString());
+        link = url.toString();
       } catch {
-        navigator.clipboard.writeText(`${location.href}${location.href.includes("?") ? "&" : "?"}wt_room=${currentRoom}`);
+        link = `${location.href}${location.href.includes("?") ? "&" : "?"}wt_room=${currentRoom}`;
       }
-      flashText(e.target, "Copied!");
+      const ok = await safeCopy(link);
+      flashText(copyLinkBtn, ok ? "Copied!" : "Failed");
     });
+
     overlayPanel.querySelector("#wt-send").addEventListener("click", (e) => {
       e.stopPropagation();
       sendChat();
     });
-    overlayPanel.querySelector("#wt-chat-input").addEventListener("keydown", (e) => {
+    const chatInputEl = overlayPanel.querySelector("#wt-chat-input");
+    chatInputEl.addEventListener("keydown", (e) => {
       e.stopPropagation();
-      if (e.key === "Enter") sendChat();
+      if (e.key !== "Enter") return;
+      // IME composition guard — emoji picker / IME insertion may keep input value
+      // unfinalized; sending now would lose the typed content. Defer until composition ends.
+      if (e.isComposing || e.keyCode === 229) {
+        pendingEnterSend = true;
+        return;
+      }
+      sendChat();
+    });
+    chatInputEl.addEventListener("compositionend", () => {
+      if (pendingEnterSend) {
+        pendingEnterSend = false;
+        // Wait one tick so input.value reflects the final composed text
+        setTimeout(sendChat, 0);
+      }
     });
     overlayPanel.querySelector("#wt-leave").addEventListener("click", (e) => {
       e.stopPropagation();
@@ -183,6 +256,11 @@
   function togglePanel() {
     createPanel();
     overlayPanel.classList.toggle("wt-visible");
+    // Refresh state from background each time the panel is shown so a stale UI is impossible
+    if (overlayPanel.classList.contains("wt-visible")) {
+      safePost({ type: "get-state" });
+      syncMemberCountDom();
+    }
     // Load saved name
     chrome.storage.local.get(["userName"], (data) => {
       const nameInput = overlayPanel.querySelector("#wt-name");
@@ -190,6 +268,12 @@
         nameInput.value = data.userName;
       }
     });
+  }
+
+  function syncMemberCountDom() {
+    if (!overlayPanel) return;
+    const el = overlayPanel.querySelector("#wt-member-count");
+    if (el) el.textContent = memberCount;
   }
 
   function hidePanel() {
@@ -204,37 +288,55 @@
   }
 
   function createRoom() {
-    const name = overlayPanel.querySelector("#wt-name").value.trim();
-    if (!name) return;
-    userName = name;
-    chrome.storage.local.set({ userName: name });
-    if (port) port.postMessage({ type: "create-room", userName: name, videoUrl: location.href });
+    const nameInput = overlayPanel.querySelector("#wt-name");
+    const btn = overlayPanel.querySelector("#wt-create");
+    const name = nameInput.value.trim();
+    if (!name) { nameInput.focus(); return; }
+    withInFlight("create", btn, () => {
+      userName = name;
+      chrome.storage.local.set({ userName: name });
+      safePost({ type: "create-room", userName: name, videoUrl: location.href });
+      return new Promise((resolve) => setTimeout(resolve, 4000));
+    });
   }
 
   function joinRoom() {
-    const code = overlayPanel.querySelector("#wt-code").value.trim().toUpperCase();
-    const name = overlayPanel.querySelector("#wt-name").value.trim();
-    if (!code || code.length < 4) return;
-    if (!name) return;
-    userName = name;
-    chrome.storage.local.set({ userName: name });
-    if (port) port.postMessage({ type: "join-room", roomCode: code, userName: name });
+    const codeInput = overlayPanel.querySelector("#wt-code");
+    const nameInput = overlayPanel.querySelector("#wt-name");
+    const btn = overlayPanel.querySelector("#wt-join");
+    const code = codeInput.value.trim().toUpperCase();
+    const name = nameInput.value.trim();
+    if (!code || code.length < 4) { codeInput.focus(); return; }
+    if (!name) { nameInput.focus(); return; }
+    withInFlight("join", btn, () => {
+      userName = name;
+      chrome.storage.local.set({ userName: name });
+      safePost({ type: "join-room", roomCode: code, userName: name });
+      return new Promise((resolve) => setTimeout(resolve, 4000));
+    });
   }
 
   function leaveRoom() {
-    if (port) port.postMessage({ type: "leave-room" });
-    inRoom = false;
-    currentRoom = null;
-    showView("landing");
-    overlayPanel.querySelector("#wt-messages").innerHTML = "";
-    updateButtonState();
+    const btn = overlayPanel.querySelector("#wt-leave");
+    withInFlight("leave", btn, () => {
+      safePost({ type: "leave-room" });
+      inRoom = false;
+      currentRoom = null;
+      showView("landing");
+      overlayPanel.querySelector("#wt-messages").innerHTML = "";
+      updateButtonState();
+      return new Promise((resolve) => setTimeout(resolve, 500));
+    });
   }
 
   function sendChat() {
     const input = overlayPanel.querySelector("#wt-chat-input");
     const text = input.value.trim();
     if (!text) return;
-    if (port) port.postMessage({ type: "chat", message: text });
+    if (!safePost({ type: "chat", message: text })) {
+      addSystemMsg("Couldn't send — reconnecting");
+      return;
+    }
     addChatMsg(userName, text, true);
     input.value = "";
   }
@@ -270,9 +372,18 @@
   }
 
   function flashText(el, text) {
-    const orig = el.textContent;
+    if (!el) return;
+    if (el._flashTimer) {
+      clearTimeout(el._flashTimer);
+      if (el._flashOrig != null) el.textContent = el._flashOrig;
+    }
+    el._flashOrig = el.textContent;
     el.textContent = text;
-    setTimeout(() => { el.textContent = orig; }, 1200);
+    el._flashTimer = setTimeout(() => {
+      if (el._flashOrig != null) el.textContent = el._flashOrig;
+      el._flashTimer = null;
+      el._flashOrig = null;
+    }, 1200);
   }
 
   function updateButtonState() {
@@ -300,8 +411,10 @@
         case "room-created":
           currentRoom = msg.roomCode;
           inRoom = true;
+          memberCount = 1;
           if (overlayPanel) {
             overlayPanel.querySelector("#wt-room-code").textContent = msg.roomCode;
+            syncMemberCountDom();
             showView("room");
           }
           updateButtonState();
@@ -311,26 +424,25 @@
         case "room-joined":
           currentRoom = msg.roomCode;
           inRoom = true;
+          memberCount = msg.members?.length || 1;
           if (overlayPanel) {
             overlayPanel.querySelector("#wt-room-code").textContent = msg.roomCode;
-            overlayPanel.querySelector("#wt-member-count").textContent = msg.members?.length || 1;
+            syncMemberCountDom();
             showView("room");
           }
           updateButtonState();
-          addSystemMsg(`Joined with ${msg.members?.length || 1} watching`);
+          addSystemMsg(`Joined with ${memberCount} watching`);
           break;
 
         case "member-joined":
-          if (overlayPanel) {
-            overlayPanel.querySelector("#wt-member-count").textContent = msg.memberCount;
-          }
+          memberCount = typeof msg.memberCount === "number" ? msg.memberCount : memberCount + 1;
+          syncMemberCountDom();
           addSystemMsg(`${msg.userName} joined`);
           break;
 
         case "member-left":
-          if (overlayPanel) {
-            overlayPanel.querySelector("#wt-member-count").textContent = msg.memberCount;
-          }
+          memberCount = typeof msg.memberCount === "number" ? msg.memberCount : Math.max(1, memberCount - 1);
+          syncMemberCountDom();
           addSystemMsg(`${msg.userName} left`);
           break;
 
@@ -372,7 +484,7 @@
       setTimeout(connectPort, 2000);
     });
 
-    port.postMessage({ type: "get-state" });
+    safePost({ type: "get-state" });
   }
 
   // Inject button into video player controls

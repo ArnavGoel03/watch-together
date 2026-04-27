@@ -1,7 +1,73 @@
 // Popup — Room management, chat, and server config
 
 const $ = (sel) => document.querySelector(sel);
-const port = chrome.runtime.connect({ name: "popup" });
+let port = null;
+let inFlight = new Set();
+
+function connectPort() {
+  port = chrome.runtime.connect({ name: "popup" });
+  port.onMessage.addListener(handlePortMessage);
+  port.onDisconnect.addListener(() => {
+    if (chrome.runtime.lastError) { /* noop: SW recycled */ }
+    port = null;
+  });
+}
+
+function safePost(msg) {
+  try {
+    if (!port) connectPort();
+    port.postMessage(msg);
+    return true;
+  } catch {
+    try {
+      connectPort();
+      port.postMessage(msg);
+      return true;
+    } catch {
+      showToast("Connection lost — try again");
+      return false;
+    }
+  }
+}
+
+// Robust clipboard write — async clipboard with execCommand fallback.
+// Must be called synchronously from a user-gesture handler.
+async function safeCopy(text) {
+  if (!text) return false;
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch { /* fall through */ }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    ta.style.top = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+function withInFlight(key, btn, fn) {
+  if (inFlight.has(key)) return;
+  inFlight.add(key);
+  if (btn) btn.disabled = true;
+  Promise.resolve(fn()).finally(() => {
+    inFlight.delete(key);
+    if (btn) btn.disabled = false;
+  });
+}
+
+connectPort();
 
 let currentRoom = null;
 let members = [];
@@ -39,23 +105,29 @@ const btnCreate = $("#btnCreate");
 chrome.storage.local.get(["userName", "serverUrl"], (data) => {
   if (data.userName) userNameInput.value = data.userName;
   if (data.serverUrl) serverUrlInput.value = data.serverUrl;
-  port.postMessage({ type: "connect" });
-  port.postMessage({ type: "get-state" });
+  safePost({ type: "connect" });
+  safePost({ type: "get-state" });
 });
 
 // Keep polling state until we're in a room or give up after 30s
 let statePollCount = 0;
 const statePoll = setInterval(() => {
   statePollCount++;
-  port.postMessage({ type: "get-state" });
+  safePost({ type: "get-state" });
   if (currentRoom || statePollCount > 15) clearInterval(statePoll);
 }, 2000);
 
 // Check if current tab is suitable for creating a room
-chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-  activeTabUrl = tabs[0]?.url || "";
-  updateCreateButton();
-});
+function refreshActiveTabUrl() {
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    activeTabUrl = tabs[0]?.url || "";
+    updateCreateButton();
+  });
+}
+refreshActiveTabUrl();
+// Keep activeTabUrl fresh while popup is open (user may navigate the underlying tab)
+const tabRefreshInterval = setInterval(refreshActiveTabUrl, 1500);
+window.addEventListener("unload", () => clearInterval(tabRefreshInterval));
 
 function updateCreateButton() {
   const hint = $("#tab-hint");
@@ -84,8 +156,12 @@ btnCreate.addEventListener("click", () => {
     shakeElement(userNameInput.parentElement);
     return;
   }
-  chrome.storage.local.set({ userName: name });
-  port.postMessage({ type: "create-room", userName: name, videoUrl: activeTabUrl, mode: selectedMode });
+  withInFlight("create", btnCreate, () => {
+    chrome.storage.local.set({ userName: name });
+    safePost({ type: "create-room", userName: name, videoUrl: activeTabUrl, mode: selectedMode });
+    // Re-enable in 4s if no room-created arrives, so a flake doesn't lock the button
+    return new Promise((resolve) => setTimeout(resolve, 4000));
+  });
 });
 
 // Mode selection buttons
@@ -99,8 +175,12 @@ document.querySelectorAll(".mode-btn").forEach((btn) => {
 
 // Toggle mode in active room (host only)
 $("#btnToggleMode").addEventListener("click", () => {
-  const newMode = currentMode === "everyone" ? "host" : "everyone";
-  port.postMessage({ type: "set-mode", mode: newMode });
+  const btn = $("#btnToggleMode");
+  withInFlight("toggle-mode", btn, () => {
+    const newMode = currentMode === "everyone" ? "host" : "everyone";
+    safePost({ type: "set-mode", mode: newMode });
+    return new Promise((resolve) => setTimeout(resolve, 800));
+  });
 });
 
 $("#btnJoin").addEventListener("click", joinRoom);
@@ -120,47 +200,66 @@ function joinRoom() {
     shakeElement(userNameInput.parentElement);
     return;
   }
-  chrome.storage.local.set({ userName: name });
-  port.postMessage({ type: "join-room", roomCode: code, userName: name });
+  withInFlight("join", $("#btnJoin"), () => {
+    chrome.storage.local.set({ userName: name });
+    safePost({ type: "join-room", roomCode: code, userName: name });
+    return new Promise((resolve) => setTimeout(resolve, 4000));
+  });
 }
 
 $("#btnLeave").addEventListener("click", () => {
-  port.postMessage({ type: "leave-room" });
-  currentRoom = null;
-  members = [];
-  showView("landing");
-  chatMessages.innerHTML = "";
-  membersListEl.innerHTML = "";
+  withInFlight("leave", $("#btnLeave"), () => {
+    safePost({ type: "leave-room" });
+    currentRoom = null;
+    members = [];
+    showView("landing");
+    chatMessages.innerHTML = "";
+    membersListEl.innerHTML = "";
+    return new Promise((resolve) => setTimeout(resolve, 500));
+  });
 });
 
-$("#btnCopyCode").addEventListener("click", () => {
-  navigator.clipboard.writeText(currentRoom).then(() => {
+$("#btnCopyCode").addEventListener("click", async () => {
+  const btn = $("#btnCopyCode");
+  if (!currentRoom) { showToast("No room code yet"); return; }
+  const ok = await safeCopy(currentRoom);
+  if (ok) {
     showToast("Room code copied");
-    flashButton($("#btnCopyCode"));
-  });
+    flashButton(btn);
+  } else {
+    showToast("Couldn't copy — long-press the code to select");
+  }
 });
 
-$("#btnCopyLink").addEventListener("click", () => {
-  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-    const tabUrl = tabs[0]?.url || "";
-    let link;
-    if (isVideoTab(tabUrl)) {
-      // Teleparty-style: just append room code to the video URL
-      try {
-        const url = new URL(tabUrl);
-        url.searchParams.set("wt_room", currentRoom);
-        link = url.toString();
-      } catch {
-        link = `${tabUrl}${tabUrl.includes("?") ? "&" : "?"}wt_room=${currentRoom}`;
-      }
-    } else {
-      link = `https://watch-together-server-acwi.onrender.com/join/${currentRoom}`;
+// Build the share link synchronously from cached state — no async hops
+// before the clipboard write, otherwise Chrome rejects the user-gesture.
+function buildShareLink() {
+  if (!currentRoom) return "";
+  const tabUrl = activeTabUrl || "";
+  if (isVideoTab(tabUrl)) {
+    try {
+      const url = new URL(tabUrl);
+      url.searchParams.set("wt_room", currentRoom);
+      return url.toString();
+    } catch {
+      return `${tabUrl}${tabUrl.includes("?") ? "&" : "?"}wt_room=${currentRoom}`;
     }
-    navigator.clipboard.writeText(link).then(() => {
-      showToast("Share link copied");
-      flashButton($("#btnCopyLink"));
-    });
-  });
+  }
+  return `https://watch-together-server-acwi.onrender.com/join/${currentRoom}`;
+}
+
+$("#btnCopyLink").addEventListener("click", async () => {
+  const btn = $("#btnCopyLink");
+  if (!currentRoom) { showToast("No room yet"); return; }
+  const link = buildShareLink();
+  if (!link) { showToast("Couldn't build share link"); return; }
+  const ok = await safeCopy(link);
+  if (ok) {
+    showToast("Share link copied");
+    flashButton(btn);
+  } else {
+    showToast("Couldn't copy — try Copy Code instead");
+  }
 });
 
 $("#btnSaveServer").addEventListener("click", () => {
@@ -169,14 +268,32 @@ $("#btnSaveServer").addEventListener("click", () => {
     showToast("Enter a server URL");
     return;
   }
-  port.postMessage({ type: "set-server-url", url });
+  // Light validation: must be ws:// or wss://
+  if (!/^wss?:\/\//i.test(url)) {
+    showToast("Server URL must start with ws:// or wss://");
+    return;
+  }
+  safePost({ type: "set-server-url", url });
   showToast("Server updated");
 });
 
 $("#btnSend").addEventListener("click", sendChatMessage);
 
+let pendingChatEnter = false;
 chatInput.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") sendChatMessage();
+  if (e.key !== "Enter") return;
+  // Don't send mid-IME — emoji picker / IME composition won't have committed input.value yet
+  if (e.isComposing || e.keyCode === 229) {
+    pendingChatEnter = true;
+    return;
+  }
+  sendChatMessage();
+});
+chatInput.addEventListener("compositionend", () => {
+  if (pendingChatEnter) {
+    pendingChatEnter = false;
+    setTimeout(sendChatMessage, 0);
+  }
 });
 
 roomCodeInput.addEventListener("keydown", (e) => {
@@ -202,7 +319,7 @@ function showView(name) {
 function sendChatMessage() {
   const text = chatInput.value.trim();
   if (!text) return;
-  port.postMessage({ type: "chat", message: text });
+  if (!safePost({ type: "chat", message: text })) return;
   addChatMessage(getUserName(), text, true);
   chatInput.value = "";
   chatInput.focus();
@@ -277,7 +394,7 @@ document.head.appendChild(style);
 
 // --- Messages from background ---
 
-port.onMessage.addListener((msg) => {
+function handlePortMessage(msg) {
   switch (msg.type) {
     case "state":
       updateConnectionStatus(msg.connected);
@@ -285,6 +402,17 @@ port.onMessage.addListener((msg) => {
       if (msg.currentRoom) {
         currentRoom = msg.currentRoom;
         displayRoomCode.textContent = currentRoom;
+        if (Array.isArray(msg.members) && msg.members.length) {
+          members = msg.members;
+          updateMembersList();
+        }
+        if (typeof msg.mode === "string") {
+          currentMode = msg.mode;
+        }
+        if (typeof msg.isHost === "boolean") {
+          isHost = msg.isHost;
+        }
+        updateModeUI();
         showView("room");
       }
       if (msg.isHeartbeatLeader) {
@@ -351,7 +479,7 @@ port.onMessage.addListener((msg) => {
       showToast(msg.message);
       break;
   }
-});
+}
 
 function updateModeUI() {
   const modeLabel = $("#modeLabel");
