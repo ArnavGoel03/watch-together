@@ -4,9 +4,14 @@
   if (window.__watchTogetherLoaded) return;
   window.__watchTogetherLoaded = true;
 
-  const DRIFT_THRESHOLD = 0.5; // seconds — correct if drift exceeds this
+  const DRIFT_IGNORE = 0.5;       // < this: do nothing
+  const DRIFT_HARD_SEEK = 1.5;    // > this: hard seek
+  const DRIFT_MAX_RATE_DELTA = 0.10; // up to ±10% playbackRate nudge
   const HEARTBEAT_INTERVAL = 5000; // 5 seconds
   const HEARTBEAT_COOLDOWN = 2000; // skip heartbeat for 2s after receiving/sending a sync
+  const FULLSCREEN_GUARD_MS = 1500; // ignore video events for this long after fullscreenchange
+  const NAV_POLL_MS = 1000;        // detect SPA URL changes
+  const SUSPECT_JUMP_GRACE_MS = 1500; // protect against player remount jumping to 0
 
   let port = null;
   let activeVideo = null;
@@ -14,9 +19,39 @@
   let isSyncing = false; // flag to prevent echo loops
   let heartbeatTimer = null;
   let inRoom = false;
+  let currentRoom = null;
   let isHeartbeatLeader = false;
   let pendingPlaybackState = null; // for applying sync after video loads
   let lastSyncTime = 0; // timestamp of last sync event (sent or received)
+  let lastBroadcastTime = 0; // last currentTime we sent — used to detect suspect jumps
+  let lastBroadcastAt = 0;
+  let serverClockOffset = 0; // (server epoch ms) - (local epoch ms), EWMA-smoothed
+  let serverClockSamples = 0;
+  let fullscreenGuardUntil = 0;
+  let activeRateNudge = null;   // { normalRate, restoreTimer }
+  let suppressNextNavigateUntil = 0; // when we just applied a remote nav, don't echo
+
+  function isLiveStream(video) {
+    if (!video) return false;
+    const d = video.duration;
+    return d === Infinity || d === Number.POSITIVE_INFINITY || (typeof d === "number" && d > 1e6);
+  }
+
+  function updateClockOffset(serverTime) {
+    if (typeof serverTime !== "number") return;
+    const sample = serverTime - Date.now();
+    if (serverClockSamples === 0) {
+      serverClockOffset = sample;
+    } else {
+      // EWMA: weight new sample at 15%, fast enough to converge after a few messages
+      serverClockOffset = serverClockOffset * 0.85 + sample * 0.15;
+    }
+    serverClockSamples++;
+  }
+
+  function nowServer() {
+    return Date.now() + serverClockOffset;
+  }
 
   // Pick the right adapter for this site
   function getAdapter() {
@@ -53,6 +88,9 @@
     if (!video || video === activeVideo) return;
     if (activeVideo) detachVideoListeners(activeVideo);
     activeVideo = video;
+    // Reset the suspect-jump guard so a fresh element doesn't trip it before any real time accumulates
+    lastBroadcastTime = 0;
+    lastBroadcastAt = 0;
 
     const events = ["play", "pause", "seeked", "ratechange"];
     events.forEach((event) => {
@@ -74,6 +112,14 @@
     });
   }
 
+  // Fullscreen transitions on YouTube/Netflix often remount the video element,
+  // which fires spurious play/seeked events at currentTime=0. Suppress them.
+  function onFullscreenChange() {
+    fullscreenGuardUntil = Date.now() + FULLSCREEN_GUARD_MS;
+  }
+  document.addEventListener("fullscreenchange", onFullscreenChange, true);
+  document.addEventListener("webkitfullscreenchange", onFullscreenChange, true);
+
   function isAdPlaying() {
     // YouTube
     if (document.querySelector(".ad-showing, .ytp-ad-player-overlay")) return true;
@@ -88,6 +134,10 @@
   function onVideoEvent(e) {
     if (isSyncing || !inRoom || isAdPlaying()) return;
 
+    // Skip events triggered by fullscreen transitions (player often remounts the video,
+    // firing play/seeked at currentTime=0 which would yank everyone else to the start)
+    if (Date.now() < fullscreenGuardUntil) return;
+
     const video = e.target;
     const action =
       e.type === "play"
@@ -98,13 +148,28 @@
             ? "seek"
             : "ratechange";
 
+    // Suspect-jump guard: a fresh seek to ~0 right after we knew the video was much further in
+    // is almost always a player remount, not a real user seek. Drop it.
+    const ct = video.currentTime;
+    if ((action === "seek" || action === "play") && ct < 1.5) {
+      const sinceLast = Date.now() - lastBroadcastAt;
+      if (lastBroadcastTime > 5 && sinceLast < SUSPECT_JUMP_GRACE_MS) return;
+    }
+
+    const live = isLiveStream(video);
+
     lastSyncTime = Date.now();
+    lastBroadcastTime = ct;
+    lastBroadcastAt = Date.now();
+
     sendMsg({
       type: "sync",
       action,
       playing: !video.paused,
-      currentTime: video.currentTime,
+      // Live streams: don't propagate currentTime — DVR offsets differ per viewer.
+      currentTime: live ? 0 : ct,
       playbackRate: video.playbackRate,
+      isLive: live,
     });
   }
 
@@ -124,8 +189,49 @@
     }
   }
 
+  // Cancel any in-flight rate nudge — used when a hard correction overrides it
+  function cancelRateNudge(video) {
+    if (!activeRateNudge) return;
+    if (activeRateNudge.restoreTimer) clearTimeout(activeRateNudge.restoreTimer);
+    if (video && Math.abs(video.playbackRate - activeRateNudge.normalRate) > 0.01) {
+      isSyncing = true;
+      try { video.playbackRate = activeRateNudge.normalRate; } catch {}
+      setTimeout(() => { isSyncing = false; }, 200);
+    }
+    activeRateNudge = null;
+  }
+
+  // Smoothly close drift via playbackRate nudge instead of seeking.
+  // drift > 0 means we're behind (need to speed up).
+  function nudgePlaybackRate(video, drift, normalRate) {
+    const sign = drift > 0 ? 1 : -1;
+    const magnitude = Math.min(DRIFT_MAX_RATE_DELTA, Math.abs(drift) * 0.10);
+    const targetRate = normalRate * (1 + sign * magnitude);
+    const closeMs = (Math.abs(drift) / Math.abs(sign * magnitude * normalRate)) * 1000;
+
+    if (activeRateNudge && activeRateNudge.restoreTimer) {
+      clearTimeout(activeRateNudge.restoreTimer);
+    }
+    activeRateNudge = { normalRate, restoreTimer: null };
+
+    isSyncing = true;
+    try { video.playbackRate = targetRate; } catch {}
+    setTimeout(() => { isSyncing = false; }, 200);
+
+    activeRateNudge.restoreTimer = setTimeout(() => {
+      if (video && Math.abs(video.playbackRate - targetRate) < 0.05) {
+        isSyncing = true;
+        try { video.playbackRate = normalRate; } catch {}
+        setTimeout(() => { isSyncing = false; }, 200);
+      }
+      activeRateNudge = null;
+    }, closeMs);
+  }
+
   // Apply sync state from another user
   function applySync(msg) {
+    if (msg && typeof msg.serverTime === "number") updateClockOffset(msg.serverTime);
+
     const video = activeVideo || findVideo();
     if (!video) {
       pendingPlaybackState = msg;
@@ -145,28 +251,48 @@
       return;
     }
 
+    const live = isLiveStream(video) || !!msg.isLive;
+    const isHeartbeat = msg.type === "heartbeat";
+    const normalRate = msg.playbackRate || 1;
+
     isSyncing = true;
     lastSyncTime = Date.now();
 
-    // Compensate for network/server delay if timestamp is available
+    // Compensate for network/server delay using clock offset (corrects for skewed system clocks)
     let targetTime = msg.currentTime;
-    if (msg.playing && msg.timestamp) {
-      const elapsedSec = (Date.now() - msg.timestamp) / 1000;
-      targetTime += elapsedSec * (msg.playbackRate || 1);
-      // Don't seek past end
-      if (video.duration && targetTime > video.duration) {
+    if (!live && msg.playing && msg.timestamp) {
+      const elapsedSec = (nowServer() - msg.timestamp) / 1000;
+      targetTime += Math.max(0, elapsedSec) * normalRate;
+      if (video.duration && isFinite(video.duration) && targetTime > video.duration) {
         targetTime = video.duration - 0.5;
       }
     }
 
     if (adapter && adapter.applyState) {
+      // Adapter handles its own seeking; pass adjusted state
       adapter.applyState(video, { ...msg, currentTime: targetTime });
     } else {
-      if (Math.abs(video.currentTime - targetTime) > DRIFT_THRESHOLD) {
-        video.currentTime = targetTime;
-      }
-      if (msg.playbackRate && video.playbackRate !== msg.playbackRate) {
-        video.playbackRate = msg.playbackRate;
+      if (live) {
+        // Live: never seek. Just sync play/pause/rate.
+        if (normalRate && Math.abs(video.playbackRate - normalRate) > 0.01) {
+          video.playbackRate = normalRate;
+        }
+      } else {
+        const drift = targetTime - video.currentTime; // + means we're behind
+        const absDrift = Math.abs(drift);
+        if (absDrift < DRIFT_IGNORE) {
+          // tiny — let it ride
+        } else if (isHeartbeat && absDrift < DRIFT_HARD_SEEK) {
+          // smooth correction via playbackRate nudge — no audio glitch
+          nudgePlaybackRate(video, drift, normalRate);
+        } else {
+          // user action OR large drift: hard seek
+          cancelRateNudge(video);
+          video.currentTime = targetTime;
+        }
+        if (normalRate && Math.abs(video.playbackRate - normalRate) > 0.01 && !activeRateNudge) {
+          video.playbackRate = normalRate;
+        }
       }
       if (msg.playing && video.paused) {
         video.play().catch(() => {});
@@ -238,6 +364,8 @@
         case "room-created":
         case "room-joined":
           inRoom = true;
+          currentRoom = msg.roomCode;
+          if (typeof msg.serverTime === "number") updateClockOffset(msg.serverTime);
           adapter = getAdapter();
           console.log(`[WatchTogether] ${msg.type}: ${msg.roomCode}, inRoom=true`);
           const v = findVideo();
@@ -265,6 +393,10 @@
 
         case "member-left":
           showNotification(`${msg.userName} left (${msg.memberCount} watching)`);
+          break;
+
+        case "navigate":
+          applyRemoteNavigate(msg);
           break;
 
         case "error":
@@ -310,6 +442,54 @@
     setTimeout(() => {
       container.style.opacity = "0";
     }, 3000);
+  }
+
+  // --- SPA Navigation detection ---
+  // Detect when the user changes videos within the same site (e.g. YouTube next-up,
+  // Netflix next episode) and broadcast a navigate event so the room stays in sync.
+  let lastKnownUrl = location.href;
+  function checkUrlChange() {
+    if (location.href === lastKnownUrl) return;
+    const oldUrl = lastKnownUrl;
+    lastKnownUrl = location.href;
+    if (!inRoom) return;
+    // If we just received and applied a remote navigate, don't echo it back.
+    if (Date.now() < suppressNextNavigateUntil) return;
+    // Reset state — fresh video, fresh broadcast guard
+    lastBroadcastTime = 0;
+    lastBroadcastAt = 0;
+    cancelRateNudge(activeVideo);
+    activeVideo = null;
+    pendingPlaybackState = null;
+    console.log("[WatchTogether] URL changed:", oldUrl, "→", location.href);
+    sendMsg({ type: "navigate", url: location.href });
+  }
+  setInterval(checkUrlChange, NAV_POLL_MS);
+  window.addEventListener("popstate", () => setTimeout(checkUrlChange, 50));
+
+  // Apply a remote navigate by hard-redirecting the tab. Background preserves the room
+  // membership across page loads, and the new page's content script will resume sync.
+  function applyRemoteNavigate(msg) {
+    if (!msg || !msg.url) return;
+    let target;
+    try {
+      const u = new URL(msg.url);
+      // Append room code so even a fresh content-script context auto-rejoins
+      if (currentRoom) u.searchParams.set("wt_room", currentRoom);
+      target = u.toString();
+    } catch {
+      target = msg.url;
+    }
+    // Avoid a feedback loop: block our own URL-watcher from re-broadcasting after the redirect
+    suppressNextNavigateUntil = Date.now() + 8000;
+    showNotification(`${msg.fromUser || "Someone"} switched videos — joining…`);
+    // Persist a join hint so auto-join picks up if the new page lacks the param
+    if (currentRoom) {
+      chrome.storage.local.set({
+        pendingJoin: { roomCode: currentRoom, timestamp: Date.now() },
+      });
+    }
+    setTimeout(() => { location.href = target; }, 250);
   }
 
   // Watch for dynamically loaded videos (SPA navigation) — debounced
