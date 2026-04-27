@@ -6,9 +6,13 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "test": "vitest run server.test.js",
+    "test": "node --test server.e2e.test.mjs client-logic.test.mjs && vitest run server.test.js",
+    "test:e2e": "node --test server.e2e.test.mjs",
+    "test:logic": "node --test client-logic.test.mjs",
+    "test:node": "node --test server.e2e.test.mjs client-logic.test.mjs",
+    "test:vitest": "vitest run server.test.js",
     "test:browser": "vitest run browser.test.js",
-    "test:all": "vitest run"
+    "test:all": "node --test server.e2e.test.mjs client-logic.test.mjs && vitest run"
   },
   "dependencies": {
     "ws": "^8.16.0"

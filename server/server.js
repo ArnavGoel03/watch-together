@@ -390,6 +390,7 @@ wss.on("connection", (ws, req) => {
           userId,
           mode: room.mode,
           isHost: true,
+          serverTime: Date.now(),
         });
 
         notifyHeartbeatLeader(room);
@@ -425,9 +426,12 @@ wss.on("connection", (ws, req) => {
           userId,
           mode: room.mode,
           isHost: userId === room.hostId,
+          videoUrl: room.videoUrl || "",
+          serverTime: Date.now(),
           playbackState: {
             ...room.playbackState,
             timestamp: room.playbackState.lastUpdate,
+            serverTime: Date.now(),
           },
           members: Array.from(room.members.entries()).map(([id, m]) => ({
             id,
@@ -477,6 +481,7 @@ wss.on("connection", (ws, req) => {
         };
         room.lastActivity = Date.now();
 
+        const now = Date.now();
         broadcastToRoom(
           currentRoom,
           {
@@ -487,7 +492,9 @@ wss.on("connection", (ws, req) => {
             action: sanitize(msg.action || "", 20),
             fromUser: userName,
             fromUserId: userId,
-            timestamp: Date.now(),
+            timestamp: now,
+            serverTime: now,
+            isLive: !!msg.isLive,
           },
           ws
         );
@@ -515,6 +522,7 @@ wss.on("connection", (ws, req) => {
         };
         rm.lastActivity = Date.now();
 
+        const hbNow = Date.now();
         broadcastToRoom(
           currentRoom,
           {
@@ -523,10 +531,41 @@ wss.on("connection", (ws, req) => {
             currentTime: ct,
             playbackRate: pr,
             fromUserId: userId,
-            timestamp: Date.now(),
+            timestamp: hbNow,
+            serverTime: hbNow,
+            isLive: !!msg.isLive,
           },
           ws
         );
+        break;
+      }
+
+      case "navigate": {
+        if (!currentRoom) return;
+        const navRoom = rooms.get(currentRoom);
+        if (!navRoom) return;
+        // In host mode, only host can change videos
+        if (navRoom.mode === "host" && navRoom.hostId !== userId) return;
+        const newUrl = validateUrl(msg.url);
+        if (!newUrl) return;
+        // Ignore if url didn't actually change (avoid noise)
+        if (newUrl === navRoom.videoUrl) return;
+        navRoom.videoUrl = newUrl;
+        // Reset playback state — we're on a different video now
+        navRoom.playbackState = {
+          playing: false,
+          currentTime: 0,
+          playbackRate: 1,
+          lastUpdate: Date.now(),
+        };
+        navRoom.lastActivity = Date.now();
+        broadcastToRoom(currentRoom, {
+          type: "navigate",
+          url: newUrl,
+          fromUser: userName,
+          fromUserId: userId,
+          serverTime: Date.now(),
+        }, ws);
         break;
       }
 
@@ -546,7 +585,8 @@ wss.on("connection", (ws, req) => {
           userName,
           userId,
           timestamp: Date.now(),
-        });
+          serverTime: Date.now(),
+        }, ws);
         break;
       }
 
