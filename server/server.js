@@ -18,6 +18,11 @@ const MAX_VIDEO_URL_LENGTH = 2000;
 // Empty rooms linger for this long so a solo leaver / disconnect can rejoin
 // the same code. Override via env for tests.
 const EMPTY_ROOM_GRACE_MS = parseInt(process.env.EMPTY_ROOM_GRACE_MS, 10) || 60000;
+// Persistent (custom-named) rooms get longer TTLs so friends can keep reusing
+// the same name for days.
+const PERSISTENT_ROOM_TTL_MS = (parseInt(process.env.PERSISTENT_ROOM_TTL_HOURS, 10) || 24 * 30) * 3600000; // 30 days
+const PERSISTENT_ROOM_EMPTY_GRACE_MS = parseInt(process.env.PERSISTENT_EMPTY_GRACE_MS, 10) || 7 * 24 * 3600000; // 7 days
+const CUSTOM_NAME_REGEX = /^[a-zA-Z0-9-]{4,32}$/;
 
 // --- State ---
 const rooms = new Map();
@@ -83,14 +88,15 @@ function cleanupRoom(roomCode) {
   const room = rooms.get(roomCode);
   if (!room || room.members.size > 0) return;
   if (room.emptyDeleteTimer) return; // already scheduled
+  const grace = room.persistent ? PERSISTENT_ROOM_EMPTY_GRACE_MS : EMPTY_ROOM_GRACE_MS;
   room.emptyDeleteTimer = setTimeout(() => {
     const r = rooms.get(roomCode);
     if (r && r.members.size === 0) {
       rooms.delete(roomCode);
-      console.log(`[cleanup] Room ${roomCode} deleted after ${EMPTY_ROOM_GRACE_MS}ms grace. Active rooms: ${rooms.size}`);
+      console.log(`[cleanup] Room ${roomCode} deleted after ${grace}ms grace. Active rooms: ${rooms.size}`);
     }
-  }, EMPTY_ROOM_GRACE_MS);
-  console.log(`[cleanup] Room ${roomCode} empty — deletion scheduled in ${EMPTY_ROOM_GRACE_MS}ms`);
+  }, grace);
+  console.log(`[cleanup] Room ${roomCode} empty — deletion scheduled in ${grace}ms (persistent=${!!room.persistent})`);
 }
 
 // Elect heartbeat leader — the first member in the room.
@@ -155,8 +161,10 @@ setInterval(() => {
       cleaned++;
       continue;
     }
-    // Remove rooms older than TTL regardless
-    if (now - room.lastActivity > ROOM_TTL_MS) {
+    // Remove rooms older than TTL regardless. Persistent (named) rooms get
+    // a much longer ceiling so friends can keep reusing the same name.
+    const ttl = room.persistent ? PERSISTENT_ROOM_TTL_MS : ROOM_TTL_MS;
+    if (now - room.lastActivity > ttl) {
       // Notify remaining members
       broadcastToRoom(code, {
         type: "error",
@@ -373,7 +381,27 @@ wss.on("connection", (ws, req) => {
           return;
         }
 
-        const roomCode = generateRoomCode();
+        // Optional custom room name — makes the room "persistent" with a longer
+        // TTL so friends can keep reusing the same name for days.
+        let roomCode;
+        let persistent = false;
+        if (typeof msg.customName === "string" && msg.customName.trim()) {
+          const raw = msg.customName.trim();
+          if (!CUSTOM_NAME_REGEX.test(raw)) {
+            sendTo(ws, { type: "error", message: "Room name must be 4-32 letters, numbers, or hyphens" });
+            return;
+          }
+          const candidate = raw.toUpperCase();
+          if (rooms.has(candidate)) {
+            sendTo(ws, { type: "error", message: "That room name is taken — try joining instead" });
+            return;
+          }
+          roomCode = candidate;
+          persistent = true;
+        } else {
+          roomCode = generateRoomCode();
+        }
+
         userName = sanitize(msg.userName, MAX_USERNAME_LENGTH) || "User";
 
         const videoUrl = validateUrl(msg.videoUrl);
@@ -385,6 +413,7 @@ wss.on("connection", (ws, req) => {
           code: roomCode,
           hostId: userId,
           mode,
+          persistent,
           members: new Map([[userId, { ws, userName }]]),
           videoUrl,
           playbackState: {
@@ -404,6 +433,7 @@ wss.on("connection", (ws, req) => {
           roomCode,
           userId,
           mode: room.mode,
+          persistent,
           isHost: true,
           serverTime: Date.now(),
         });
@@ -448,6 +478,7 @@ wss.on("connection", (ws, req) => {
           roomCode: code,
           userId,
           mode: room.mode,
+          persistent: !!room.persistent,
           isHost: userId === room.hostId,
           videoUrl: room.videoUrl || "",
           serverTime: Date.now(),
@@ -609,6 +640,34 @@ wss.on("connection", (ws, req) => {
           userId,
           timestamp: Date.now(),
           serverTime: Date.now(),
+        }, ws);
+        break;
+      }
+
+      case "chat-typing": {
+        // Pure relay — no persistence. Tells other clients "{userName} is typing".
+        if (!currentRoom) return;
+        const r = rooms.get(currentRoom);
+        if (!r) return;
+        broadcastToRoom(currentRoom, {
+          type: "chat-typing",
+          userId,
+          userName,
+          isTyping: !!msg.isTyping,
+        }, ws);
+        break;
+      }
+
+      case "cc-state": {
+        // Pure relay — peer's CC toggle so we can show a presence toast.
+        if (!currentRoom) return;
+        const r = rooms.get(currentRoom);
+        if (!r) return;
+        broadcastToRoom(currentRoom, {
+          type: "cc-state",
+          userId,
+          userName,
+          active: !!msg.active,
         }, ws);
         break;
       }

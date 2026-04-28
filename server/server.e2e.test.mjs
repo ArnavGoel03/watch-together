@@ -448,3 +448,93 @@ test("voice-signal: rejects oversize payload (>8KB)", async () => {
   await assertNoMessage(g.ws, "voice-signal", 200);
   closeAll(h, g);
 });
+
+// ====================================================================
+// 7. CHAT-TYPING + CC-STATE — pure relays, exclude sender
+// ====================================================================
+
+test("chat-typing: relays to other members, not to sender", async () => {
+  const h = await host({ name: "A" });
+  const g = await guest(h.code, "B");
+  send(h.ws, { type: "chat-typing", isTyping: true });
+  const m = await waitFor(g.ws, "chat-typing");
+  assert.equal(m.userName, "A");
+  assert.equal(m.isTyping, true);
+  await assertNoMessage(h.ws, "chat-typing", 150);
+  closeAll(h, g);
+});
+
+test("chat-typing: requires being in a room", async () => {
+  const ws = await createClient();
+  send(ws, { type: "chat-typing", isTyping: true });
+  // Should silently noop — not crash, not error
+  await sleep(150);
+  assert.equal(ws.msgs.length, 0);
+  closeAll({ ws });
+});
+
+test("cc-state: relays to other members, not to sender", async () => {
+  const h = await host({ name: "A" });
+  const g = await guest(h.code, "B");
+  send(h.ws, { type: "cc-state", active: true });
+  const m = await waitFor(g.ws, "cc-state");
+  assert.equal(m.userName, "A");
+  assert.equal(m.active, true);
+  await assertNoMessage(h.ws, "cc-state", 150);
+  closeAll(h, g);
+});
+
+// ====================================================================
+// 8. CUSTOM (PERSISTENT) ROOM NAMES
+// ====================================================================
+
+test("custom-name: creates a room with the requested name (uppercase canonical)", async () => {
+  const ws = await createClient();
+  send(ws, { type: "create-room", userName: "A", customName: "yash-and-anshul" });
+  const m = await waitFor(ws, "room-created");
+  assert.equal(m.roomCode, "YASH-AND-ANSHUL");
+  assert.equal(m.persistent, true);
+  closeAll({ ws });
+});
+
+test("custom-name: case-insensitive join (typing in any case finds it)", async () => {
+  const a = await createClient();
+  send(a, { type: "create-room", userName: "A", customName: "MyRoom123" });
+  await waitFor(a, "room-created");
+  const b = await createClient();
+  // Note: server uppercases roomCode on join, so any case works
+  send(b, { type: "join-room", roomCode: "myroom123", userName: "B" });
+  const joined = await waitFor(b, "room-joined");
+  assert.equal(joined.roomCode, "MYROOM123");
+  assert.equal(joined.persistent, true);
+  closeAll({ ws: a }, { ws: b });
+});
+
+test("custom-name: rejects collision", async () => {
+  const a = await createClient();
+  send(a, { type: "create-room", userName: "A", customName: "duplicate-test" });
+  await waitFor(a, "room-created");
+  const b = await createClient();
+  send(b, { type: "create-room", userName: "B", customName: "duplicate-test" });
+  const err = await waitFor(b, "error");
+  assert.match(err.message, /taken/i);
+  closeAll({ ws: a }, { ws: b });
+});
+
+test("custom-name: rejects bad format (special chars, too short, too long)", async () => {
+  const ws = await createClient();
+  for (const bad of ["ab", "this-is-way-too-long-for-a-room-name-ok", "with spaces", "with/slash", "with.dot"]) {
+    send(ws, { type: "create-room", userName: "A", customName: bad });
+    const err = await waitFor(ws, "error");
+    assert.match(err.message, /letters|numbers|hyphens/i, `expected validation error for "${bad}"`);
+  }
+  closeAll({ ws });
+});
+
+test("custom-name: random rooms are NOT persistent", async () => {
+  const ws = await createClient();
+  send(ws, { type: "create-room", userName: "A" });
+  const m = await waitFor(ws, "room-created");
+  assert.equal(m.persistent, false);
+  closeAll({ ws });
+});

@@ -15,7 +15,10 @@ const MAX_USERNAME_LENGTH = 30;
 const MAX_CONNECTIONS_PER_IP = 10;
 const MAX_VIDEO_URL_LENGTH = 2000;
 const EMPTY_ROOM_GRACE_MS = 60000;
+const PERSISTENT_ROOM_TTL_MS = 30 * 24 * 3600000; // 30 days for named rooms
+const PERSISTENT_ROOM_EMPTY_GRACE_MS = 7 * 24 * 3600000; // 7 days
 const MAX_VOICE_SIGNAL_BYTES = 8192;
+const CUSTOM_NAME_REGEX = /^[a-zA-Z0-9-]{4,32}$/;
 
 // ---------- Utilities ----------
 const ROOM_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -201,13 +204,14 @@ export class RoomHubDO {
     const room = this.rooms.get(code);
     if (!room || room.members.size > 0) return;
     if (room.emptyDeleteTimer) return;
+    const grace = room.persistent ? PERSISTENT_ROOM_EMPTY_GRACE_MS : EMPTY_ROOM_GRACE_MS;
     room.emptyDeleteTimer = setTimeout(() => {
       const r = this.rooms.get(code);
       if (r && r.members.size === 0) {
         this.rooms.delete(code);
         this._deleteRoomStorage(code);
       }
-    }, EMPTY_ROOM_GRACE_MS);
+    }, grace);
   }
   _cancelEmptyDelete(code) {
     const room = this.rooms.get(code);
@@ -315,6 +319,8 @@ export class RoomHubDO {
       case "sync": return this._handleSync(ws, meta, msg);
       case "heartbeat": return this._handleHeartbeat(ws, meta, msg);
       case "chat": return this._handleChat(ws, meta, msg);
+      case "chat-typing": return this._handleChatTyping(ws, meta, msg);
+      case "cc-state": return this._handleCcState(ws, meta, msg);
       case "set-mode": return this._handleSetMode(ws, meta, msg);
       case "navigate": return this._handleNavigate(ws, meta, msg);
       case "voice-state": return this._handleVoiceState(ws, meta, msg);
@@ -346,7 +352,26 @@ export class RoomHubDO {
       this._sendTo(ws, { type: "error", message: "Server is at capacity. Try again later." });
       return;
     }
-    const code = generateRoomCode(this.rooms);
+
+    let code;
+    let persistent = false;
+    if (typeof msg.customName === "string" && msg.customName.trim()) {
+      const raw = msg.customName.trim();
+      if (!CUSTOM_NAME_REGEX.test(raw)) {
+        this._sendTo(ws, { type: "error", message: "Room name must be 4-32 letters, numbers, or hyphens" });
+        return;
+      }
+      const candidate = raw.toUpperCase();
+      if (this.rooms.has(candidate)) {
+        this._sendTo(ws, { type: "error", message: "That room name is taken — try joining instead" });
+        return;
+      }
+      code = candidate;
+      persistent = true;
+    } else {
+      code = generateRoomCode(this.rooms);
+    }
+
     const userName = sanitize(msg.userName, MAX_USERNAME_LENGTH) || "User";
     const mode = msg.mode === "host" ? "host" : "everyone";
     const videoUrl = validateUrl(msg.videoUrl);
@@ -355,6 +380,7 @@ export class RoomHubDO {
       code,
       hostId: meta.userId,
       mode,
+      persistent,
       members: new Map([[meta.userId, { ws, userName, voiceActive: false }]]),
       videoUrl,
       playbackState: { playing: false, currentTime: 0, playbackRate: 1, lastUpdate: Date.now() },
@@ -371,6 +397,7 @@ export class RoomHubDO {
       roomCode: code,
       userId: meta.userId,
       mode,
+      persistent,
       isHost: true,
       serverTime: Date.now(),
     });
@@ -402,6 +429,7 @@ export class RoomHubDO {
       roomCode: code,
       userId: meta.userId,
       mode: room.mode,
+      persistent: !!room.persistent,
       isHost: meta.userId === room.hostId,
       videoUrl: room.videoUrl || "",
       serverTime: Date.now(),
@@ -541,6 +569,32 @@ export class RoomHubDO {
       userId: meta.userId,
       timestamp: Date.now(),
       serverTime: Date.now(),
+    }, ws);
+  }
+
+  _handleChatTyping(ws, meta, msg) {
+    const code = meta.currentRoom;
+    if (!code) return;
+    const room = this.rooms.get(code);
+    if (!room) return;
+    this._broadcast(code, {
+      type: "chat-typing",
+      userId: meta.userId,
+      userName: meta.userName,
+      isTyping: !!msg.isTyping,
+    }, ws);
+  }
+
+  _handleCcState(ws, meta, msg) {
+    const code = meta.currentRoom;
+    if (!code) return;
+    const room = this.rooms.get(code);
+    if (!room) return;
+    this._broadcast(code, {
+      type: "cc-state",
+      userId: meta.userId,
+      userName: meta.userName,
+      active: !!msg.active,
     }, ws);
   }
 
