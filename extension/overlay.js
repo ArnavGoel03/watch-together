@@ -27,6 +27,15 @@
   // ---------- Voice mesh state ----------
   // WebRTC peer-to-peer audio. Server only relays SDP/ICE via voice-signal messages.
   const ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
+  // Voice quality modes:
+  //   "media"  — DEFAULT. Echo cancellation OFF. Chrome does NOT switch the tab into the
+  //              "communication" audio category, so the video's audio stays at full volume.
+  //              Trade-off: people on speakers may hear themselves through their friend's mic.
+  //   "voice"  — Echo cancellation ON. Better voice quality on speakers. Chrome ducks the
+  //              video audio, sometimes permanently until the tab is closed (known bug).
+  let voiceQuality = "media";
+  // Default playback volume for peer voices. Lower than 1.0 so voice doesn't drown out video.
+  const PEER_VOLUME = 0.85;
   const voice = {
     active: false,            // we are broadcasting our mic
     localStream: null,        // MediaStream from getUserMedia
@@ -35,6 +44,20 @@
     activePeerIds: new Set(), // userIds of other members currently in voice
     pendingICE: new Map(),    // peerUserId -> [candidates] queued before remoteDescription set
   };
+
+  function micConstraints() {
+    if (voiceQuality === "voice") {
+      return {
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        video: false,
+      };
+    }
+    // "media" — explicitly disable processing so Chrome stays in "playback" audio category
+    return {
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+      video: false,
+    };
+  }
 
   // Robust clipboard write — must run synchronously inside the click handler
   // (Chrome rejects clipboard writes outside the user-gesture context).
@@ -90,14 +113,7 @@
   async function startVoice() {
     if (voice.active) return;
     try {
-      voice.localStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-        video: false,
-      });
+      voice.localStream = await navigator.mediaDevices.getUserMedia(micConstraints());
     } catch (err) {
       addSystemMsg("Mic access denied — enable it in site settings");
       console.warn("[WatchTogether voice] getUserMedia failed:", err);
@@ -122,12 +138,27 @@
   function stopVoice() {
     if (!voice.active && voice.peers.size === 0) return;
     voice.active = false;
+    // 1. Stop and disable every mic track BEFORE dropping the stream reference.
+    //    Belt-and-suspenders so Chrome releases the audio session ASAP.
     if (voice.localStream) {
-      voice.localStream.getTracks().forEach((t) => t.stop());
+      for (const t of voice.localStream.getTracks()) {
+        try { t.enabled = false; } catch {}
+        try { t.stop(); } catch {}
+      }
       voice.localStream = null;
     }
+    // 2. Tear down every peer connection. Remove all event listeners by setting
+    //    null handlers first — defensive against the close path firing late.
     for (const [peerId, pc] of voice.peers) {
-      try { pc.close(); } catch {}
+      try {
+        pc.ontrack = null;
+        pc.onicecandidate = null;
+        pc.onconnectionstatechange = null;
+        for (const sender of pc.getSenders ? pc.getSenders() : []) {
+          if (sender.track) try { sender.track.stop(); } catch {}
+        }
+        pc.close();
+      } catch {}
       removeAudioFor(peerId);
     }
     voice.peers.clear();
@@ -166,6 +197,7 @@
         el = document.createElement("audio");
         el.id = `wt-voice-audio-${peerId}`;
         el.autoplay = true;
+        el.volume = PEER_VOLUME; // keep voice from drowning the show
         el.style.cssText = "position:fixed;width:0;height:0;opacity:0;pointer-events:none";
         document.body.appendChild(el);
         voice.audioEls.set(peerId, el);
@@ -305,12 +337,15 @@
   // ============================================================
 
   function loadHotkeyConfig() {
-    chrome.storage.local.get(["overlayMode", "overlayHotkey"], (data) => {
+    chrome.storage.local.get(["overlayMode", "overlayHotkey", "voiceQuality"], (data) => {
       if (data.overlayMode === "click" || data.overlayMode === "hold") {
         overlayMode = data.overlayMode;
       }
       if (typeof data.overlayHotkey === "string" && data.overlayHotkey) {
         overlayHotkey = data.overlayHotkey;
+      }
+      if (data.voiceQuality === "media" || data.voiceQuality === "voice") {
+        voiceQuality = data.voiceQuality;
       }
     });
   }
@@ -353,6 +388,11 @@
     chrome.storage.onChanged.addListener((changes) => {
       if (changes.overlayMode) overlayMode = changes.overlayMode.newValue || "click";
       if (changes.overlayHotkey) overlayHotkey = changes.overlayHotkey.newValue || HOTKEY_DEFAULT;
+      if (changes.voiceQuality) {
+        voiceQuality = changes.voiceQuality.newValue === "voice" ? "voice" : "media";
+        // If voice is currently active, the new constraint applies on next start.
+        // Don't tear down a live call just because settings changed.
+      }
     });
   }
 

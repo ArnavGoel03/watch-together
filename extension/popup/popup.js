@@ -112,26 +112,40 @@ let activeBackend = "render";
 
 // Load saved state & trigger connection
 chrome.storage.local.get(
-  ["userName", "serverUrl", "overlayMode", "overlayHotkey", "backend", "renderUrl", "cloudflareUrl"],
+  ["userName", "serverUrl", "overlayMode", "overlayHotkey", "backend", "renderUrl", "cloudflareUrl", "voiceQuality"],
   (data) => {
     if (data.userName) userNameInput.value = data.userName;
     backendUrls.render = data.renderUrl || BACKEND_DEFAULTS.render;
     backendUrls.cloudflare = data.cloudflareUrl || "";
     activeBackend = data.backend === "cloudflare" ? "cloudflare" : "render";
-    // serverUrl wins if explicitly set; otherwise derive from active backend
     if (data.serverUrl) {
       serverUrlInput.value = data.serverUrl;
-      // Keep per-backend slot in sync with whatever is loaded
       backendUrls[activeBackend] = data.serverUrl;
     } else {
       serverUrlInput.value = backendUrls[activeBackend];
     }
     applyBackendRadios(activeBackend);
     applyOverlaySettings(data.overlayMode || "click", data.overlayHotkey || "\\");
+    applyVoiceQuality(data.voiceQuality === "voice" ? "voice" : "media");
     safePost({ type: "connect" });
     safePost({ type: "get-state" });
   }
 );
+
+function applyVoiceQuality(q) {
+  document.querySelectorAll('input[name="voiceQuality"]').forEach((r) => {
+    r.checked = r.value === q;
+  });
+}
+
+document.querySelectorAll('input[name="voiceQuality"]').forEach((r) => {
+  r.addEventListener("change", () => {
+    if (!r.checked) return;
+    const q = r.value === "voice" ? "voice" : "media";
+    chrome.storage.local.set({ voiceQuality: q });
+    showToast(q === "voice" ? "High voice quality (may duck media)" : "Media-friendly voice");
+  });
+});
 
 function applyBackendRadios(backend) {
   document.querySelectorAll('input[name="backend"]').forEach((r) => {
