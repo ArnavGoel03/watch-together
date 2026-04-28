@@ -15,6 +15,9 @@ const MAX_CHAT_LENGTH = 500;
 const MAX_USERNAME_LENGTH = 30;
 const MAX_CONNECTIONS_PER_IP = 10;
 const MAX_VIDEO_URL_LENGTH = 2000;
+// Empty rooms linger for this long so a solo leaver / disconnect can rejoin
+// the same code. Override via env for tests.
+const EMPTY_ROOM_GRACE_MS = parseInt(process.env.EMPTY_ROOM_GRACE_MS, 10) || 60000;
 
 // --- State ---
 const rooms = new Map();
@@ -73,12 +76,21 @@ function sendTo(ws, message) {
   }
 }
 
+// When a room becomes empty, schedule deletion after a grace window so a
+// solo leaver / accidental disconnect can rejoin the same code. The timer
+// is canceled by case "join-room" when someone re-enters.
 function cleanupRoom(roomCode) {
   const room = rooms.get(roomCode);
-  if (room && room.members.size === 0) {
-    rooms.delete(roomCode);
-    console.log(`[cleanup] Room ${roomCode} deleted (empty). Active rooms: ${rooms.size}`);
-  }
+  if (!room || room.members.size > 0) return;
+  if (room.emptyDeleteTimer) return; // already scheduled
+  room.emptyDeleteTimer = setTimeout(() => {
+    const r = rooms.get(roomCode);
+    if (r && r.members.size === 0) {
+      rooms.delete(roomCode);
+      console.log(`[cleanup] Room ${roomCode} deleted after ${EMPTY_ROOM_GRACE_MS}ms grace. Active rooms: ${rooms.size}`);
+    }
+  }, EMPTY_ROOM_GRACE_MS);
+  console.log(`[cleanup] Room ${roomCode} empty — deletion scheduled in ${EMPTY_ROOM_GRACE_MS}ms`);
 }
 
 // Elect heartbeat leader — the first member in the room.
@@ -135,8 +147,10 @@ setInterval(() => {
   const now = Date.now();
   let cleaned = 0;
   for (const [code, room] of rooms) {
-    // Remove rooms with no members that are older than 5 minutes
-    if (room.members.size === 0 && now - room.createdAt > 300000) {
+    // Defensive sweep for empty rooms older than 5 minutes that somehow
+    // escaped the grace timer (e.g. timer never set on legacy state).
+    // Only act when no grace timer is pending so we don't undercut it.
+    if (room.members.size === 0 && !room.emptyDeleteTimer && now - room.createdAt > 300000) {
       rooms.delete(code);
       cleaned++;
       continue;
@@ -152,6 +166,7 @@ setInterval(() => {
       for (const member of room.members.values()) {
         member.ws.close(4001, "Room expired");
       }
+      if (room.emptyDeleteTimer) clearTimeout(room.emptyDeleteTimer);
       rooms.delete(code);
       cleaned++;
     }
@@ -413,6 +428,14 @@ wss.on("connection", (ws, req) => {
 
         // Leave current room if in one
         if (currentRoom) leaveCurrentRoom();
+
+        // The room may be in the empty-room grace window — cancel the
+        // pending deletion since someone is rejoining.
+        if (room.emptyDeleteTimer) {
+          clearTimeout(room.emptyDeleteTimer);
+          room.emptyDeleteTimer = null;
+          console.log(`[cleanup] Room ${code} grace deletion canceled — rejoined by ${msg.userName || "User"}`);
+        }
 
         userName = sanitize(msg.userName, MAX_USERNAME_LENGTH) || "User";
         room.members.set(userId, { ws, userName });

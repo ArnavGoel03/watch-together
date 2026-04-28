@@ -72,9 +72,18 @@ function send(ws, payload) { ws.send(JSON.stringify(payload)); }
 function closeAll(...clients) { clients.forEach((c) => (c.ws || c).close()); }
 
 // ---------- lifecycle ----------
+const TEST_GRACE_MS = 300;
 before(async () => {
   serverProcess = fork(join(__dirname, "server.js"), [], {
-    env: { ...process.env, PORT: String(PORT), MAX_CONNECTIONS_PER_IP: "50", RATE_LIMIT_MAX: "500" },
+    env: {
+      ...process.env,
+      PORT: String(PORT),
+      MAX_CONNECTIONS_PER_IP: "50",
+      RATE_LIMIT_MAX: "500",
+      // Short grace so tests can verify both within-grace rejoin and
+      // post-grace expiry without sleeping a real minute.
+      EMPTY_ROOM_GRACE_MS: String(TEST_GRACE_MS),
+    },
     silent: true,
   });
   // Wait for server to be reachable
@@ -280,4 +289,81 @@ test("regression: rate limit still blocks runaway clients", async () => {
   const errs = h.ws.msgs.filter((m) => m.type === "error" && /rate/i.test(m.message || ""));
   assert.ok(errs.length > 0, "expected rate-limit error");
   closeAll(h);
+});
+
+// ====================================================================
+// 5. EMPTY-ROOM GRACE PERIOD
+// ====================================================================
+
+test("grace: solo leaver can rejoin within grace window", async () => {
+  const h = await host({ name: "Solo" });
+  send(h.ws, { type: "leave-room" });
+  await sleep(50); // less than TEST_GRACE_MS (300)
+  // Same code should still be valid
+  const g = await guest(h.code, "Solo");
+  assert.equal(g.msg.roomCode, h.code);
+  closeAll(h, g);
+});
+
+test("grace: room is gone after grace expires", async () => {
+  const h = await host({ name: "Solo" });
+  const code = h.code;
+  send(h.ws, { type: "leave-room" });
+  await sleep(TEST_GRACE_MS + 100); // past grace window
+  // Trying to join same code now must fail
+  const ws = await createClient();
+  ws.send(JSON.stringify({ type: "join-room", roomCode: code, userName: "Late" }));
+  const err = await waitFor(ws, "error");
+  assert.match(err.message, /not found/i);
+  closeAll(h, { ws });
+});
+
+test("grace: solo disconnect (no explicit leave) also has grace", async () => {
+  const h = await host({ name: "Solo" });
+  const code = h.code;
+  h.ws.close();
+  await sleep(50); // less than grace
+  const g = await guest(code, "Reconnect");
+  assert.equal(g.msg.roomCode, code);
+  closeAll(g);
+});
+
+test("grace: stranger can join an empty room within grace (room still discoverable)", async () => {
+  const h = await host({ name: "Solo", videoUrl: "https://youtube.com/watch?v=v1" });
+  const code = h.code;
+  send(h.ws, { type: "leave-room" });
+  await sleep(50);
+  const g = await guest(code, "Stranger");
+  assert.equal(g.msg.roomCode, code);
+  // Original videoUrl preserved across the empty period
+  assert.equal(g.msg.videoUrl, "https://youtube.com/watch?v=v1");
+  closeAll(h, g);
+});
+
+test("grace: rejoining cancels the deletion timer (room survives past grace)", async () => {
+  const h = await host({ name: "Solo" });
+  const code = h.code;
+  send(h.ws, { type: "leave-room" });
+  await sleep(50);
+  const g = await guest(code, "Back");
+  // Now wait past the original grace window — the timer should have been canceled
+  await sleep(TEST_GRACE_MS + 100);
+  // Should still be in room: a sync should still work without error
+  send(g.ws, { type: "sync", action: "play", playing: true, currentTime: 5, playbackRate: 1 });
+  await sleep(100);
+  // Room must still exist — verify by joining a third client
+  const g2 = await guest(code, "Third");
+  assert.equal(g2.msg.roomCode, code);
+  closeAll(h, g, g2);
+});
+
+test("grace: multi-user room — one leaves, no grace timer needed (room non-empty)", async () => {
+  const h = await host();
+  const g1 = await guest(h.code, "G1");
+  send(g1.ws, { type: "leave-room" });
+  await waitFor(h.ws, "member-left");
+  // Room is still occupied by host — should be immediately joinable, no grace involved
+  const g2 = await guest(h.code, "G2");
+  assert.equal(g2.msg.roomCode, h.code);
+  closeAll(h, g1, g2);
 });
