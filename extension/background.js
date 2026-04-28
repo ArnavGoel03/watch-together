@@ -124,6 +124,8 @@ function connect() {
 
       case "chat":
       case "navigate":
+      case "voice-state":
+      case "voice-signal":
       case "error":
         broadcastToAllTabs(msg);
         break;
@@ -246,6 +248,11 @@ chrome.runtime.onConnect.addListener((port) => {
         break;
 
       case "navigate":
+        sendToServer(msg);
+        break;
+
+      case "voice-state":
+      case "voice-signal":
         sendToServer(msg);
         break;
 

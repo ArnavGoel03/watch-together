@@ -76,14 +76,29 @@
       <details class="server-config">
         <summary>
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v6m0 6v6m-7-3.5l5.2-3m1.6-.9L17 3.5m-14 0l5.2 3m1.6.9L17 16.5"/></svg>
-          Server
+          Settings
         </summary>
         <div class="config-body">
-          <div class="input-wrapper small">
-            <input type="text" id="serverUrl" placeholder=" ">
-            <label>Server URL</label>
+          <div class="settings-section">
+            <div class="settings-label">Overlay panel</div>
+            <div class="radio-row">
+              <label class="radio-opt"><input type="radio" name="overlayMode" value="click"> Click to toggle</label>
+              <label class="radio-opt"><input type="radio" name="overlayMode" value="hold"> Hold key to show</label>
+            </div>
+            <div id="hotkeyRow" class="hotkey-row" style="display:none">
+              <label for="overlayHotkey" class="settings-sub">Hotkey</label>
+              <input type="text" id="overlayHotkey" maxlength="1" placeholder="\" autocomplete="off">
+              <span class="settings-hint">Press a single key. Default: <code>\</code></span>
+            </div>
           </div>
-          <button id="btnSaveServer" class="btn btn-micro">Save</button>
+          <div class="settings-section">
+            <div class="settings-label">Server</div>
+            <div class="input-wrapper small">
+              <input type="text" id="serverUrl" placeholder=" ">
+              <label>Server URL</label>
+            </div>
+            <button id="btnSaveServer" class="btn btn-micro">Save</button>
+          </div>
         </div>
       </details>
     </div>

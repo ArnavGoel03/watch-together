@@ -102,12 +102,55 @@ const toastEl = $("#toast");
 const btnCreate = $("#btnCreate");
 
 // Load saved state & trigger connection
-chrome.storage.local.get(["userName", "serverUrl"], (data) => {
+chrome.storage.local.get(["userName", "serverUrl", "overlayMode", "overlayHotkey"], (data) => {
   if (data.userName) userNameInput.value = data.userName;
   if (data.serverUrl) serverUrlInput.value = data.serverUrl;
+  applyOverlaySettings(data.overlayMode || "click", data.overlayHotkey || "\\");
   safePost({ type: "connect" });
   safePost({ type: "get-state" });
 });
+
+function applyOverlaySettings(mode, hotkey) {
+  document.querySelectorAll('input[name="overlayMode"]').forEach((r) => {
+    r.checked = r.value === mode;
+  });
+  const hotkeyInput = $("#overlayHotkey");
+  const hotkeyRow = $("#hotkeyRow");
+  if (hotkeyInput) hotkeyInput.value = hotkey;
+  if (hotkeyRow) hotkeyRow.style.display = mode === "hold" ? "flex" : "none";
+}
+
+// Mode radios — save on change, no separate Save button
+document.querySelectorAll('input[name="overlayMode"]').forEach((r) => {
+  r.addEventListener("change", () => {
+    if (!r.checked) return;
+    const mode = r.value;
+    chrome.storage.local.set({ overlayMode: mode });
+    const row = $("#hotkeyRow");
+    if (row) row.style.display = mode === "hold" ? "flex" : "none";
+  });
+});
+
+// Hotkey input — captures one keypress, persists immediately
+{
+  const hk = $("#overlayHotkey");
+  if (hk) {
+    hk.addEventListener("keydown", (e) => {
+      // Modifier-only and special keys don't make sense as a single-key hotkey
+      if (["Shift", "Control", "Alt", "Meta", "Tab", "Escape", "Enter"].includes(e.key)) return;
+      if (!e.key || e.key.length !== 1) return;
+      e.preventDefault();
+      hk.value = e.key;
+      chrome.storage.local.set({ overlayHotkey: e.key });
+    });
+    hk.addEventListener("blur", () => {
+      if (!hk.value) {
+        hk.value = "\\";
+        chrome.storage.local.set({ overlayHotkey: "\\" });
+      }
+    });
+  }
+}
 
 // Keep polling state until we're in a room or give up after 30s
 let statePollCount = 0;

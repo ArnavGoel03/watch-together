@@ -397,6 +397,65 @@ header {
 
 .config-body { padding: 10px 0 0; }
 
+.settings-section { margin-bottom: 14px; }
+.settings-section:last-child { margin-bottom: 0; }
+.settings-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--label-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  margin-bottom: 6px;
+}
+.settings-sub {
+  font-size: 11px;
+  color: var(--label-secondary);
+  margin-right: 6px;
+}
+.settings-hint {
+  font-size: 11px;
+  color: var(--label-tertiary);
+  margin-left: 6px;
+}
+.settings-hint code {
+  background: rgba(120,120,128,0.18);
+  padding: 0 4px;
+  border-radius: 3px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.radio-row {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.radio-opt {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--label-secondary);
+}
+.radio-opt input { accent-color: #a78bfa; cursor: pointer; }
+.hotkey-row {
+  display: flex;
+  align-items: center;
+  margin-top: 4px;
+}
+.hotkey-row input {
+  width: 36px;
+  text-align: center;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 14px;
+  font-weight: 700;
+  padding: 4px 0;
+  background: rgba(120,120,128,0.24);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  outline: none;
+}
+
 /* === ROOM CARD === */
 .room-card {
   background: var(--bg-elevated);

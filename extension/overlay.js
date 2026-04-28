@@ -9,11 +9,32 @@
   let port = null;
   let inRoom = false;
   let currentRoom = null;
+  let myUserId = null;
   let userName = "";
   let isConnected = false;
   let memberCount = 1;
   let pendingEnterSend = false; // true if user pressed Enter during IME composition
   const inFlight = new Set();
+
+  // ---------- Hotkey config ----------
+  // Two modes: "click" (current behavior, button click toggles) or "hold" (panel only
+  // visible while configured key is held — push-to-show, like push-to-talk).
+  const HOTKEY_DEFAULT = "\\"; // backslash — rarely used by sites, easy to reach on most layouts
+  let overlayMode = "click";
+  let overlayHotkey = HOTKEY_DEFAULT;
+  let hotkeyHeld = false; // true while the configured hotkey is currently down
+
+  // ---------- Voice mesh state ----------
+  // WebRTC peer-to-peer audio. Server only relays SDP/ICE via voice-signal messages.
+  const ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
+  const voice = {
+    active: false,            // we are broadcasting our mic
+    localStream: null,        // MediaStream from getUserMedia
+    peers: new Map(),         // peerUserId -> RTCPeerConnection
+    audioEls: new Map(),      // peerUserId -> HTMLAudioElement
+    activePeerIds: new Set(), // userIds of other members currently in voice
+    pendingICE: new Map(),    // peerUserId -> [candidates] queued before remoteDescription set
+  };
 
   // Robust clipboard write — must run synchronously inside the click handler
   // (Chrome rejects clipboard writes outside the user-gesture context).
@@ -60,6 +81,286 @@
       connectPort();
       return false;
     }
+  }
+
+  // ============================================================
+  // Voice mesh — WebRTC peer-to-peer audio
+  // ============================================================
+
+  async function startVoice() {
+    if (voice.active) return;
+    try {
+      voice.localStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+        video: false,
+      });
+    } catch (err) {
+      addSystemMsg("Mic access denied — enable it in site settings");
+      console.warn("[WatchTogether voice] getUserMedia failed:", err);
+      return;
+    }
+    voice.active = true;
+    updateMicButton();
+    safePost({ type: "voice-state", active: true });
+    // Initiate offers to every existing voice-active peer.
+    // Tie-break: only the lower-userId side initiates to avoid dueling offers.
+    for (const peerId of voice.activePeerIds) {
+      if (peerId === myUserId) continue;
+      if (myUserId && myUserId < peerId) {
+        ensurePeer(peerId, /*initiator*/ true);
+      } else {
+        // Other side will initiate when they see our voice-state — we just open the slot
+        ensurePeer(peerId, /*initiator*/ false);
+      }
+    }
+  }
+
+  function stopVoice() {
+    if (!voice.active && voice.peers.size === 0) return;
+    voice.active = false;
+    if (voice.localStream) {
+      voice.localStream.getTracks().forEach((t) => t.stop());
+      voice.localStream = null;
+    }
+    for (const [peerId, pc] of voice.peers) {
+      try { pc.close(); } catch {}
+      removeAudioFor(peerId);
+    }
+    voice.peers.clear();
+    voice.pendingICE.clear();
+    safePost({ type: "voice-state", active: false });
+    updateMicButton();
+    updateVoiceBadge();
+  }
+
+  function ensurePeer(peerId, initiator) {
+    if (voice.peers.has(peerId)) return voice.peers.get(peerId);
+    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    voice.peers.set(peerId, pc);
+
+    if (voice.localStream) {
+      voice.localStream.getTracks().forEach((track) => {
+        pc.addTrack(track, voice.localStream);
+      });
+    }
+
+    pc.onicecandidate = (e) => {
+      if (e.candidate) {
+        safePost({
+          type: "voice-signal",
+          toUserId: peerId,
+          signal: { kind: "ice", candidate: e.candidate },
+        });
+      }
+    };
+
+    pc.ontrack = (e) => {
+      const stream = e.streams[0];
+      if (!stream) return;
+      let el = voice.audioEls.get(peerId);
+      if (!el) {
+        el = document.createElement("audio");
+        el.id = `wt-voice-audio-${peerId}`;
+        el.autoplay = true;
+        el.style.cssText = "position:fixed;width:0;height:0;opacity:0;pointer-events:none";
+        document.body.appendChild(el);
+        voice.audioEls.set(peerId, el);
+      }
+      el.srcObject = stream;
+    };
+
+    pc.onconnectionstatechange = () => {
+      if (["failed", "closed", "disconnected"].includes(pc.connectionState)) {
+        // Best-effort renegotiation: only the initiator side retries
+        if (initiator && voice.active && voice.activePeerIds.has(peerId)) {
+          // Tear down and re-create after a beat
+          try { pc.close(); } catch {}
+          voice.peers.delete(peerId);
+          removeAudioFor(peerId);
+          setTimeout(() => {
+            if (voice.active && voice.activePeerIds.has(peerId)) {
+              ensurePeer(peerId, true);
+            }
+          }, 1000);
+        }
+      }
+    };
+
+    if (initiator) {
+      (async () => {
+        try {
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          safePost({
+            type: "voice-signal",
+            toUserId: peerId,
+            signal: { kind: "offer", sdp: offer },
+          });
+        } catch (err) {
+          console.warn("[WatchTogether voice] createOffer failed:", err);
+        }
+      })();
+    }
+    return pc;
+  }
+
+  function removeAudioFor(peerId) {
+    const el = voice.audioEls.get(peerId);
+    if (el) {
+      el.srcObject = null;
+      el.remove();
+      voice.audioEls.delete(peerId);
+    }
+  }
+
+  async function handleVoiceSignal(msg) {
+    const peerId = msg.fromUserId;
+    if (!peerId) return;
+    const sig = msg.signal || {};
+    const pc = ensurePeer(peerId, /*initiator*/ false);
+    try {
+      if (sig.kind === "offer") {
+        await pc.setRemoteDescription(sig.sdp);
+        // Drain any ICE candidates that arrived before the offer
+        const queued = voice.pendingICE.get(peerId) || [];
+        for (const c of queued) {
+          try { await pc.addIceCandidate(c); } catch {}
+        }
+        voice.pendingICE.delete(peerId);
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        safePost({
+          type: "voice-signal",
+          toUserId: peerId,
+          signal: { kind: "answer", sdp: answer },
+        });
+      } else if (sig.kind === "answer") {
+        await pc.setRemoteDescription(sig.sdp);
+        const queued = voice.pendingICE.get(peerId) || [];
+        for (const c of queued) {
+          try { await pc.addIceCandidate(c); } catch {}
+        }
+        voice.pendingICE.delete(peerId);
+      } else if (sig.kind === "ice") {
+        if (pc.remoteDescription) {
+          try { await pc.addIceCandidate(sig.candidate); } catch {}
+        } else {
+          // Queue until remoteDescription is set
+          if (!voice.pendingICE.has(peerId)) voice.pendingICE.set(peerId, []);
+          voice.pendingICE.get(peerId).push(sig.candidate);
+        }
+      }
+    } catch (err) {
+      console.warn("[WatchTogether voice] signal handling failed:", err);
+    }
+  }
+
+  function handleVoiceStateMsg(msg) {
+    // Track who is voice-active in the room
+    if (Array.isArray(msg.activeUserIds)) {
+      voice.activePeerIds = new Set(msg.activeUserIds.filter((id) => id !== myUserId));
+    }
+    // Tear down peer connections for users who turned off voice
+    for (const peerId of Array.from(voice.peers.keys())) {
+      if (!voice.activePeerIds.has(peerId)) {
+        try { voice.peers.get(peerId).close(); } catch {}
+        voice.peers.delete(peerId);
+        removeAudioFor(peerId);
+      }
+    }
+    // If we're active and someone new joined voice, open a peer (tie-break by id)
+    if (voice.active && msg.userId !== myUserId && msg.active) {
+      if (myUserId && myUserId < msg.userId) {
+        ensurePeer(msg.userId, true);
+      } else {
+        ensurePeer(msg.userId, false);
+      }
+    }
+    updateVoiceBadge();
+  }
+
+  function updateMicButton() {
+    if (!overlayPanel) return;
+    const btn = overlayPanel.querySelector("#wt-mic");
+    if (!btn) return;
+    btn.classList.toggle("wt-mic-on", voice.active);
+    const lbl = overlayPanel.querySelector("#wt-mic-label");
+    if (lbl) lbl.textContent = voice.active ? "Mute" : "Voice";
+  }
+
+  function updateVoiceBadge() {
+    if (!overlayPanel) return;
+    const badge = overlayPanel.querySelector("#wt-voice-active");
+    if (!badge) return;
+    const total = voice.activePeerIds.size + (voice.active ? 1 : 0);
+    badge.textContent = total > 0 ? `🎤 ${total} on voice` : "";
+  }
+
+  // ============================================================
+  // Hotkey — tap to open (click mode) or hold to show (hold mode)
+  // ============================================================
+
+  function loadHotkeyConfig() {
+    chrome.storage.local.get(["overlayMode", "overlayHotkey"], (data) => {
+      if (data.overlayMode === "click" || data.overlayMode === "hold") {
+        overlayMode = data.overlayMode;
+      }
+      if (typeof data.overlayHotkey === "string" && data.overlayHotkey) {
+        overlayHotkey = data.overlayHotkey;
+      }
+    });
+  }
+
+  // Match `key` representations the way they're stored in settings (a single
+  // displayable key — letters, digits, or punctuation like "\\"). Modifier-only
+  // hotkeys are not supported in V1 — just one key.
+  function matchesHotkey(e) {
+    if (!overlayHotkey) return false;
+    // Don't trigger while typing in an input/textarea anywhere on the page
+    const t = e.target;
+    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return false;
+    // e.key is reliable for printable keys; lowercase to be case-insensitive for letters
+    const pressed = e.key && e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    const want = overlayHotkey.length === 1 ? overlayHotkey.toLowerCase() : overlayHotkey;
+    return pressed === want;
+  }
+
+  function setupHotkeyListeners() {
+    document.addEventListener("keydown", (e) => {
+      if (!matchesHotkey(e)) return;
+      if (e.repeat) return; // ignore key-repeat firing
+      e.preventDefault();
+      if (overlayMode === "hold") {
+        hotkeyHeld = true;
+        showPanel();
+      } else {
+        // click mode: tap toggles
+        togglePanel();
+      }
+    }, true);
+    document.addEventListener("keyup", (e) => {
+      if (!matchesHotkey(e)) return;
+      if (overlayMode === "hold" && hotkeyHeld) {
+        hotkeyHeld = false;
+        hidePanel();
+      }
+    }, true);
+    // React to settings changes from the popup live
+    chrome.storage.onChanged.addListener((changes) => {
+      if (changes.overlayMode) overlayMode = changes.overlayMode.newValue || "click";
+      if (changes.overlayHotkey) overlayHotkey = changes.overlayHotkey.newValue || HOTKEY_DEFAULT;
+    });
+  }
+
+  function showPanel() {
+    createPanel();
+    overlayPanel.classList.add("wt-visible");
+    safePost({ type: "get-state" });
+    syncMemberCountDom();
   }
 
   // Site-specific selectors for where to inject the button
@@ -159,7 +460,11 @@
         <div class="wt-actions">
           <button class="wt-btn-small" id="wt-copy-code">Copy Code</button>
           <button class="wt-btn-small" id="wt-copy-link">Copy Link</button>
+          <button class="wt-btn-small" id="wt-mic" title="Toggle voice">
+            <span id="wt-mic-label">Voice</span>
+          </button>
         </div>
+        <div class="wt-voice-active" id="wt-voice-active"></div>
         <div class="wt-chat">
           <div class="wt-chat-messages" id="wt-messages"></div>
           <div class="wt-chat-input-row">
@@ -244,6 +549,11 @@
       leaveRoom();
     });
 
+    overlayPanel.querySelector("#wt-mic").addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (voice.active) stopVoice(); else startVoice();
+    });
+
     // Stop all events from reaching the video player
     overlayPanel.addEventListener("click", (e) => e.stopPropagation());
     overlayPanel.addEventListener("keydown", (e) => e.stopPropagation());
@@ -319,6 +629,9 @@
   function leaveRoom() {
     const btn = overlayPanel.querySelector("#wt-leave");
     withInFlight("leave", btn, () => {
+      stopVoice();
+      voice.activePeerIds.clear();
+      updateVoiceBadge();
       safePost({ type: "leave-room" });
       inRoom = false;
       currentRoom = null;
@@ -410,6 +723,7 @@
       switch (msg.type) {
         case "room-created":
           currentRoom = msg.roomCode;
+          myUserId = msg.userId || myUserId;
           inRoom = true;
           memberCount = 1;
           if (overlayPanel) {
@@ -423,6 +737,7 @@
 
         case "room-joined":
           currentRoom = msg.roomCode;
+          myUserId = msg.userId || myUserId;
           inRoom = true;
           memberCount = msg.members?.length || 1;
           if (overlayPanel) {
@@ -444,10 +759,26 @@
           memberCount = typeof msg.memberCount === "number" ? msg.memberCount : Math.max(1, memberCount - 1);
           syncMemberCountDom();
           addSystemMsg(`${msg.userName} left`);
+          // Clean up any lingering peer connection if they were on voice
+          if (voice.peers.has(msg.userId)) {
+            try { voice.peers.get(msg.userId).close(); } catch {}
+            voice.peers.delete(msg.userId);
+            removeAudioFor(msg.userId);
+            voice.activePeerIds.delete(msg.userId);
+            updateVoiceBadge();
+          }
           break;
 
         case "chat":
           addChatMsg(msg.userName, msg.message);
+          break;
+
+        case "voice-state":
+          handleVoiceStateMsg(msg);
+          break;
+
+        case "voice-signal":
+          handleVoiceSignal(msg);
           break;
 
         case "connection-status":
@@ -461,6 +792,7 @@
 
         case "state":
           isConnected = msg.connected;
+          if (msg.userId) myUserId = msg.userId;
           if (msg.currentRoom) {
             currentRoom = msg.currentRoom;
             inRoom = true;
@@ -700,6 +1032,18 @@
       }
       .wt-btn-small:hover { background: rgba(120,120,128,0.36); }
 
+      #wt-mic.wt-mic-on {
+        background: linear-gradient(135deg, #7c3aed, #a78bfa);
+        color: #fff;
+      }
+      .wt-voice-active {
+        text-align: center;
+        font-size: 11px;
+        color: #30d158;
+        margin-bottom: 8px;
+        min-height: 14px;
+      }
+
       .wt-chat {
         background: rgba(0,0,0,0.2);
         border-radius: 8px;
@@ -796,6 +1140,8 @@
 
   // Init
   injectStyles();
+  loadHotkeyConfig();
+  setupHotkeyListeners();
   connectPort();
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", watchForPlayer);
