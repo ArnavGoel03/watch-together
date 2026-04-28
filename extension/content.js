@@ -97,6 +97,8 @@
       video.addEventListener(event, onVideoEvent);
     });
 
+    setupCCDetection(video);
+
     // If we have a pending playback state, apply it now
     if (pendingPlaybackState) {
       applySync(pendingPlaybackState);
@@ -119,6 +121,107 @@
   }
   document.addEventListener("fullscreenchange", onFullscreenChange, true);
   document.addEventListener("webkitfullscreenchange", onFullscreenChange, true);
+
+  // ---------- Closed-caption sync ----------
+  // Watch the video's text tracks and (for YouTube) the subtitles button.
+  // Whenever CC visibility flips, broadcast a cc-state event so peers can
+  // see a "Yash turned captions ON" presence toast.
+  let lastCCState = null;
+  let ccObserver = null;
+
+  function setupCCDetection(video) {
+    if (!video) return;
+    // HTML5 textTracks (works on YouTube, generic <video>, etc.)
+    if (video.textTracks) {
+      const onTrackChange = () => checkCCState();
+      for (const t of video.textTracks) {
+        try { t.addEventListener("cuechange", onTrackChange); } catch {}
+        try { t.addEventListener("change", onTrackChange); } catch {}
+      }
+      try {
+        video.textTracks.addEventListener("addtrack", (e) => {
+          try { e.track.addEventListener("change", onTrackChange); } catch {}
+          checkCCState();
+        });
+      } catch {}
+    }
+    // YouTube-specific: observe the subtitles button's aria-pressed
+    if (location.hostname.includes("youtube.com")) {
+      const watchBtn = () => {
+        const btn = document.querySelector(".ytp-subtitles-button");
+        if (!btn) return;
+        if (ccObserver) ccObserver.disconnect();
+        ccObserver = new MutationObserver(() => checkCCState());
+        ccObserver.observe(btn, { attributes: true, attributeFilter: ["aria-pressed"] });
+      };
+      watchBtn();
+      // Re-find the button if YouTube remounts it (theater mode, etc.)
+      setInterval(watchBtn, 5000);
+    }
+    // Initial state
+    setTimeout(checkCCState, 500);
+  }
+
+  function checkCCState() {
+    if (!inRoom || !activeVideo) return;
+    let active = false;
+    try {
+      if (activeVideo.textTracks) {
+        for (let i = 0; i < activeVideo.textTracks.length; i++) {
+          if (activeVideo.textTracks[i].mode === "showing") { active = true; break; }
+        }
+      }
+    } catch {}
+    // Augment with YouTube's button — sometimes textTracks lag the UI
+    if (!active && location.hostname.includes("youtube.com")) {
+      const btn = document.querySelector(".ytp-subtitles-button");
+      if (btn && btn.getAttribute("aria-pressed") === "true") active = true;
+    }
+    if (active !== lastCCState) {
+      lastCCState = active;
+      sendMsg({ type: "cc-state", active });
+    }
+  }
+
+  // ---------- Sync labels ----------
+  // Show a small transient toast in the corner when a remote sync event
+  // comes in: "Yash paused" / "Anshul seeked". 1.5s lifespan.
+  function showSyncLabel(userName, action) {
+    if (!userName || !action) return;
+    const verb =
+      action === "play" ? "played"
+      : action === "pause" ? "paused"
+      : action === "seek" ? "seeked"
+      : action === "ratechange" ? "changed speed"
+      : action;
+    let el = document.getElementById("wt-sync-label");
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "wt-sync-label";
+      el.style.cssText = `
+        position: fixed;
+        bottom: 80px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 2147483646;
+        background: rgba(0,0,0,0.78);
+        color: #fff;
+        padding: 6px 14px;
+        border-radius: 16px;
+        font: 500 13px -apple-system, sans-serif;
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        pointer-events: none;
+        opacity: 0;
+        transition: opacity 0.18s;
+      `;
+      document.body.appendChild(el);
+    }
+    el.textContent = `${userName} ${verb}`;
+    el.style.opacity = "1";
+    clearTimeout(el._wtTimer);
+    el._wtTimer = setTimeout(() => { el.style.opacity = "0"; }, 1500);
+  }
 
   function isAdPlaying() {
     // YouTube
@@ -349,6 +452,11 @@
       switch (msg.type) {
         case "sync":
           applySync(msg);
+          if (msg.fromUser && msg.action) showSyncLabel(msg.fromUser, msg.action);
+          break;
+
+        case "cc-state":
+          showNotification(`${msg.userName || "Someone"} turned captions ${msg.active ? "ON" : "OFF"}`);
           break;
 
         case "heartbeat":

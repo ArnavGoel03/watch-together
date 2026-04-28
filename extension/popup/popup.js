@@ -256,10 +256,17 @@ btnCreate.addEventListener("click", () => {
     shakeElement(userNameInput.parentElement);
     return;
   }
+  const customNameEl = $("#customName");
+  const customName = customNameEl ? customNameEl.value.trim() : "";
+  if (customName && !/^[a-zA-Z0-9-]{4,32}$/.test(customName)) {
+    showToast("Room name must be 4-32 letters, numbers, or hyphens");
+    customNameEl.focus();
+    shakeElement(customNameEl.parentElement);
+    return;
+  }
   withInFlight("create", btnCreate, () => {
     chrome.storage.local.set({ userName: name });
-    safePost({ type: "create-room", userName: name, videoUrl: activeTabUrl, mode: selectedMode });
-    // Re-enable in 4s if no room-created arrives, so a flake doesn't lock the button
+    safePost({ type: "create-room", userName: name, videoUrl: activeTabUrl, mode: selectedMode, customName });
     return new Promise((resolve) => setTimeout(resolve, 4000));
   });
 });
@@ -401,6 +408,9 @@ chatInput.addEventListener("compositionend", () => {
     setTimeout(sendChatMessage, 0);
   }
 });
+chatInput.addEventListener("input", () => {
+  noteLocalTyping(chatInput.value.length > 0);
+});
 
 roomCodeInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter") joinRoom();
@@ -408,7 +418,8 @@ roomCodeInput.addEventListener("keydown", (e) => {
 
 // Auto-format room code input
 roomCodeInput.addEventListener("input", () => {
-  roomCodeInput.value = roomCodeInput.value.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  // Allow alphanumeric + hyphen so users can type custom room names like "yash-and-anshul"
+  roomCodeInput.value = roomCodeInput.value.toUpperCase().replace(/[^A-Z0-9-]/g, "");
 });
 
 // --- Functions ---
@@ -428,7 +439,66 @@ function sendChatMessage() {
   if (!safePost({ type: "chat", message: text })) return;
   addChatMessage(getUserName(), text, true);
   chatInput.value = "";
+  noteLocalTyping(false);
   chatInput.focus();
+}
+
+// ---------- Typing indicator ----------
+const TYPING_THROTTLE_MS = 1500;
+const TYPING_IDLE_MS = 3000;
+const popupTyping = {
+  lastSentAt: 0,
+  lastSentValue: false,
+  idleTimer: null,
+  activePeers: new Map(),
+};
+
+function noteLocalTyping(hasContent) {
+  const now = Date.now();
+  if (hasContent && (now - popupTyping.lastSentAt > TYPING_THROTTLE_MS || !popupTyping.lastSentValue)) {
+    safePost({ type: "chat-typing", isTyping: true });
+    popupTyping.lastSentAt = now;
+    popupTyping.lastSentValue = true;
+  }
+  if (popupTyping.idleTimer) clearTimeout(popupTyping.idleTimer);
+  if (hasContent) {
+    popupTyping.idleTimer = setTimeout(() => {
+      if (popupTyping.lastSentValue) {
+        safePost({ type: "chat-typing", isTyping: false });
+        popupTyping.lastSentValue = false;
+      }
+    }, TYPING_IDLE_MS);
+  } else if (popupTyping.lastSentValue) {
+    safePost({ type: "chat-typing", isTyping: false });
+    popupTyping.lastSentValue = false;
+  }
+}
+
+function handleRemoteTyping(msg) {
+  const myUserId = currentRoom; // popup doesn't track userId yet — use userName fallback
+  if (!msg.userId || msg.userName === getUserName()) return;
+  const existing = popupTyping.activePeers.get(msg.userId);
+  if (existing && existing.timer) clearTimeout(existing.timer);
+  if (msg.isTyping) {
+    const timer = setTimeout(() => {
+      popupTyping.activePeers.delete(msg.userId);
+      renderTypingIndicator();
+    }, TYPING_IDLE_MS + 500);
+    popupTyping.activePeers.set(msg.userId, { userName: msg.userName, timer });
+  } else {
+    popupTyping.activePeers.delete(msg.userId);
+  }
+  renderTypingIndicator();
+}
+
+function renderTypingIndicator() {
+  const el = $("#typingIndicator");
+  if (!el) return;
+  const names = Array.from(popupTyping.activePeers.values()).map((p) => p.userName).filter(Boolean);
+  if (names.length === 0) { el.textContent = ""; return; }
+  if (names.length === 1) el.textContent = `${names[0]} is typing…`;
+  else if (names.length === 2) el.textContent = `${names[0]} and ${names[1]} are typing…`;
+  else el.textContent = `${names.length} people are typing…`;
 }
 
 function addChatMessage(name, text, isOwn = false) {
@@ -579,6 +649,15 @@ function handlePortMessage(msg) {
 
     case "chat":
       addChatMessage(msg.userName, msg.message);
+      handleRemoteTyping({ userId: msg.userId, userName: msg.userName, isTyping: false });
+      break;
+
+    case "chat-typing":
+      handleRemoteTyping(msg);
+      break;
+
+    case "cc-state":
+      addSystemMessage(`${msg.userName || "Someone"} turned captions ${msg.active ? "ON" : "OFF"}`);
       break;
 
     case "error":

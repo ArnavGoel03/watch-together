@@ -123,6 +123,8 @@ function connect() {
         break;
 
       case "chat":
+      case "chat-typing":
+      case "cc-state":
       case "navigate":
       case "voice-state":
       case "voice-signal":
@@ -201,6 +203,7 @@ chrome.runtime.onConnect.addListener((port) => {
             userName: msg.userName,
             videoUrl: msg.videoUrl || "",
             mode: msg.mode || "everyone",
+            customName: msg.customName || "",
           });
         });
         break;
@@ -253,6 +256,8 @@ chrome.runtime.onConnect.addListener((port) => {
 
       case "voice-state":
       case "voice-signal":
+      case "chat-typing":
+      case "cc-state":
         sendToServer(msg);
         break;
 

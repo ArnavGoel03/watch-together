@@ -487,9 +487,10 @@
       </div>
       <div id="wt-view-landing" class="wt-view wt-active">
         <input type="text" id="wt-name" class="wt-input" placeholder="Your name" maxlength="30">
+        <input type="text" id="wt-custom-name" class="wt-input" placeholder="Room name (optional, e.g. yash-and-anshul)" maxlength="32" autocomplete="off">
         <button class="wt-btn wt-btn-primary" id="wt-create">Create Room</button>
         <div class="wt-divider">or</div>
-        <input type="text" id="wt-code" class="wt-input" placeholder="Room code" maxlength="6" style="text-transform:uppercase;letter-spacing:3px;text-align:center">
+        <input type="text" id="wt-code" class="wt-input" placeholder="Room code or name" maxlength="32" style="letter-spacing:1px;text-align:center">
         <button class="wt-btn wt-btn-secondary" id="wt-join">Join Room</button>
       </div>
       <div id="wt-view-room" class="wt-view">
@@ -503,10 +504,12 @@
           <button class="wt-btn-small" id="wt-mic" title="Toggle voice">
             <span id="wt-mic-label">Voice</span>
           </button>
+          <button class="wt-btn-small" id="wt-pip" title="Picture-in-picture">PiP</button>
         </div>
         <div class="wt-voice-active" id="wt-voice-active"></div>
         <div class="wt-chat">
           <div class="wt-chat-messages" id="wt-messages"></div>
+          <div class="wt-typing" id="wt-typing"></div>
           <div class="wt-chat-input-row">
             <input type="text" id="wt-chat-input" class="wt-input wt-chat-field" placeholder="Message..." maxlength="500">
             <button class="wt-send" id="wt-send">
@@ -584,6 +587,9 @@
         setTimeout(sendChat, 0);
       }
     });
+    chatInputEl.addEventListener("input", () => {
+      noteLocalTyping(chatInputEl.value.length > 0);
+    });
     overlayPanel.querySelector("#wt-leave").addEventListener("click", (e) => {
       e.stopPropagation();
       leaveRoom();
@@ -592,6 +598,24 @@
     overlayPanel.querySelector("#wt-mic").addEventListener("click", (e) => {
       e.stopPropagation();
       if (voice.active) stopVoice(); else startVoice();
+    });
+
+    overlayPanel.querySelector("#wt-pip").addEventListener("click", async (e) => {
+      e.stopPropagation();
+      try {
+        const v = document.querySelector("video");
+        if (!v) { addSystemMsg("No video found on this page"); return; }
+        if (document.pictureInPictureElement) {
+          await document.exitPictureInPicture();
+        } else if (typeof v.requestPictureInPicture === "function") {
+          await v.requestPictureInPicture();
+        } else {
+          addSystemMsg("Picture-in-picture not supported on this video");
+        }
+      } catch (err) {
+        addSystemMsg("PiP blocked — try the player's own button");
+        console.warn("[WatchTogether] PiP failed:", err);
+      }
     });
 
     // Stop all events from reaching the video player
@@ -639,13 +663,15 @@
 
   function createRoom() {
     const nameInput = overlayPanel.querySelector("#wt-name");
+    const customNameInput = overlayPanel.querySelector("#wt-custom-name");
     const btn = overlayPanel.querySelector("#wt-create");
     const name = nameInput.value.trim();
+    const customName = customNameInput ? customNameInput.value.trim() : "";
     if (!name) { nameInput.focus(); return; }
     withInFlight("create", btn, () => {
       userName = name;
       chrome.storage.local.set({ userName: name });
-      safePost({ type: "create-room", userName: name, videoUrl: location.href });
+      safePost({ type: "create-room", userName: name, videoUrl: location.href, customName });
       return new Promise((resolve) => setTimeout(resolve, 4000));
     });
   }
@@ -692,6 +718,7 @@
     }
     addChatMsg(userName, text, true);
     input.value = "";
+    noteLocalTyping(false); // clear "typing…" for everyone
   }
 
   function addChatMsg(name, text, isOwn = false) {
@@ -722,6 +749,70 @@
     div.textContent = text;
     container.appendChild(div);
     container.scrollTop = container.scrollHeight;
+  }
+
+  // ---------- Typing indicator ----------
+  // Throttle outgoing typing events to once every TYPING_THROTTLE_MS, send a
+  // final "stopped typing" after TYPING_IDLE_MS of no input changes.
+  const TYPING_THROTTLE_MS = 1500;
+  const TYPING_IDLE_MS = 3000;
+  const typing = {
+    lastSentAt: 0,
+    lastSentValue: false,
+    idleTimer: null,
+    activePeers: new Map(), // userId -> { userName, expiresAt, timer }
+  };
+
+  function noteLocalTyping(hasContent) {
+    const now = Date.now();
+    const want = !!hasContent;
+    if (want && (now - typing.lastSentAt > TYPING_THROTTLE_MS || !typing.lastSentValue)) {
+      safePost({ type: "chat-typing", isTyping: true });
+      typing.lastSentAt = now;
+      typing.lastSentValue = true;
+    }
+    if (typing.idleTimer) clearTimeout(typing.idleTimer);
+    if (want) {
+      typing.idleTimer = setTimeout(() => {
+        if (typing.lastSentValue) {
+          safePost({ type: "chat-typing", isTyping: false });
+          typing.lastSentValue = false;
+        }
+      }, TYPING_IDLE_MS);
+    } else if (typing.lastSentValue) {
+      // Input was cleared (e.g. message sent) — let peers know immediately
+      safePost({ type: "chat-typing", isTyping: false });
+      typing.lastSentValue = false;
+    }
+  }
+
+  function handleRemoteTyping(msg) {
+    if (!msg.userId || msg.userId === myUserId) return;
+    if (msg.isTyping) {
+      const existing = typing.activePeers.get(msg.userId);
+      if (existing && existing.timer) clearTimeout(existing.timer);
+      const timer = setTimeout(() => {
+        typing.activePeers.delete(msg.userId);
+        renderTypingIndicator();
+      }, TYPING_IDLE_MS + 500);
+      typing.activePeers.set(msg.userId, { userName: msg.userName, timer });
+    } else {
+      const existing = typing.activePeers.get(msg.userId);
+      if (existing && existing.timer) clearTimeout(existing.timer);
+      typing.activePeers.delete(msg.userId);
+    }
+    renderTypingIndicator();
+  }
+
+  function renderTypingIndicator() {
+    if (!overlayPanel) return;
+    const el = overlayPanel.querySelector("#wt-typing");
+    if (!el) return;
+    const names = Array.from(typing.activePeers.values()).map((p) => p.userName).filter(Boolean);
+    if (names.length === 0) { el.textContent = ""; return; }
+    if (names.length === 1) el.textContent = `${names[0]} is typing…`;
+    else if (names.length === 2) el.textContent = `${names[0]} and ${names[1]} are typing…`;
+    else el.textContent = `${names.length} people are typing…`;
   }
 
   function flashText(el, text) {
@@ -811,6 +902,17 @@
 
         case "chat":
           addChatMsg(msg.userName, msg.message);
+          // Implicit "stopped typing" on incoming message
+          handleRemoteTyping({ userId: msg.userId, userName: msg.userName, isTyping: false });
+          break;
+
+        case "chat-typing":
+          handleRemoteTyping(msg);
+          break;
+
+        case "cc-state":
+          // The on-page toast is shown by content.js; surface a chat system line too
+          addSystemMsg(`${msg.userName || "Someone"} turned captions ${msg.active ? "ON" : "OFF"}`);
           break;
 
         case "voice-state":
@@ -1082,6 +1184,14 @@
         color: #30d158;
         margin-bottom: 8px;
         min-height: 14px;
+      }
+      .wt-typing {
+        font-size: 11px;
+        font-style: italic;
+        color: rgba(235,235,245,0.45);
+        padding: 0 10px 4px;
+        min-height: 14px;
+        line-height: 14px;
       }
 
       .wt-chat {

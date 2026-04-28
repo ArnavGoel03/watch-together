@@ -47,6 +47,14 @@
         <button id="modeHost" class="mode-btn" data-mode="host">Only I control</button>
       </div>
 
+      <div class="input-group">
+        <div class="input-wrapper">
+          <input type="text" id="customName" placeholder=" " maxlength="32" autocomplete="off">
+          <label for="customName">Room name (optional)</label>
+          <div class="input-highlight"></div>
+        </div>
+      </div>
+
       <button id="btnCreate" class="btn btn-glow">
         <span class="btn-content">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v8m-4-4h8"/></svg>
@@ -60,8 +68,8 @@
 
       <div class="input-group">
         <div class="input-wrapper">
-          <input type="text" id="roomCode" placeholder=" " maxlength="6" style="text-transform: uppercase; letter-spacing: 4px; font-weight: 600;" autocomplete="off">
-          <label for="roomCode">Room code</label>
+          <input type="text" id="roomCode" placeholder=" " maxlength="32" style="text-transform: uppercase; letter-spacing: 1px; font-weight: 600;" autocomplete="off">
+          <label for="roomCode">Room code or name</label>
           <div class="input-highlight"></div>
         </div>
       </div>
@@ -158,6 +166,7 @@
           Chat
         </div>
         <div id="chatMessages" class="chat-messages"></div>
+        <div id="typingIndicator" class="typing-indicator"></div>
         <div class="chat-input-row">
           <input type="text" id="chatInput" placeholder="Say something..." maxlength="500">
           <button id="btnSend" class="send-btn">

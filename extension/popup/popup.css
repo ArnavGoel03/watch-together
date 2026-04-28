@@ -397,6 +397,15 @@ header {
 
 .config-body { padding: 10px 0 0; }
 
+.typing-indicator {
+  font-size: 11px;
+  font-style: italic;
+  color: var(--label-tertiary);
+  padding: 0 12px 4px;
+  min-height: 14px;
+  line-height: 14px;
+}
+
 .settings-section { margin-bottom: 14px; }
 .settings-section:last-child { margin-bottom: 0; }
 .settings-label {
