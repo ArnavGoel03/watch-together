@@ -1,0 +1,15 @@
+{
+  "name": "watch-together-cf",
+  "version": "1.0.0",
+  "description": "Cloudflare Workers + Durable Objects port of the Watch Together server",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev --port 8787",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "test": "node --test ../server/server.e2e.test.mjs ../server/client-logic.test.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "^3.99.0"
+  }
+}

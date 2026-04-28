@@ -92,11 +92,16 @@
             </div>
           </div>
           <div class="settings-section">
-            <div class="settings-label">Server</div>
+            <div class="settings-label">Server backend</div>
+            <div class="radio-row">
+              <label class="radio-opt"><input type="radio" name="backend" value="render"> Render</label>
+              <label class="radio-opt"><input type="radio" name="backend" value="cloudflare"> Cloudflare</label>
+            </div>
             <div class="input-wrapper small">
               <input type="text" id="serverUrl" placeholder=" ">
-              <label>Server URL</label>
+              <label>WebSocket URL</label>
             </div>
+            <span class="settings-hint">Both members of a room must use the same backend.</span>
             <button id="btnSaveServer" class="btn btn-micro">Save</button>
           </div>
         </div>

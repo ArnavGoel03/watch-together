@@ -1,0 +1,18 @@
+name = "watch-together-cf"
+main = "src/worker.js"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Single Durable Object class — the "hub" instance holds all rooms.
+# Cloudflare places it near whichever Worker first accesses it.
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "RoomHubDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RoomHubDO"]
+
+# Logs visible via `wrangler tail`
+[observability]
+enabled = true

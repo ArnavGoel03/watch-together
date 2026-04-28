@@ -101,13 +101,56 @@ const chatInput = $("#chatInput");
 const toastEl = $("#toast");
 const btnCreate = $("#btnCreate");
 
+// Backend presets — Render is the original Node server, Cloudflare is the new Worker.
+// Per-backend URL is remembered so flipping the radio swaps the URL field instantly.
+const BACKEND_DEFAULTS = {
+  render: "wss://watch-together-server-acwi.onrender.com",
+  cloudflare: "",
+};
+let backendUrls = { ...BACKEND_DEFAULTS };
+let activeBackend = "render";
+
 // Load saved state & trigger connection
-chrome.storage.local.get(["userName", "serverUrl", "overlayMode", "overlayHotkey"], (data) => {
-  if (data.userName) userNameInput.value = data.userName;
-  if (data.serverUrl) serverUrlInput.value = data.serverUrl;
-  applyOverlaySettings(data.overlayMode || "click", data.overlayHotkey || "\\");
-  safePost({ type: "connect" });
-  safePost({ type: "get-state" });
+chrome.storage.local.get(
+  ["userName", "serverUrl", "overlayMode", "overlayHotkey", "backend", "renderUrl", "cloudflareUrl"],
+  (data) => {
+    if (data.userName) userNameInput.value = data.userName;
+    backendUrls.render = data.renderUrl || BACKEND_DEFAULTS.render;
+    backendUrls.cloudflare = data.cloudflareUrl || "";
+    activeBackend = data.backend === "cloudflare" ? "cloudflare" : "render";
+    // serverUrl wins if explicitly set; otherwise derive from active backend
+    if (data.serverUrl) {
+      serverUrlInput.value = data.serverUrl;
+      // Keep per-backend slot in sync with whatever is loaded
+      backendUrls[activeBackend] = data.serverUrl;
+    } else {
+      serverUrlInput.value = backendUrls[activeBackend];
+    }
+    applyBackendRadios(activeBackend);
+    applyOverlaySettings(data.overlayMode || "click", data.overlayHotkey || "\\");
+    safePost({ type: "connect" });
+    safePost({ type: "get-state" });
+  }
+);
+
+function applyBackendRadios(backend) {
+  document.querySelectorAll('input[name="backend"]').forEach((r) => {
+    r.checked = r.value === backend;
+  });
+}
+
+// Backend radio — switching repopulates the URL field with that backend's saved URL,
+// then the user clicks Save to actually apply (avoids accidental disconnects).
+document.querySelectorAll('input[name="backend"]').forEach((r) => {
+  r.addEventListener("change", () => {
+    if (!r.checked) return;
+    activeBackend = r.value;
+    serverUrlInput.value = backendUrls[activeBackend] || "";
+    if (activeBackend === "cloudflare" && !backendUrls.cloudflare) {
+      showToast("Paste your Cloudflare worker URL, then Save");
+      serverUrlInput.focus();
+    }
+  });
 });
 
 function applyOverlaySettings(mode, hotkey) {
@@ -311,13 +354,19 @@ $("#btnSaveServer").addEventListener("click", () => {
     showToast("Enter a server URL");
     return;
   }
-  // Light validation: must be ws:// or wss://
   if (!/^wss?:\/\//i.test(url)) {
     showToast("Server URL must start with ws:// or wss://");
     return;
   }
+  // Persist per-backend slot + the active backend choice
+  backendUrls[activeBackend] = url;
+  const storageKey = activeBackend === "cloudflare" ? "cloudflareUrl" : "renderUrl";
+  chrome.storage.local.set({
+    backend: activeBackend,
+    [storageKey]: url,
+  });
   safePost({ type: "set-server-url", url });
-  showToast("Server updated");
+  showToast(`Saved — using ${activeBackend === "cloudflare" ? "Cloudflare" : "Render"}`);
 });
 
 $("#btnSend").addEventListener("click", sendChatMessage);
