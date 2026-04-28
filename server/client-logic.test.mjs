@@ -206,3 +206,49 @@ test("suspect-jump: pause/ratechange events are never suspect", () => {
 test("suspect-jump: no prior broadcast (lastBroadcastTime = 0) → not suspect", () => {
   assert.equal(isSuspectJumpToZero("seek", 0, 0, 100), false);
 });
+
+// ============================================================
+// Hotkey matcher — mirrors overlay.js matchesHotkey()
+// ============================================================
+
+function matchesHotkey(event, configuredKey) {
+  if (!configuredKey) return false;
+  const t = event.target;
+  if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return false;
+  const pressed = event.key && event.key.length === 1 ? event.key.toLowerCase() : event.key;
+  const want = configuredKey.length === 1 ? configuredKey.toLowerCase() : configuredKey;
+  return pressed === want;
+}
+
+test("hotkey: matches a single configured printable key", () => {
+  assert.equal(matchesHotkey({ key: "\\", target: null }, "\\"), true);
+  assert.equal(matchesHotkey({ key: "a", target: null }, "a"), true);
+});
+
+test("hotkey: case-insensitive for letters", () => {
+  assert.equal(matchesHotkey({ key: "A", target: null }, "a"), true);
+  assert.equal(matchesHotkey({ key: "a", target: null }, "A"), true);
+});
+
+test("hotkey: ignored while typing in INPUT", () => {
+  assert.equal(matchesHotkey({ key: "\\", target: { tagName: "INPUT" } }, "\\"), false);
+});
+
+test("hotkey: ignored while typing in TEXTAREA", () => {
+  assert.equal(matchesHotkey({ key: "\\", target: { tagName: "TEXTAREA" } }, "\\"), false);
+});
+
+test("hotkey: ignored in contentEditable element", () => {
+  const target = { tagName: "DIV", isContentEditable: true };
+  assert.equal(matchesHotkey({ key: "\\", target }, "\\"), false);
+});
+
+test("hotkey: doesn't match different key", () => {
+  assert.equal(matchesHotkey({ key: "\\", target: null }, "/"), false);
+  assert.equal(matchesHotkey({ key: "a", target: null }, "b"), false);
+});
+
+test("hotkey: empty / null configured key never matches", () => {
+  assert.equal(matchesHotkey({ key: "\\", target: null }, ""), false);
+  assert.equal(matchesHotkey({ key: "a", target: null }, null), false);
+});

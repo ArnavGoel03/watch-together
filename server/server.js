@@ -633,6 +633,51 @@ wss.on("connection", (ws, req) => {
         leaveCurrentRoom();
         break;
       }
+
+      // ---------- Voice chat (WebRTC mesh) ----------
+      // Server is purely a signaling relay — actual audio flows peer-to-peer.
+
+      case "voice-state": {
+        // Member toggled their mic on/off. Track state and broadcast.
+        if (!currentRoom) return;
+        const room = rooms.get(currentRoom);
+        if (!room) return;
+        const member = room.members.get(userId);
+        if (!member) return;
+        member.voiceActive = !!msg.active;
+        room.lastActivity = Date.now();
+        broadcastToRoom(currentRoom, {
+          type: "voice-state",
+          userId,
+          userName,
+          active: member.voiceActive,
+          activeUserIds: Array.from(room.members.entries())
+            .filter(([, m]) => m.voiceActive)
+            .map(([id]) => id),
+        });
+        break;
+      }
+
+      case "voice-signal": {
+        // Relay an SDP offer/answer or ICE candidate to a single target user.
+        if (!currentRoom) return;
+        const room = rooms.get(currentRoom);
+        if (!room) return;
+        const targetId = typeof msg.toUserId === "string" ? msg.toUserId : "";
+        if (!targetId || targetId === userId) return;
+        const target = room.members.get(targetId);
+        if (!target) return;
+        // Cap signal payload size — SDP is small, ICE smaller, anything huge is malformed
+        const signal = msg.signal;
+        if (!signal || JSON.stringify(signal).length > 8192) return;
+        sendTo(target.ws, {
+          type: "voice-signal",
+          fromUserId: userId,
+          fromUserName: userName,
+          signal,
+        });
+        break;
+      }
     }
   });
 
@@ -641,6 +686,7 @@ wss.on("connection", (ws, req) => {
     const room = rooms.get(currentRoom);
     if (room) {
       const wasHost = room.hostId === userId;
+      const wasVoiceActive = !!(room.members.get(userId)?.voiceActive);
       room.members.delete(userId);
 
       broadcastToRoom(currentRoom, {
@@ -649,6 +695,19 @@ wss.on("connection", (ws, req) => {
         userName,
         memberCount: room.members.size,
       });
+
+      // If they were in voice, tell remaining voice peers to tear down their RTCPeerConnection
+      if (wasVoiceActive) {
+        broadcastToRoom(currentRoom, {
+          type: "voice-state",
+          userId,
+          userName,
+          active: false,
+          activeUserIds: Array.from(room.members.entries())
+            .filter(([, m]) => m.voiceActive)
+            .map(([id]) => id),
+        });
+      }
 
       if (room.members.size > 0) {
         // Reassign heartbeat leader

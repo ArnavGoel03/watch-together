@@ -367,3 +367,84 @@ test("grace: multi-user room — one leaves, no grace timer needed (room non-emp
   assert.equal(g2.msg.roomCode, h.code);
   closeAll(h, g1, g2);
 });
+
+// ====================================================================
+// 6. VOICE — server is a pure relay; verify gating + relay semantics
+// ====================================================================
+
+test("voice-state: broadcasts to room with active member ids", async () => {
+  const h = await host({ name: "Speaker" });
+  const g = await guest(h.code, "Listener");
+  send(h.ws, { type: "voice-state", active: true });
+  const m = await waitFor(g.ws, "voice-state");
+  assert.equal(m.userId, h.msg.userId);
+  assert.equal(m.active, true);
+  assert.deepEqual(m.activeUserIds, [h.msg.userId]);
+  closeAll(h, g);
+});
+
+test("voice-state: turning off updates activeUserIds", async () => {
+  const h = await host({ name: "Speaker" });
+  const g = await guest(h.code, "Listener");
+  send(h.ws, { type: "voice-state", active: true });
+  await waitFor(g.ws, "voice-state");
+  send(h.ws, { type: "voice-state", active: false });
+  const off = await waitFor(g.ws, "voice-state");
+  assert.equal(off.active, false);
+  assert.deepEqual(off.activeUserIds, []);
+  closeAll(h, g);
+});
+
+test("voice-state: broadcast on disconnect when speaker was active", async () => {
+  const h = await host({ name: "Speaker" });
+  const g = await guest(h.code, "Listener");
+  send(h.ws, { type: "voice-state", active: true });
+  await waitFor(g.ws, "voice-state");
+  h.ws.close();
+  // Listener should receive both member-left and a voice-state(active=false)
+  await waitFor(g.ws, "member-left");
+  const off = await waitFor(g.ws, "voice-state");
+  assert.equal(off.active, false);
+  closeAll(g);
+});
+
+test("voice-signal: relay reaches only the addressed peer", async () => {
+  const h = await host({ name: "A" });
+  const g1 = await guest(h.code, "B");
+  const g2 = await guest(h.code, "C");
+  // h sends to g1 only
+  send(h.ws, {
+    type: "voice-signal",
+    toUserId: g1.msg.userId,
+    signal: { kind: "offer", sdp: { type: "offer", sdp: "v=0\r\n" } },
+  });
+  const got = await waitFor(g1.ws, "voice-signal");
+  assert.equal(got.fromUserId, h.msg.userId);
+  assert.equal(got.signal.kind, "offer");
+  // g2 must NOT receive
+  await assertNoMessage(g2.ws, "voice-signal", 200);
+  closeAll(h, g1, g2);
+});
+
+test("voice-signal: rejects bad target (not in room)", async () => {
+  const h = await host();
+  const g = await guest(h.code);
+  send(h.ws, {
+    type: "voice-signal",
+    toUserId: "does-not-exist",
+    signal: { kind: "ice", candidate: { candidate: "x" } },
+  });
+  // Nobody should get a signal
+  await assertNoMessage(g.ws, "voice-signal", 200);
+  closeAll(h, g);
+});
+
+test("voice-signal: rejects oversize payload (>8KB)", async () => {
+  const h = await host();
+  const g = await guest(h.code);
+  // 10KB of garbage in the sdp field
+  const huge = { kind: "offer", sdp: { type: "offer", sdp: "x".repeat(10000) } };
+  send(h.ws, { type: "voice-signal", toUserId: g.msg.userId, signal: huge });
+  await assertNoMessage(g.ws, "voice-signal", 200);
+  closeAll(h, g);
+});
