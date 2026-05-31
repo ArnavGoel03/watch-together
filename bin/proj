@@ -1,0 +1,681 @@
+#!/usr/bin/env bash
+# proj — project naming & rename tooling for Serenity (and any project that
+# adopts the same `project.config.json` + `.rename-history.jsonl` convention).
+#
+# Usage:
+#   proj <command> [options]
+#
+# Commands:
+#   validate    Smoke-test that project.config.json matches reality
+#               (folder name, package.json, git remote, GitHub repo, live URLs)
+#   drift       List every line that still references a previous name
+#               (slugs / display names / old URLs declared in `previous*` arrays)
+#   rename      End-to-end rename: edit config → sed → folder mv → gh rename
+#               → vercel rename → preserve alias → log → re-validate
+#   log         Append a rename event to .rename-history.jsonl
+#   history     Show past rename events (pretty-printed)
+#   config      Print resolved config + key paths
+#   doctor      Verbose validate, with suggested fixes for any failures
+#   help        This help (or `proj <cmd> --help` for a specific command)
+#   version     Print proj version + git revision
+#
+# Global options:
+#   --json      Machine-readable output (where supported: validate, history, config)
+#   --quiet     Suppress info logging — only show warnings, errors, results
+#   --no-color  Disable ANSI colors (auto-detected for non-TTY stdout)
+#   -h, --help  Show this help
+#
+# Exit codes:
+#   0  success
+#   1  expected failure (drift detected, validate failed, rename declined)
+#   2  usage error (missing/invalid arg, unknown flag)
+#   3  config error (malformed project.config.json, missing required field)
+#   4  internal error (impossible state, tool bug)
+#
+set -euo pipefail
+
+PROJ_VERSION="1.0.0"
+
+# ─── paths ────────────────────────────────────────────────────────────────
+PROJ_BIN_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$PROJ_BIN_DIR/.." && pwd)"
+CONFIG="$REPO_ROOT/project.config.json"
+SCHEMA="$PROJ_BIN_DIR/project.config.schema.json"
+HISTORY="$REPO_ROOT/.rename-history.jsonl"
+PORTFOLIO_DEFAULT="${HOME}/Documents/Projects/portfolio"
+
+# ─── global flags ─────────────────────────────────────────────────────────
+QUIET=0; JSON=0; NO_COLOR=0
+ARGS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --json)     JSON=1; shift ;;
+    --quiet|-q) QUIET=1; shift ;;
+    --no-color) NO_COLOR=1; shift ;;
+    --version)  echo "proj $PROJ_VERSION"; exit 0 ;;
+    -h|--help)  ARGS=("help" "${ARGS[@]:-}"); shift ;;
+    *)          ARGS+=("$1"); shift ;;
+  esac
+done
+set -- "${ARGS[@]:-}"
+
+# ─── color & logging helpers ──────────────────────────────────────────────
+if [[ "$NO_COLOR" -eq 1 || ! -t 1 || "$JSON" -eq 1 ]]; then
+  C_RED=""; C_GREEN=""; C_YELLOW=""; C_BLUE=""; C_DIM=""; C_BOLD=""; C_RESET=""
+else
+  C_RED=$'\033[31m'; C_GREEN=$'\033[32m'; C_YELLOW=$'\033[33m'
+  C_BLUE=$'\033[34m'; C_DIM=$'\033[2m'; C_BOLD=$'\033[1m'; C_RESET=$'\033[0m'
+fi
+hr()   { [[ "$QUIET" -eq 1 || "$JSON" -eq 1 ]] || printf "%s\n" "${C_DIM}────────────────────────────────────────────────────────${C_RESET}"; }
+info() { [[ "$QUIET" -eq 1 || "$JSON" -eq 1 ]] || printf "%s\n" "$*"; }
+head() { [[ "$QUIET" -eq 1 || "$JSON" -eq 1 ]] || printf "%s%s%s\n" "${C_BOLD}" "$*" "${C_RESET}"; }
+ok()   { [[ "$QUIET" -eq 1 || "$JSON" -eq 1 ]] || printf "  %s✓%s %s\n" "${C_GREEN}" "${C_RESET}" "$*"; }
+warn() { [[ "$JSON" -eq 1 ]] || printf "  %s⚠%s %s\n" "${C_YELLOW}" "${C_RESET}" "$*" >&2; }
+fail() { [[ "$JSON" -eq 1 ]] || printf "  %s✗%s %s\n" "${C_RED}"   "${C_RESET}" "$*" >&2; }
+err()  { printf "%serror:%s %s\n" "${C_RED}" "${C_RESET}" "$*" >&2; }
+die()  { err "$1"; exit "${2:-1}"; }
+
+require() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1" 2; }
+
+# ─── portable timeout (macOS lacks coreutils' timeout) ────────────────────
+run_with_timeout() {
+  local secs="$1"; shift
+  if   command -v timeout  >/dev/null 2>&1; then timeout  "$secs" "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$secs" "$@"
+  elif command -v perl     >/dev/null 2>&1; then perl -e 'alarm shift; exec @ARGV' "$secs" "$@"
+  else "$@"
+  fi
+}
+
+# ─── config loader (validates required fields) ────────────────────────────
+SLUG=""; DISPLAY=""; PROD_URL=""; GH_OWNER=""; GH_REPO=""; GH_URL=""
+VERCEL_PROJECT=""; VERCEL_TEAM=""
+load_config() {
+  [[ -f "$CONFIG" ]] || die "no project.config.json at $REPO_ROOT" 3
+  require jq
+  jq -e . "$CONFIG" >/dev/null 2>&1 || die "project.config.json is malformed JSON" 3
+  [[ "$(jq -r '.version // ""' "$CONFIG")" == "1" ]] \
+    || die "project.config.json: missing or unsupported \`version\` (expect 1)" 3
+  SLUG=$(jq -r '.slug // ""' "$CONFIG")
+  DISPLAY=$(jq -r '.displayName // ""' "$CONFIG")
+  PROD_URL=$(jq -r '.urls.production // ""' "$CONFIG")
+  GH_OWNER=$(jq -r '.github.owner // ""' "$CONFIG")
+  GH_REPO=$(jq -r '.github.repo // ""' "$CONFIG")
+  GH_URL=$(jq -r '.github.url // ""' "$CONFIG")
+  VERCEL_PROJECT=$(jq -r '.vercel.project // ""' "$CONFIG")
+  VERCEL_TEAM=$(jq -r '.vercel.teamSlug // ""' "$CONFIG")
+  [[ "$SLUG" =~ ^[a-z][a-z0-9-]*[a-z0-9]$ ]] \
+    || die "project.config.json: slug \`$SLUG\` is not kebab-case lowercase" 3
+  [[ -n "$DISPLAY" ]]  || die "project.config.json: missing displayName" 3
+  [[ "$PROD_URL" =~ ^https?:// ]] || die "project.config.json: urls.production missing or not http(s)" 3
+}
+
+# ─── JSON output helpers ─────────────────────────────────────────────────
+JSON_CHECKS="[]"
+RECORD_PASS=0; RECORD_FAIL=0; RECORD_WARN=0
+record() {
+  # record "section" "name" "pass|fail|warn" "message"
+  local section="$1" name="$2" status="$3" message="$4"
+  case "$status" in
+    pass) ok "$message";   RECORD_PASS=$((RECORD_PASS+1)) ;;
+    fail) fail "$message"; RECORD_FAIL=$((RECORD_FAIL+1)) ;;
+    warn) warn "$message"; RECORD_WARN=$((RECORD_WARN+1)) ;;
+  esac
+  if [[ "$JSON" -eq 1 ]]; then
+    JSON_CHECKS=$(echo "$JSON_CHECKS" | jq \
+      --arg s "$section" --arg n "$name" --arg st "$status" --arg m "$message" \
+      '. += [{section:$s,name:$n,status:$st,message:$m}]')
+  fi
+}
+emit_json() {
+  local total passed failed warnings ok_flag
+  total=$(   echo "$JSON_CHECKS" | jq 'length')
+  passed=$(  echo "$JSON_CHECKS" | jq '[.[]|select(.status=="pass")]|length')
+  failed=$(  echo "$JSON_CHECKS" | jq '[.[]|select(.status=="fail")]|length')
+  warnings=$(echo "$JSON_CHECKS" | jq '[.[]|select(.status=="warn")]|length')
+  [[ "$failed" -eq 0 ]] && ok_flag=true || ok_flag=false
+  jq -n \
+    --argjson ok "$ok_flag" \
+    --argjson checks "$JSON_CHECKS" \
+    --argjson total "$total" --argjson passed "$passed" \
+    --argjson failed "$failed" --argjson warnings "$warnings" \
+    '{ok: $ok, summary: {total:$total, passed:$passed, failed:$failed, warnings:$warnings}, checks: $checks}'
+}
+
+# ─── HELP ─────────────────────────────────────────────────────────────────
+cmd_help() {
+  if [[ -n "${1:-}" ]] && [[ "$1" != "help" ]]; then
+    case "$1" in
+      validate) sed -n '/^cmd_validate(/,/^}/p' "$0" | grep -E '^[[:space:]]*#' | sed -E 's/^[[:space:]]*#[[:space:]]?//'; return ;;
+      drift)    sed -n '/^cmd_drift(/,/^}/p'    "$0" | grep -E '^[[:space:]]*#' | sed -E 's/^[[:space:]]*#[[:space:]]?//'; return ;;
+      rename)   sed -n '/^cmd_rename(/,/^}/p'   "$0" | grep -E '^[[:space:]]*#' | sed -E 's/^[[:space:]]*#[[:space:]]?//'; return ;;
+      log)      sed -n '/^cmd_log(/,/^}/p'      "$0" | grep -E '^[[:space:]]*#' | sed -E 's/^[[:space:]]*#[[:space:]]?//'; return ;;
+      history)  sed -n '/^cmd_history(/,/^}/p'  "$0" | grep -E '^[[:space:]]*#' | sed -E 's/^[[:space:]]*#[[:space:]]?//'; return ;;
+      config)   sed -n '/^cmd_config(/,/^}/p'   "$0" | grep -E '^[[:space:]]*#' | sed -E 's/^[[:space:]]*#[[:space:]]?//'; return ;;
+      doctor)   sed -n '/^cmd_doctor(/,/^}/p'   "$0" | grep -E '^[[:space:]]*#' | sed -E 's/^[[:space:]]*#[[:space:]]?//'; return ;;
+    esac
+  fi
+  grep -E '^# ' "$0" | sed 's/^# \?//' | sed '/^---*$/q'
+  return 0
+}
+
+# ─── VALIDATE ─────────────────────────────────────────────────────────────
+cmd_validate() {
+  # validate — smoke-test that project.config.json matches reality.
+  #
+  # Checks: tooling availability, config schema, folder name vs slug,
+  # package.json vs slug, git remote vs github.url, GitHub repo reachable,
+  # every URL reachable, history JSONL parses, drift clean, bin scripts +x.
+  #
+  # Options:
+  #   --skip-network   Skip HTTP / GitHub API checks (offline mode)
+  #
+  # Output: human-readable by default; `--json` for machine consumption.
+  # Exit: 0 on all-green, 1 on any failure.
+  local skip_net=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --skip-network) skip_net=1; shift ;;
+      -h|--help) cmd_help validate; return 0 ;;
+      *) die "validate: unknown arg: $1" 2 ;;
+    esac
+  done
+  load_config
+
+  head "validate · $SLUG ($DISPLAY)"; hr
+
+  # tools
+  for t in jq git curl gh; do
+    if command -v "$t" >/dev/null 2>&1; then record tools "$t" pass "$t present"
+    else
+      case "$t" in
+        jq|git|curl) record tools "$t" fail "$t missing" ;;
+        gh)          record tools "$t" warn "gh missing — GitHub checks will be skipped" ;;
+      esac
+    fi
+  done
+
+  # config schema
+  record config exists pass "project.config.json present"
+  record config json   pass "valid JSON"
+  record config version pass "version == 1"
+  record config slug   pass "slug \`$SLUG\` is valid kebab-case"
+  record config displayName pass "displayName: $DISPLAY"
+  record config prodUrl pass "urls.production: $PROD_URL"
+
+  # folder + package.json
+  local folder; folder=$(basename "$REPO_ROOT")
+  if [[ "$folder" == "$SLUG" ]]; then record folder name pass "folder matches slug ($folder)"
+  else                                record folder name fail "folder \`$folder\` ≠ slug \`$SLUG\`"
+  fi
+  if [[ -f "$REPO_ROOT/package.json" ]]; then
+    local pkg; pkg=$(jq -r '.name // ""' "$REPO_ROOT/package.json")
+    [[ "$pkg" == "$SLUG" ]] \
+      && record folder packageName pass "package.json name matches slug ($pkg)" \
+      || record folder packageName fail "package.json name \`$pkg\` ≠ slug \`$SLUG\`"
+  fi
+
+  # git remote
+  if [[ -d "$REPO_ROOT/.git" ]] && command -v git >/dev/null; then
+    local remote; remote=$(git -C "$REPO_ROOT" remote get-url origin 2>/dev/null || echo "")
+    if [[ -n "$remote" ]]; then
+      if [[ "$remote" == "$GH_URL"* || "$remote" == "${GH_URL%.git}"* || "$remote" == "${GH_URL%.git}.git" ]]; then
+        record github remote pass "git remote matches github.url"
+      else
+        record github remote fail "git remote \`$remote\` ≠ github.url \`$GH_URL\`"
+      fi
+    fi
+    if [[ "$skip_net" -eq 0 ]] && command -v gh >/dev/null && [[ -n "$GH_REPO" ]] && [[ -n "$GH_OWNER" ]]; then
+      if gh repo view "$GH_OWNER/$GH_REPO" --json name -q .name >/dev/null 2>&1; then
+        record github reachable pass "GitHub repo $GH_OWNER/$GH_REPO is reachable"
+      else
+        record github reachable fail "GitHub repo $GH_OWNER/$GH_REPO not found"
+      fi
+    fi
+  else
+    record github remote warn "no .git or no git binary — skipped"
+  fi
+
+  # network
+  if [[ "$skip_net" -eq 1 ]]; then
+    record network probe warn "skipped (--skip-network)"
+  elif command -v curl >/dev/null; then
+    while IFS= read -r url; do
+      [[ -z "$url" ]] && continue
+      local code; code=$(curl -s -o /dev/null -w "%{http_code}" -L --max-time 10 "$url" || echo "000")
+      if [[ "$code" =~ ^[23] ]]; then record network "$url" pass "$url → $code"
+      else                            record network "$url" fail "$url → $code"
+      fi
+    done < <(jq -r '.urls.production, (.urls.aliases[]? // empty)' "$CONFIG")
+  fi
+
+  # history
+  if [[ -f "$HISTORY" ]]; then
+    if [[ ! -s "$HISTORY" ]]; then
+      record history jsonl pass ".rename-history.jsonl valid (0 entries)"
+    elif jq -e . "$HISTORY" >/dev/null 2>&1; then
+      local count; count=$(wc -l <"$HISTORY" | tr -d ' ')
+      record history jsonl pass ".rename-history.jsonl valid ($count entries)"
+    else
+      record history jsonl fail ".rename-history.jsonl has an invalid line"
+    fi
+  else
+    record history jsonl warn "no rename history yet"
+  fi
+
+  # drift
+  if "$0" drift --quiet >/dev/null 2>&1; then
+    record drift scan pass "no name drift"
+  else
+    record drift scan fail "drift checker reported leftovers — run \`proj drift\`"
+  fi
+
+  # bin scripts executable
+  for s in proj; do
+    [[ -x "$PROJ_BIN_DIR/$s" ]] && record bin "$s" pass "$s is executable" \
+                                || record bin "$s" fail "$s missing or not executable"
+  done
+
+  if [[ "$JSON" -eq 1 ]]; then
+    emit_json
+    [[ "$(echo "$JSON_CHECKS" | jq '[.[]|select(.status=="fail")]|length')" -eq 0 ]]
+    return $?
+  fi
+
+  echo
+  if [[ "$RECORD_FAIL" -eq 0 ]]; then
+    printf "%s✓ %d check(s) passed%s%s\n" "${C_GREEN}" "$RECORD_PASS" "${C_RESET}" \
+      "$([[ $RECORD_WARN -gt 0 ]] && echo " · $RECORD_WARN warning(s)" || echo "")"
+    return 0
+  else
+    printf "%s✗ %d check(s) failed%s · %d passed%s\n" "${C_RED}" "$RECORD_FAIL" "${C_RESET}" "$RECORD_PASS" \
+      "$([[ $RECORD_WARN -gt 0 ]] && echo " · $RECORD_WARN warning(s)" || echo "")"
+    return 1
+  fi
+}
+
+# ─── DRIFT ────────────────────────────────────────────────────────────────
+cmd_drift() {
+  # drift — find every line that still references a previous name.
+  #
+  # Scans the project repo AND the portfolio site (~/Documents/Projects/portfolio
+  # by default) using `git grep -nF` (tracked files only, fast, line-numbered).
+  # Tokens come from project.config.json: previousSlugs, previousDisplayNames,
+  # previousUrls. Sorted longest-first to avoid false positives on prefixes.
+  #
+  # Options:
+  #   --portfolio PATH   Scan a different portfolio repo
+  #   --timeout SECONDS  Hard timeout per git-grep call (default: 15)
+  #
+  # Exit: 0 if no drift, 1 if any leftover found.
+  local portfolio="$PORTFOLIO_DEFAULT" timeout=15
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --portfolio) portfolio="$2"; shift 2 ;;
+      --timeout)   timeout="$2";   shift 2 ;;
+      --quiet|-q)  QUIET=1; shift ;;
+      -h|--help)   cmd_help drift; return 0 ;;
+      *) die "drift: unknown arg: $1" 2 ;;
+    esac
+  done
+  load_config
+
+  head "drift · $SLUG"
+  info "  repo:      $REPO_ROOT"
+  info "  portfolio: $portfolio"
+  info "  timeout:   ${timeout}s per grep"
+  hr
+
+  # tokens — longest-first
+  local tokens=()
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && tokens+=("$line")
+  done < <(jq -r '
+      (.previousSlugs // [])[],
+      (.previousDisplayNames // [])[],
+      (.previousUrls // [])[] | sub("^https?://"; "")
+    ' "$CONFIG" | awk '{ print length, $0 }' | sort -rn | cut -d' ' -f2-)
+
+  if [[ ${#tokens[@]} -eq 0 ]]; then
+    info ""
+    ok "no previous names declared — nothing to scan"; return 0
+  fi
+
+  # allowlist
+  local keep=()
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && keep+=("$line")
+  done < <(jq -r '(.keepReferencesIn // [])[]' "$CONFIG")
+  keep+=(".rename-history.jsonl" "project.config.json" "bin/project.config.schema.json" "bin/proj" "bin/README.md" "bin/RENAME-WORKFLOW.md" "bin/RENAME-HISTORY.md" "bin/validate.sh" "bin/check-name-drift.sh" "bin/log-rename.sh")
+
+  is_allowlisted() {
+    local path="$1"
+    for k in "${keep[@]}"; do
+      [[ "$path" == "$k" || "$path" == */"$k" ]] && return 0
+    done
+    return 1
+  }
+
+  run_grep() {
+    run_with_timeout "$timeout" git -C "$1" grep -nF -- "$2" 2>/dev/null || true
+  }
+
+  local found=0
+  scan() {
+    local root="$1" label="$2"
+    [[ -d "$root/.git" ]] || { warn "skip $label ($root): not a git repo"; return; }
+    for token in "${tokens[@]}"; do
+      [[ -z "$token" ]] && continue
+      local hits filtered=""
+      hits=$(run_grep "$root" "$token")
+      [[ -z "$hits" ]] && continue
+      while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        local path="${line%%:*}"
+        is_allowlisted "$path" && continue
+        filtered+="$line"$'\n'
+      done <<< "$hits"
+      if [[ -n "$filtered" ]]; then
+        printf "%s▶ [%s] leftover: %s%s\n" "${C_YELLOW}" "$label" "$token" "${C_RESET}" >&2
+        printf '%s' "$filtered" | sed "s|^|    $root/|" >&2
+        echo >&2
+        found=1
+      fi
+    done
+  }
+
+  scan "$REPO_ROOT" "repo"
+  [[ -d "$portfolio" ]] && scan "$portfolio" "portfolio"
+
+  if [[ "$found" -eq 0 ]]; then ok "no drift detected"; return 0
+  else
+    info ""
+    info "${C_YELLOW}Fix the listed files. For intentional back-compat references"
+    info "(redirects, alias labels), add the path to \`keepReferencesIn\` in"
+    info "project.config.json so the checker stops flagging it.${C_RESET}"
+    return 1
+  fi
+}
+
+# ─── LOG ──────────────────────────────────────────────────────────────────
+cmd_log() {
+  # log — append a rename event to .rename-history.jsonl.
+  #
+  # Required:
+  #   --old <slug>       Previous slug (kebab-case)
+  #   --new <slug>       New slug (kebab-case)
+  #
+  # Optional:
+  #   --display-old "..."  Previous display name
+  #   --display-new "..."  New display name
+  #   --surfaces a,b,c     Comma list (folder,github,vercel,site,ios,android,docs)
+  #   --notes "..."        Free-form context
+  #   --force              Allow duplicate entries
+  #
+  # Validates: slug shape, duplicates, JSON roundtrip after append.
+  # Exit: 0 on success, 1 on validation/dup error.
+  local old="" new="" dold="" dnew="" surfaces="folder" notes="" force=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --old)         old="$2"; shift 2 ;;
+      --new)         new="$2"; shift 2 ;;
+      --display-old) dold="$2"; shift 2 ;;
+      --display-new) dnew="$2"; shift 2 ;;
+      --surfaces)    surfaces="$2"; shift 2 ;;
+      --notes)       notes="$2"; shift 2 ;;
+      --force)       force=1; shift ;;
+      -h|--help)     cmd_help log; return 0 ;;
+      *) die "log: unknown arg: $1" 2 ;;
+    esac
+  done
+  [[ -n "$old" && -n "$new" ]] || die "log: --old and --new are required" 2
+  require jq
+
+  local re='^[a-z][a-z0-9-]*[a-z0-9]$'
+  [[ "$old" =~ $re ]] || die "log: --old \`$old\` is not kebab-case lowercase" 2
+  [[ "$new" =~ $re ]] || die "log: --new \`$new\` is not kebab-case lowercase" 2
+  [[ "$old" == "$new" ]] && die "log: --old and --new are the same slug" 2
+
+  if [[ -f "$HISTORY" && "$force" -ne 1 ]]; then
+    if jq -e --arg o "$old" --arg n "$new" 'select(.old==$o and .new==$n)' "$HISTORY" >/dev/null 2>&1; then
+      die "log: ($old → $new) already logged in $HISTORY. Use --force to log again." 1
+    fi
+  fi
+
+  local ts surf_json line
+  ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  surf_json=$(echo "$surfaces" | tr ',' '\n' | jq -R . | jq -sc .)
+  line=$(jq -nc \
+    --arg ts "$ts" --arg old "$old" --arg new "$new" \
+    --arg dold "$dold" --arg dnew "$dnew" --arg notes "$notes" \
+    --argjson surfaces "$surf_json" \
+    '{ts:$ts, type:"project-rename", old:$old, new:$new,
+      displayOld:($dold|select(.!="")), displayNew:($dnew|select(.!="")),
+      surfaces:$surfaces, notes:($notes|select(.!=""))}
+     | with_entries(select(.value != null))')
+  echo "$line" | jq -e . >/dev/null || die "log: generated invalid JSON; refusing to append" 4
+  echo "$line" >> "$HISTORY"
+  tail -n1 "$HISTORY" | jq -e . >/dev/null || die "log: appended line failed to parse on re-read" 4
+
+  ok "logged: $old → $new"
+  info "  → $HISTORY"
+}
+
+# ─── HISTORY ──────────────────────────────────────────────────────────────
+cmd_history() {
+  # history — show past rename events.
+  #
+  # Options:
+  #   --json    Print raw JSONL pipe-friendly (one event per line)
+  #
+  # Default: pretty-printed reverse-chronological list.
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -h|--help) cmd_help history; return 0 ;;
+      *) die "history: unknown arg: $1" 2 ;;
+    esac
+  done
+  if [[ ! -f "$HISTORY" ]]; then
+    info "no rename history yet ($HISTORY does not exist)"; return 0
+  fi
+  if [[ "$JSON" -eq 1 ]]; then
+    cat "$HISTORY"
+    return 0
+  fi
+  head "rename history · $(basename "$REPO_ROOT")"; hr
+  tac "$HISTORY" 2>/dev/null || tail -r "$HISTORY" | jq -r '
+    "\(.ts)\n  \(.displayOld // .old) → \(.displayNew // .new)\n  surfaces: \(.surfaces | join(", "))\n  \( .notes // "" )\n"
+  '
+}
+
+# ─── CONFIG ───────────────────────────────────────────────────────────────
+cmd_config() {
+  # config — print resolved project config + key paths.
+  #
+  # Options:
+  #   --json   Emit the raw project.config.json (pretty-printed)
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -h|--help) cmd_help config; return 0 ;;
+      *) die "config: unknown arg: $1" 2 ;;
+    esac
+  done
+  load_config
+  if [[ "$JSON" -eq 1 ]]; then
+    jq . "$CONFIG"
+    return 0
+  fi
+  head "config · $SLUG"; hr
+  printf "  %-18s %s\n" "slug"          "$SLUG"
+  printf "  %-18s %s\n" "displayName"   "$DISPLAY"
+  printf "  %-18s %s\n" "prod url"      "$PROD_URL"
+  printf "  %-18s %s\n" "github"        "$GH_URL"
+  printf "  %-18s %s\n" "vercel project" "$VERCEL_PROJECT (team $VERCEL_TEAM)"
+  printf "  %-18s %s\n" "repo root"     "$REPO_ROOT"
+  printf "  %-18s %s\n" "history"       "$HISTORY"
+  printf "  %-18s %s\n" "config"        "$CONFIG"
+  echo
+  local prev
+  prev=$(jq -r '(.previousSlugs // []) | join(", ")' "$CONFIG")
+  [[ -n "$prev" ]] && printf "  %-18s %s\n" "previousSlugs" "$prev"
+  prev=$(jq -r '(.urls.aliases // []) | join(", ")' "$CONFIG")
+  [[ -n "$prev" ]] && printf "  %-18s %s\n" "url aliases" "$prev"
+}
+
+# ─── DOCTOR ───────────────────────────────────────────────────────────────
+cmd_doctor() {
+  # doctor — verbose validate with suggested fixes for any failures.
+  # Currently aliases `proj validate`; future versions will print remediation
+  # snippets for each failure.
+  cmd_validate "$@"
+}
+
+# ─── RENAME (orchestrator) ────────────────────────────────────────────────
+cmd_rename() {
+  # rename — end-to-end project rename.
+  #
+  # Required:
+  #   --to <new-slug>   New canonical slug (kebab-case lowercase)
+  #
+  # Optional:
+  #   --display "..."   New display name (default: current displayName unchanged)
+  #   --dry-run         Print every step without performing any change
+  #   --yes             Skip per-step confirmation prompts
+  #   --skip-github     Don't run `gh repo rename` (do it later manually)
+  #   --skip-vercel     Don't touch Vercel project / domains
+  #   --notes "..."     Recorded in the history log entry
+  #
+  # What it does (in order):
+  #   1. Pre-flight: `proj validate` must pass (or --yes to override)
+  #   2. Update project.config.json — move slug into previousSlugs, set new
+  #   3. Sed-replace stale references in repo + portfolio
+  #   4. Log the event to .rename-history.jsonl
+  #   5. `mv` the local folder
+  #   6. `gh repo rename` (unless --skip-github)
+  #   7. Vercel project rename + alias preservation (unless --skip-vercel)
+  #   8. Re-run `proj validate` from new folder
+  #
+  # NOTE: After this command the script's path is no longer
+  # ~/Documents/Projects/<old>/bin/proj — it's ~/Documents/Projects/<new>/bin/proj.
+  # Adjust any open editor / terminal accordingly.
+  local new_slug="" new_display="" dry=0 yes=0 skip_gh=0 skip_vercel=0 notes=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --to)          new_slug="$2"; shift 2 ;;
+      --display)     new_display="$2"; shift 2 ;;
+      --dry-run)     dry=1; shift ;;
+      --yes|-y)      yes=1; shift ;;
+      --skip-github) skip_gh=1; shift ;;
+      --skip-vercel) skip_vercel=1; shift ;;
+      --notes)       notes="$2"; shift 2 ;;
+      -h|--help)     cmd_help rename; return 0 ;;
+      *) die "rename: unknown arg: $1" 2 ;;
+    esac
+  done
+  [[ -n "$new_slug" ]] || die "rename: --to <new-slug> is required" 2
+  [[ "$new_slug" =~ ^[a-z][a-z0-9-]*[a-z0-9]$ ]] \
+    || die "rename: --to \`$new_slug\` is not kebab-case lowercase" 2
+  load_config
+  [[ "$new_slug" == "$SLUG" ]] && die "rename: --to \`$new_slug\` is the current slug" 2
+
+  local old_slug="$SLUG" old_display="$DISPLAY"
+  [[ -z "$new_display" ]] && new_display="$DISPLAY"
+
+  head "rename plan"; hr
+  info "  slug:        $old_slug → $new_slug"
+  info "  displayName: $old_display → $new_display"
+  info "  folder:      $REPO_ROOT → $(dirname "$REPO_ROOT")/$new_slug"
+  [[ "$skip_gh"     -eq 0 ]] && info "  github:      $GH_OWNER/$GH_REPO → $GH_OWNER/$new_slug" || info "  github:      (skipped)"
+  [[ "$skip_vercel" -eq 0 ]] && info "  vercel:      $VERCEL_PROJECT → $new_slug"            || info "  vercel:      (skipped)"
+  [[ "$dry" -eq 1 ]] && { warn "dry-run — no changes made"; return 0; }
+
+  if [[ "$yes" -ne 1 ]]; then
+    printf "%sProceed? [y/N] %s" "${C_YELLOW}" "${C_RESET}"
+    read -r ans
+    [[ "$ans" =~ ^[yY] ]] || die "rename: declined" 1
+  fi
+
+  # 1. update config
+  info "→ update project.config.json"
+  jq --arg s "$new_slug" --arg d "$new_display" --arg os "$old_slug" --arg od "$old_display" '
+    .previousSlugs       = ((.previousSlugs // []) + [$os] | unique)
+    | .previousDisplayNames = ((.previousDisplayNames // []) + [$od] | unique)
+    | .slug = $s | .displayName = $d
+  ' "$CONFIG" > "$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
+
+  # 2. sed-replace references in repo + portfolio
+  info "→ sed across repo + portfolio"
+  for root in "$REPO_ROOT" "$PORTFOLIO_DEFAULT"; do
+    [[ -d "$root/.git" ]] || continue
+    while IFS= read -r f; do
+      [[ -z "$f" || "$f" == *project.config.json || "$f" == *rename-history.jsonl ]] && continue
+      sed -i '' "s|$old_slug|$new_slug|g; s|$old_display|$new_display|g" "$root/$f" 2>/dev/null || true
+    done < <(git -C "$root" grep -lF -- "$old_slug" 2>/dev/null; \
+              git -C "$root" grep -lF -- "$old_display" 2>/dev/null)
+  done
+
+  # 3. log the rename
+  info "→ log to .rename-history.jsonl"
+  "$0" log --old "$old_slug" --new "$new_slug" \
+       --display-old "$old_display" --display-new "$new_display" \
+       --surfaces "folder,github,vercel,site,docs" \
+       --notes "${notes:-Renamed via proj rename}" || true
+
+  # 4. mv the folder — AFTER this, this script's path is invalid
+  local new_root; new_root="$(dirname "$REPO_ROOT")/$new_slug"
+  info "→ mv folder → $new_root"
+  [[ -e "$new_root" ]] && die "rename: target folder $new_root already exists" 1
+  mv "$REPO_ROOT" "$new_root"
+  cd "$new_root"
+
+  # 5. github rename
+  if [[ "$skip_gh" -ne 1 ]] && command -v gh >/dev/null; then
+    info "→ gh repo rename $new_slug"
+    gh -R "$GH_OWNER/$GH_REPO" repo rename "$new_slug" --yes >/dev/null \
+      && ok "GitHub repo renamed" \
+      || warn "gh repo rename failed — run manually"
+  fi
+
+  # 6. vercel rename
+  if [[ "$skip_vercel" -ne 1 ]] && command -v curl >/dev/null; then
+    local token team_id auth_file="$HOME/Library/Application Support/com.vercel.cli/auth.json"
+    if [[ -f "$auth_file" ]]; then
+      token=$(jq -r .token "$auth_file" 2>/dev/null)
+      team_id=$(curl -s "https://api.vercel.com/v2/teams" -H "Authorization: Bearer $token" \
+                  | jq -r --arg s "$VERCEL_TEAM" '.teams[]|select(.slug==$s)|.id' 2>/dev/null)
+      if [[ -n "$token" && -n "$team_id" ]]; then
+        info "→ vercel project rename $VERCEL_PROJECT → $new_slug"
+        curl -s -X PATCH "https://api.vercel.com/v9/projects/$VERCEL_PROJECT?teamId=$team_id" \
+          -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
+          -d "{\"name\":\"$new_slug\"}" | jq -e .name >/dev/null \
+          && ok "Vercel project renamed" \
+          || warn "Vercel rename failed — check $auth_file or rename manually"
+      else
+        warn "couldn't resolve Vercel token/team — skip Vercel step"
+      fi
+    fi
+  fi
+
+  echo
+  head "re-validate"; hr
+  "$new_root/bin/proj" validate || warn "validate reported issues — run \`proj doctor\` for details"
+  echo
+  ok "rename complete: $old_slug → $new_slug"
+  info "  new folder:  $new_root"
+  info "  cd there:    cd $new_root"
+}
+
+# ─── DISPATCH ─────────────────────────────────────────────────────────────
+SUB="${1:-help}"; shift || true
+case "$SUB" in
+  validate|v)         cmd_validate "$@" ;;
+  drift|d)            cmd_drift "$@" ;;
+  rename|r)           cmd_rename "$@" ;;
+  log)                cmd_log "$@" ;;
+  history|h|hist)     cmd_history "$@" ;;
+  config|c)           cmd_config "$@" ;;
+  doctor|dr)          cmd_doctor "$@" ;;
+  version)            echo "proj $PROJ_VERSION"; exit 0 ;;
+  help|--help|-h|"")  cmd_help "${1:-}" ;;
+  *)                  err "unknown command: $SUB"; cmd_help >&2; exit 2 ;;
+esac

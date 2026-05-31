@@ -1,0 +1,47 @@
+{
+  "$schema": "./bin/project.config.schema.json",
+  "_comment": "Canonical naming for watch-together. Single source of truth. Edit ONLY this file when renaming; then run bin/proj validate.",
+
+  "version": 1,
+  "slug": "watch-together",
+  "displayName": "Watch Together",
+  "tagline": "Sub-second cross-device video sync over WebSocket, any streaming site, anywhere.",
+
+  "bundleId": "io.watchtogether.ext",
+  "packageName": "watch-together",
+
+  "urls": {
+    "production": "https://web-eta-two-84.vercel.app",
+    "aliases": []
+  },
+
+  "github": {
+    "owner": "ArnavGoel03",
+    "repo": "watch-together",
+    "url": "https://github.com/ArnavGoel03/watch-together"
+  },
+
+  "vercel": {
+    "project": "web",
+    "projectId": "",
+    "teamSlug": "arnavgoel03s-projects"
+  },
+
+  "portfolio": {
+    "siteRepo": "~/Documents/Projects/portfolio",
+    "slug": "watch-together",
+    "url": "https://arnavgoel.dev/projects/watch-together"
+  },
+
+  "previousSlugs": [],
+  "previousDisplayNames": [],
+  "previousUrls": [],
+
+  "keepReferencesIn": [],
+
+  "notes": [
+    "Vercel project is awkwardly named `web` — queue a `proj rename` from web → watch-together when convenient.",
+    "Chrome extension ID: kilmggcpfkcfpkaapillgloabbgmeeoa (lives on Chrome Web Store, not Vercel).",
+    "Production URL is the sync-server backend; the user-facing surface is the Chrome extension."
+  ]
+}

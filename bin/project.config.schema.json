@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arnavgoel.dev/schemas/project.config.json",
+  "title": "Project config",
+  "description": "Single source of truth for project naming across local folder, GitHub, Vercel, native bundle IDs, and the portfolio site.",
+  "type": "object",
+  "required": ["version", "slug", "displayName", "urls"],
+  "additionalProperties": true,
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Schema version. Bump if the shape of this file changes in a breaking way."
+    },
+    "slug": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$",
+      "description": "Canonical kebab-case slug. Matches folder name, GitHub repo, Vercel project, site route."
+    },
+    "displayName": { "type": "string", "minLength": 1 },
+    "tagline": { "type": "string" },
+    "bundleId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)+$",
+      "description": "Reverse-DNS native bundle ID (iOS) / package name (Android)."
+    },
+    "packageName": { "type": "string" },
+    "urls": {
+      "type": "object",
+      "required": ["production"],
+      "properties": {
+        "production": { "type": "string", "format": "uri" },
+        "aliases": { "type": "array", "items": { "type": "string", "format": "uri" } }
+      }
+    },
+    "github": {
+      "type": "object",
+      "properties": {
+        "owner": { "type": "string" },
+        "repo": { "type": "string" },
+        "url": { "type": "string", "format": "uri" }
+      }
+    },
+    "vercel": {
+      "type": "object",
+      "properties": {
+        "project":   { "type": "string" },
+        "projectId": { "type": "string" },
+        "teamSlug":  { "type": "string" }
+      }
+    },
+    "portfolio": {
+      "type": "object",
+      "properties": {
+        "siteRepo": { "type": "string" },
+        "slug":     { "type": "string" },
+        "url":      { "type": "string", "format": "uri" }
+      }
+    },
+    "previousSlugs":        { "type": "array", "items": { "type": "string" } },
+    "previousDisplayNames": { "type": "array", "items": { "type": "string" } },
+    "previousUrls":         { "type": "array", "items": { "type": "string" } },
+    "keepReferencesIn":     { "type": "array", "items": { "type": "string" } },
+    "notes":                { "type": "array", "items": { "type": "string" } }
+  }
+}
