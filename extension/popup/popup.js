@@ -1,4 +1,4 @@
-// Popup — Room management, chat, and server config
+// Popup - Room management, chat, and server config
 
 const $ = (sel) => document.querySelector(sel);
 let port = null;
@@ -24,13 +24,13 @@ function safePost(msg) {
       port.postMessage(msg);
       return true;
     } catch {
-      showToast("Connection lost — try again");
+      showToast("Connection lost - try again");
       return false;
     }
   }
 }
 
-// Robust clipboard write — async clipboard with execCommand fallback.
+// Robust clipboard write - async clipboard with execCommand fallback.
 // Must be called synchronously from a user-gesture handler.
 async function safeCopy(text) {
   if (!text) return false;
@@ -96,12 +96,14 @@ const displayRoomCode = $("#displayRoomCode");
 const memberCountEl = $("#memberCount");
 const membersListEl = $("#membersList");
 const leaderBadge = $("#leaderBadge");
+const reattachBar = $("#reattachBar");
+const btnReattach = $("#btnReattach");
 const chatMessages = $("#chatMessages");
 const chatInput = $("#chatInput");
 const toastEl = $("#toast");
 const btnCreate = $("#btnCreate");
 
-// Backend presets — Render is the original Node server, Cloudflare is the new Worker.
+// Backend presets - Render is the original Node server, Cloudflare is the new Worker.
 // Per-backend URL is remembered so flipping the radio swaps the URL field instantly.
 const BACKEND_DEFAULTS = {
   render: "wss://watch-together-server-acwi.onrender.com",
@@ -153,7 +155,7 @@ function applyBackendRadios(backend) {
   });
 }
 
-// Backend radio — switching repopulates the URL field with that backend's saved URL,
+// Backend radio - switching repopulates the URL field with that backend's saved URL,
 // then the user clicks Save to actually apply (avoids accidental disconnects).
 document.querySelectorAll('input[name="backend"]').forEach((r) => {
   r.addEventListener("change", () => {
@@ -177,7 +179,7 @@ function applyOverlaySettings(mode, hotkey) {
   if (hotkeyRow) hotkeyRow.style.display = mode === "hold" ? "flex" : "none";
 }
 
-// Mode radios — save on change, no separate Save button
+// Mode radios - save on change, no separate Save button
 document.querySelectorAll('input[name="overlayMode"]').forEach((r) => {
   r.addEventListener("change", () => {
     if (!r.checked) return;
@@ -188,7 +190,7 @@ document.querySelectorAll('input[name="overlayMode"]').forEach((r) => {
   });
 });
 
-// Hotkey input — captures one keypress, persists immediately
+// Hotkey input - captures one keypress, persists immediately
 {
   const hk = $("#overlayHotkey");
   if (hk) {
@@ -326,6 +328,10 @@ $("#btnLeave").addEventListener("click", () => {
   });
 });
 
+btnReattach.addEventListener("click", () => {
+  safePost({ type: "adopt-tab" });
+});
+
 $("#btnCopyCode").addEventListener("click", async () => {
   const btn = $("#btnCopyCode");
   if (!currentRoom) { showToast("No room code yet"); return; }
@@ -334,11 +340,11 @@ $("#btnCopyCode").addEventListener("click", async () => {
     showToast("Room code copied");
     flashButton(btn);
   } else {
-    showToast("Couldn't copy — long-press the code to select");
+    showToast("Couldn't copy - long-press the code to select");
   }
 });
 
-// Build the share link synchronously from cached state — no async hops
+// Build the share link synchronously from cached state - no async hops
 // before the clipboard write, otherwise Chrome rejects the user-gesture.
 function buildShareLink() {
   if (!currentRoom) return "";
@@ -365,7 +371,7 @@ $("#btnCopyLink").addEventListener("click", async () => {
     showToast("Share link copied");
     flashButton(btn);
   } else {
-    showToast("Couldn't copy — try Copy Code instead");
+    showToast("Couldn't copy - try Copy Code instead");
   }
 });
 
@@ -387,7 +393,7 @@ $("#btnSaveServer").addEventListener("click", () => {
     [storageKey]: url,
   });
   safePost({ type: "set-server-url", url });
-  showToast(`Saved — using ${activeBackend === "cloudflare" ? "Cloudflare" : "Render"}`);
+  showToast(`Saved - using ${activeBackend === "cloudflare" ? "Cloudflare" : "Render"}`);
 });
 
 $("#btnSend").addEventListener("click", sendChatMessage);
@@ -395,7 +401,7 @@ $("#btnSend").addEventListener("click", sendChatMessage);
 let pendingChatEnter = false;
 chatInput.addEventListener("keydown", (e) => {
   if (e.key !== "Enter") return;
-  // Don't send mid-IME — emoji picker / IME composition won't have committed input.value yet
+  // Don't send mid-IME - emoji picker / IME composition won't have committed input.value yet
   if (e.isComposing || e.keyCode === 229) {
     pendingChatEnter = true;
     return;
@@ -426,6 +432,13 @@ roomCodeInput.addEventListener("input", () => {
 
 function getUserName() {
   return userNameInput.value.trim() || "";
+}
+
+// The room can be live with no video tab attached: the user closed the party tab, or they
+// created the room from a page that cannot run a content script. Neither ends the session.
+function setReattachVisible(visible) {
+  if (!reattachBar) return;
+  reattachBar.style.display = visible ? "flex" : "none";
 }
 
 function showView(name) {
@@ -475,7 +488,7 @@ function noteLocalTyping(hasContent) {
 }
 
 function handleRemoteTyping(msg) {
-  const myUserId = currentRoom; // popup doesn't track userId yet — use userName fallback
+  const myUserId = currentRoom; // popup doesn't track userId yet - use userName fallback
   if (!msg.userId || msg.userName === getUserName()) return;
   const existing = popupTyping.activePeers.get(msg.userId);
   if (existing && existing.timer) clearTimeout(existing.timer);
@@ -589,6 +602,7 @@ function handlePortMessage(msg) {
           isHost = msg.isHost;
         }
         updateModeUI();
+        setReattachVisible(msg.hasPartyTab === false);
         showView("room");
       }
       if (msg.isHeartbeatLeader) {
@@ -598,6 +612,17 @@ function handlePortMessage(msg) {
 
     case "connection-status":
       updateConnectionStatus(msg.connected);
+      break;
+
+    // The party tab was closed. The room deliberately outlives it, so all the user has to
+    // do is point us at a new video tab.
+    case "party-tab-closed":
+      setReattachVisible(true);
+      break;
+
+    case "party-tab-adopted":
+      setReattachVisible(false);
+      showToast("Attached to this tab");
       break;
 
     case "room-created":
@@ -610,7 +635,10 @@ function handlePortMessage(msg) {
       updateModeUI();
       showView("room");
       addSystemMessage("Room created");
-      showToast("Room created — share the code!");
+      showToast("Room created - share the code!");
+      // Find out whether the room actually landed on a video tab. It will not have if the
+      // tab in front of the user cannot run a content script.
+      setTimeout(() => safePost({ type: "get-state" }), 400);
       break;
 
     case "room-joined":

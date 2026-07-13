@@ -1,4 +1,4 @@
-// Watch Together — Cloudflare Workers + Durable Objects port
+// Watch Together - Cloudflare Workers + Durable Objects port
 // Single-DO design ("hub") that mirrors the Node server's protocol exactly,
 // so the existing extension only needs the WebSocket URL changed.
 // Uses the WebSocket Hibernation API so the DO doesn't burn CPU while idle.
@@ -19,6 +19,8 @@ const PERSISTENT_ROOM_TTL_MS = 30 * 24 * 3600000; // 30 days for named rooms
 const PERSISTENT_ROOM_EMPTY_GRACE_MS = 7 * 24 * 3600000; // 7 days
 const MAX_VOICE_SIGNAL_BYTES = 8192;
 const CUSTOM_NAME_REGEX = /^[a-zA-Z0-9-]{4,32}$/;
+// The shape generateRoomCode() hands out (no I, O, 0 or 1: they read the same out loud).
+const ROOM_CODE_REGEX = /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{6}$/;
 
 // ---------- Utilities ----------
 const ROOM_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -61,13 +63,13 @@ export default {
       return new Response(null, { status: 204, headers: corsHeaders });
     }
 
-    // Health endpoint — proxied to the DO so the numbers are real
+    // Health endpoint - proxied to the DO so the numbers are real
     if (url.pathname === "/health") {
       const stub = env.ROOMS.get(env.ROOMS.idFromName("hub"));
       return stub.fetch(request);
     }
 
-    // Read-only room existence — same as Node server
+    // Read-only room existence - same as Node server
     if (url.pathname.startsWith("/room/")) {
       const stub = env.ROOMS.get(env.ROOMS.idFromName("hub"));
       return stub.fetch(request);
@@ -79,7 +81,7 @@ export default {
       return stub.fetch(request);
     }
 
-    // WebSocket upgrade — single-hub DO model
+    // WebSocket upgrade - single-hub DO model
     if (request.headers.get("Upgrade") === "websocket") {
       const stub = env.ROOMS.get(env.ROOMS.idFromName("hub"));
       // Pass through cf-connecting-ip for the per-IP cap
@@ -98,7 +100,7 @@ export default {
 };
 
 // ============================================================
-// RoomHubDO — single Durable Object holding all rooms.
+// RoomHubDO - single Durable Object holding all rooms.
 // Uses WebSocket Hibernation: register WSes with state.acceptWebSocket,
 // then implement webSocketMessage / webSocketClose. Per-WS metadata
 // (userId, userName, currentRoom) lives in the WS attachment so it
@@ -108,7 +110,7 @@ export class RoomHubDO {
   constructor(state, env) {
     this.state = state;
     this.env = env;
-    // In-memory caches — rebuilt from storage on cold start.
+    // In-memory caches - rebuilt from storage on cold start.
     this.rooms = null;            // Map<code, room>
     this.connectionsPerIp = new Map();
     this.rateLimits = new Map();  // userId -> { count, resetAt }
@@ -262,9 +264,9 @@ export class RoomHubDO {
       const safeCode = escapeHtml(code);
       return new Response(`<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>Join Watch Together — ${safeCode}</title>
+<title>Join Watch Together - ${safeCode}</title>
 <style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,sans-serif;background:#1c1c1e;color:#fff;min-height:100vh;display:flex;align-items:center;justify-content:center}.card{background:#2c2c2e;border-radius:16px;padding:44px 36px;max-width:400px;width:90%;text-align:center}h1{font-size:20px;font-weight:700;margin-bottom:4px}.sub{color:rgba(235,235,245,.5);font-size:14px;margin-bottom:24px}.code{font-size:38px;font-weight:800;color:#a78bfa;letter-spacing:8px;margin:12px 0 8px}.st{font-size:13px;font-weight:500;margin-bottom:24px;color:${room ? "#30d158" : "rgba(235,235,245,.4)"}}.err{color:#ff453a;font-size:14px;margin-bottom:20px}.btn{display:block;padding:14px;background:linear-gradient(135deg,#7c3aed,#a78bfa);color:#fff;text-decoration:none;border-radius:10px;font-size:16px;font-weight:600;cursor:pointer;border:none;width:100%;margin-bottom:10px}.hint{font-size:12px;color:rgba(235,235,245,.3);margin-top:16px;line-height:1.6}</style>
-</head><body><div class="card"><h1>Watch Together</h1><p class="sub">You've been invited to watch together</p><div class="code">${safeCode}</div><div class="st">${room ? memberCount + " watching now" : "Waiting for host"}</div>${!room ? '<p class="err">Room not found — the host may have left.</p>' : ""}<button class="btn" onclick="navigator.clipboard.writeText('${safeCode}').then(function(){this.textContent='Copied!'}.bind(this))">Copy Room Code</button><p class="hint">Open the video, click Watch Together, and paste this code.</p></div></body></html>`,
+</head><body><div class="card"><h1>Watch Together</h1><p class="sub">You've been invited to watch together</p><div class="code">${safeCode}</div><div class="st">${room ? memberCount + " watching now" : "Waiting for host"}</div>${!room ? '<p class="err">Room not found - the host may have left.</p>' : ""}<button class="btn" onclick="navigator.clipboard.writeText('${safeCode}').then(function(){this.textContent='Copied!'}.bind(this))">Copy Room Code</button><p class="hint">Open the video, click Watch Together, and paste this code.</p></div></body></html>`,
         { headers: { "Content-Type": "text/html", "X-Frame-Options": "DENY", "Content-Security-Policy": "default-src 'self' 'unsafe-inline'" } }
       );
     }
@@ -280,7 +282,7 @@ export class RoomHubDO {
 
       const pair = new WebSocketPair();
       const [client, server] = Object.values(pair);
-      // Hibernation API — DO can sleep when no messages flow
+      // Hibernation API - DO can sleep when no messages flow
       this.state.acceptWebSocket(server);
       // Initial attachment for new connections
       this._setMeta(server, {
@@ -308,7 +310,7 @@ export class RoomHubDO {
 
     const meta = this._meta(ws);
     if (!this._checkRate(meta.userId)) {
-      this._sendTo(ws, { type: "error", message: "Rate limited — slow down" });
+      this._sendTo(ws, { type: "error", message: "Rate limited - slow down" });
       return;
     }
 
@@ -318,6 +320,7 @@ export class RoomHubDO {
       case "leave-room": return this._handleLeave(ws, meta);
       case "sync": return this._handleSync(ws, meta, msg);
       case "heartbeat": return this._handleHeartbeat(ws, meta, msg);
+      case "request-state": return this._handleRequestState(ws, meta);
       case "chat": return this._handleChat(ws, meta, msg);
       case "chat-typing": return this._handleChatTyping(ws, meta, msg);
       case "cc-state": return this._handleCcState(ws, meta, msg);
@@ -363,7 +366,7 @@ export class RoomHubDO {
       }
       const candidate = raw.toUpperCase();
       if (this.rooms.has(candidate)) {
-        this._sendTo(ws, { type: "error", message: "That room name is taken — try joining instead" });
+        this._sendTo(ws, { type: "error", message: "That room name is taken - try joining instead" });
         return;
       }
       code = candidate;
@@ -406,7 +409,56 @@ export class RoomHubDO {
 
   async _handleJoin(ws, meta, msg) {
     const code = typeof msg.roomCode === "string" ? msg.roomCode.toUpperCase().trim() : "";
-    const room = this.rooms.get(code);
+    let room = this.rooms.get(code);
+
+    // Rooms live in the DO's in-memory cache, so a cold start between requests can lose
+    // one before storage is reloaded. A client that is REJOINING a room it was already in
+    // may rebuild it: it replays the code and the last playback position it saw, and the
+    // party carries on. Knowing the code is already the only credential this system has,
+    // so rebuilding with it grants nothing that joining would not.
+    //
+    // Only auto-rejoins set recreateIfMissing. A human typing an unknown code still gets a
+    // clean "Room not found" rather than silently landing in an empty room.
+    if (!room && msg.recreateIfMissing === true && code) {
+      if (this.rooms.size >= MAX_ROOMS) {
+        this._sendTo(ws, { type: "error", message: "Server is at capacity. Try again later." });
+        return;
+      }
+
+      // A rebuilt room has to look like a room we could have handed out in the first
+      // place: either a generated code or a valid custom name. Otherwise a client could
+      // key a room by any string it liked.
+      if (!ROOM_CODE_REGEX.test(code) && !CUSTOM_NAME_REGEX.test(code)) {
+        this._sendTo(ws, { type: "error", message: "Room not found" });
+        return;
+      }
+
+      const seed = msg.resumeState && typeof msg.resumeState === "object" ? msg.resumeState : {};
+      const seedTime = parseFloat(seed.currentTime);
+      const seedRate = parseFloat(seed.playbackRate);
+
+      room = {
+        code,
+        hostId: meta.userId, // whoever gets back first steers until the room settles
+        mode: msg.mode === "host" ? "host" : "everyone",
+        persistent: CUSTOM_NAME_REGEX.test(code),
+        members: new Map(),
+        videoUrl: validateUrl(msg.videoUrl),
+        playbackState: {
+          playing: !!seed.playing,
+          // isFinite, not isNaN: parseFloat("Infinity") is a number, and handing that back
+          // to a real client would set video.currentTime = Infinity.
+          currentTime: !isFinite(seedTime) || seedTime < 0 ? 0 : seedTime,
+          playbackRate: !isFinite(seedRate) || seedRate < 0.1 || seedRate > 16 ? 1 : seedRate,
+          lastUpdate: Date.now(),
+        },
+        createdAt: Date.now(),
+        lastActivity: Date.now(),
+        emptyDeleteTimer: null,
+      };
+      this.rooms.set(code, room);
+    }
+
     if (!room) {
       this._sendTo(ws, { type: "error", message: "Room not found" });
       return;
@@ -488,7 +540,7 @@ export class RoomHubDO {
       }
       await this._persistRoom(code);
     } else {
-      // Empty — schedule grace deletion (don't delete now, allow rejoin)
+      // Empty - schedule grace deletion (don't delete now, allow rejoin)
       this._scheduleEmptyDelete(code);
       await this._persistRoom(code);
     }
@@ -510,7 +562,7 @@ export class RoomHubDO {
 
     room.playbackState = { playing: !!msg.playing, currentTime: ct, playbackRate: pr, lastUpdate: Date.now() };
     room.lastActivity = Date.now();
-    this._persistRoom(code); // fire and forget — eventual consistency is fine
+    this._persistRoom(code); // fire and forget - eventual consistency is fine
 
     const now = Date.now();
     this._broadcast(code, {
@@ -552,6 +604,30 @@ export class RoomHubDO {
       serverTime: now,
       isLive: !!msg.isLive,
     }, ws);
+  }
+
+  // Authoritative state on demand. Backs session resume (a reloaded tab catches up
+  // instantly instead of drifting until the next heartbeat) and manual resync.
+  // Read-only: it never mutates room.playbackState, so a stale client cannot rewind
+  // everyone else by asking where the room is. Replies only to the asking socket.
+  _handleRequestState(ws, meta) {
+    const code = meta.currentRoom;
+    if (!code) return;
+    const room = this.rooms.get(code);
+    if (!room) return;
+
+    const st = room.playbackState;
+    const now = Date.now();
+    this._sendTo(ws, {
+      type: "sync",
+      action: "resync",
+      playing: !!st.playing,
+      currentTime: st.currentTime,
+      playbackRate: st.playbackRate,
+      videoUrl: room.videoUrl || "",
+      timestamp: st.lastUpdate,
+      serverTime: now,
+    });
   }
 
   _handleChat(ws, meta, msg) {

@@ -1,4 +1,4 @@
-// Content script — detects video elements and syncs playback
+// Content script - detects video elements and syncs playback
 
 (function () {
   if (window.__watchTogetherLoaded) return;
@@ -23,13 +23,15 @@
   let isHeartbeatLeader = false;
   let pendingPlaybackState = null; // for applying sync after video loads
   let lastSyncTime = 0; // timestamp of last sync event (sent or received)
-  let lastBroadcastTime = 0; // last currentTime we sent — used to detect suspect jumps
+  let lastBroadcastTime = 0; // last currentTime we sent - used to detect suspect jumps
   let lastBroadcastAt = 0;
   let serverClockOffset = 0; // (server epoch ms) - (local epoch ms), EWMA-smoothed
   let serverClockSamples = 0;
   let fullscreenGuardUntil = 0;
   let activeRateNudge = null;   // { normalRate, restoreTimer }
   let suppressNextNavigateUntil = 0; // when we just applied a remote nav, don't echo
+  let lastDrift = 0;    // seconds behind (+) or ahead (-) the room, from the last correction
+  let lastDriftAt = 0;  // when we last measured it; drift older than a few seconds is stale
 
   function isLiveStream(video) {
     if (!video) return false;
@@ -172,7 +174,7 @@
         }
       }
     } catch {}
-    // Augment with YouTube's button — sometimes textTracks lag the UI
+    // Augment with YouTube's button - sometimes textTracks lag the UI
     if (!active && location.hostname.includes("youtube.com")) {
       const btn = document.querySelector(".ytp-subtitles-button");
       if (btn && btn.getAttribute("aria-pressed") === "true") active = true;
@@ -223,16 +225,102 @@
     el._wtTimer = setTimeout(() => { el.style.opacity = "0"; }, 1500);
   }
 
+  // Ad markers used by the common web players. Cheap to test and covers most of the web
+  // without needing a per-site adapter.
+  const AD_SELECTORS = [
+    ".ad-showing",              // YouTube
+    ".ad-interrupting",         // YouTube
+    ".ytp-ad-player-overlay",   // YouTube
+    ".ytp-ad-module:not(:empty)",
+    ".ima-ad-container",        // Google IMA SDK (very widely embedded)
+    ".videoAdUi",
+    ".jw-flag-ads",             // JW Player
+    ".vjs-ad-playing",          // Video.js
+    ".bitmovinplayer-ad",       // Bitmovin
+    ".plyr--ads",               // Plyr
+  ];
+
+  // The longest stable duration we have seen on this page: our best guess at the actual
+  // show's length. Ads reuse the same <video> element with a tiny duration, so a sudden
+  // collapse from (say) 3600s to 15s is a near-certain ad, on any player, including ones
+  // we have never heard of.
+  let contentDuration = 0;
+  const AD_MAX_DURATION = 60;       // ads longer than this are rare
+  const AD_DURATION_RATIO = 3;      // content must be at least 3x the ad to trust the signal
+  const AD_WEDGE_MAX_MS = 180000;   // no real ad break runs this long
+
+  function noteContentDuration(video) {
+    if (!video) return;
+    const d = video.duration;
+    if (!isFinite(d) || d <= AD_MAX_DURATION) return;
+    if (d > contentDuration) contentDuration = d;
+  }
+
+  function adMarkerPresent() {
+    for (const sel of AD_SELECTORS) {
+      if (document.querySelector(sel)) return true;
+    }
+    return false;
+  }
+
   function isAdPlaying() {
-    // YouTube
-    if (document.querySelector(".ad-showing, .ytp-ad-player-overlay")) return true;
-    // JioHotstar — short duration video is usually an ad
-    if (activeVideo && activeVideo.duration && activeVideo.duration < 30) {
+    if (adMarkerPresent()) return true;
+
+    const video = activeVideo;
+    if (!video) return false;
+    const d = video.duration;
+    if (!isFinite(d) || d <= 0) return false;
+
+    // Universal: the element's duration collapsed far below the known content length.
+    if (
+      contentDuration > AD_MAX_DURATION * 1.5 &&
+      d <= AD_MAX_DURATION &&
+      contentDuration / d >= AD_DURATION_RATIO
+    ) {
+      return true;
+    }
+
+    // JioHotstar serves ads before we ever learn the content duration, so keep the
+    // original site-specific fallback for the cold-start case.
+    if (d < 30 && !contentDuration) {
       const host = window.location.hostname;
       if (host.includes("hotstar") || host.includes("jiohotstar")) return true;
     }
     return false;
   }
+
+  // Ads are per-viewer: your 30s pre-roll is not your friend's. So an ad is not a "pause
+  // the room" event, it is a "drop out, then catch back up" event. Everyone sits out their
+  // own ads and snaps back to the room's true position when theirs ends.
+  let adActive = false;
+  let adSince = 0;
+  function updateAdState() {
+    noteContentDuration(activeVideo);
+    let nowAd = isAdPlaying();
+
+    // Safety valve. The duration heuristic can be wrong: a genuinely short video that
+    // follows a long one on the same page looks exactly like an ad, and being wrong here
+    // means sync is silently dead for the rest of the session. No real ad break runs for
+    // three minutes, so if we still believe one is running and no player has actually said
+    // so, we are the ones who are wrong. Forget the content length and rejoin the room.
+    if (nowAd && adActive && !adMarkerPresent() && Date.now() - adSince > AD_WEDGE_MAX_MS) {
+      contentDuration = 0;
+      nowAd = false;
+    }
+
+    if (nowAd === adActive) return;
+    adActive = nowAd;
+    adSince = nowAd ? Date.now() : 0;
+
+    if (!inRoom) return;
+    if (nowAd) {
+      showNotification("Ad playing, sync paused");
+    } else {
+      showNotification("Ad over, resyncing...");
+      requestResync();
+    }
+  }
+  setInterval(updateAdState, 500);
 
   function onVideoEvent(e) {
     if (isSyncing || !inRoom || isAdPlaying()) return;
@@ -269,7 +357,7 @@
       type: "sync",
       action,
       playing: !video.paused,
-      // Live streams: don't propagate currentTime — DVR offsets differ per viewer.
+      // Live streams: don't propagate currentTime - DVR offsets differ per viewer.
       currentTime: live ? 0 : ct,
       playbackRate: video.playbackRate,
       isLive: live,
@@ -292,7 +380,7 @@
     }
   }
 
-  // Cancel any in-flight rate nudge — used when a hard correction overrides it
+  // Cancel any in-flight rate nudge - used when a hard correction overrides it
   function cancelRateNudge(video) {
     if (!activeRateNudge) return;
     if (activeRateNudge.restoreTimer) clearTimeout(activeRateNudge.restoreTimer);
@@ -331,9 +419,21 @@
     }, closeMs);
   }
 
+  // Ask the room where it actually is and snap to it. Used on session resume, after an
+  // ad, on reconnect, on tab wake, and by the manual resync control.
+  function requestResync() {
+    if (!inRoom) return;
+    sendMsg({ type: "request-state" });
+  }
+
   // Apply sync state from another user
   function applySync(msg) {
     if (msg && typeof msg.serverTime === "number") updateClockOffset(msg.serverTime);
+
+    // While an ad is on screen the <video> element IS the ad, not the show. Seeking or
+    // playing it would scrub the ad, and its timeline is meaningless to the room. Sit the
+    // ad out; updateAdState resyncs us the moment it ends.
+    if (inRoom && isAdPlaying()) return;
 
     const video = activeVideo || findVideo();
     if (!video) {
@@ -383,10 +483,12 @@
       } else {
         const drift = targetTime - video.currentTime; // + means we're behind
         const absDrift = Math.abs(drift);
+        lastDrift = drift;
+        lastDriftAt = Date.now();
         if (absDrift < DRIFT_IGNORE) {
-          // tiny — let it ride
+          // tiny - let it ride
         } else if (isHeartbeat && absDrift < DRIFT_HARD_SEEK) {
-          // smooth correction via playbackRate nudge — no audio glitch
+          // smooth correction via playbackRate nudge - no audio glitch
           nudgePlaybackRate(video, drift, normalRate);
         } else {
           // user action OR large drift: hard seek
@@ -409,15 +511,20 @@
     }, 300);
   }
 
-  // Heartbeat — only the leader sends, everyone receives
+  // Heartbeat - only the leader sends, everyone receives
   function startHeartbeat() {
     stopHeartbeat();
     heartbeatTimer = setInterval(() => {
       const video = activeVideo || findVideo();
       if (!video || !inRoom) return;
 
-      // Skip heartbeat if a sync event happened recently — prevents overriding other users' actions
+      // Skip heartbeat if a sync event happened recently - prevents overriding other users' actions
       if (Date.now() - lastSyncTime < HEARTBEAT_COOLDOWN) return;
+
+      // An ad is a different video on the same element. Broadcasting its currentTime
+      // would drag the whole room back to the ad's timeline (near 0), so stay quiet
+      // until the show is back. updateAdState catches us up when it ends.
+      if (isAdPlaying()) return;
 
       sendMsg({
         type: "heartbeat",
@@ -460,7 +567,7 @@
           break;
 
         case "heartbeat":
-          // Ignore heartbeats if we just sent or received a sync — prevents overriding actions
+          // Ignore heartbeats if we just sent or received a sync - prevents overriding actions
           if (Date.now() - lastSyncTime < HEARTBEAT_COOLDOWN) break;
           applySync(msg);
           break;
@@ -485,9 +592,11 @@
           }
           startHeartbeat();
           showNotification(
-            msg.type === "room-created"
-              ? `Room created: ${msg.roomCode}`
-              : `Joined room: ${msg.roomCode}`
+            msg.resumed
+              ? `Back in room ${msg.roomCode}`
+              : msg.type === "room-created"
+                ? `Room created: ${msg.roomCode}`
+                : `Joined room: ${msg.roomCode}`
           );
           // If joining, apply the room's current playback state
           if (msg.type === "room-joined" && msg.playbackState) {
@@ -505,6 +614,12 @@
 
         case "navigate":
           applyRemoteNavigate(msg);
+          break;
+
+        // The socket dropped and came back. We may have missed every sync in between,
+        // so do not trust our position: re-fetch the room's.
+        case "connection-status":
+          if (msg.connected && inRoom) requestResync();
           break;
 
         case "error":
@@ -560,10 +675,13 @@
     if (location.href === lastKnownUrl) return;
     const oldUrl = lastKnownUrl;
     lastKnownUrl = location.href;
+    // New video, new content length. Carrying the old one over would make a short clip
+    // that follows a long film look like a permanent ad. Relearn it from scratch.
+    contentDuration = 0;
     if (!inRoom) return;
     // If we just received and applied a remote navigate, don't echo it back.
     if (Date.now() < suppressNextNavigateUntil) return;
-    // Reset state — fresh video, fresh broadcast guard
+    // Reset state - fresh video, fresh broadcast guard
     lastBroadcastTime = 0;
     lastBroadcastAt = 0;
     cancelRateNudge(activeVideo);
@@ -590,7 +708,7 @@
     }
     // Avoid a feedback loop: block our own URL-watcher from re-broadcasting after the redirect
     suppressNextNavigateUntil = Date.now() + 8000;
-    showNotification(`${msg.fromUser || "Someone"} switched videos — joining…`);
+    showNotification(`${msg.fromUser || "Someone"} switched videos - joining…`);
     // Persist a join hint so auto-join picks up if the new page lacks the param
     if (currentRoom) {
       chrome.storage.local.set({
@@ -600,7 +718,7 @@
     setTimeout(() => { location.href = target; }, 250);
   }
 
-  // Watch for dynamically loaded videos (SPA navigation) — debounced
+  // Watch for dynamically loaded videos (SPA navigation) - debounced
   let mutationTimer = null;
   const observer = new MutationObserver(() => {
     if (mutationTimer) return;
@@ -624,20 +742,19 @@
   function checkPendingJoin() {
     chrome.storage.local.get(["pendingJoin", "userName"], (data) => {
       if (!data.pendingJoin) return;
-      if (inRoom) return;
 
       const { roomCode, timestamp } = data.pendingJoin;
 
-      // Ignore stale joins (older than 2 minutes)
-      if (Date.now() - timestamp > 120000) {
-        chrome.storage.local.remove("pendingJoin");
-        return;
-      }
+      // Clear the hint first, unconditionally. It is a one-shot: consumed or not, it must
+      // not outlive this check. A hint left behind because we were already in the room is
+      // live bait for the next tab the user opens (the content script runs everywhere),
+      // and that tab would yank the party binding away from the actual video.
+      chrome.storage.local.remove("pendingJoin");
+
+      if (inRoom) return;
+      if (Date.now() - timestamp > 120000) return; // stale, older than 2 minutes
 
       console.log("[WatchTogether] Found pending join:", roomCode);
-
-      // Clear it so other tabs don't also try to join
-      chrome.storage.local.remove("pendingJoin");
 
       const name = data.userName || "User";
       showNotification(`Joining room ${roomCode}...`);
@@ -653,6 +770,34 @@
     });
   }
 
+  // A backgrounded tab gets its timers throttled and a sleeping laptop stops the video
+  // clock entirely, so on the way back we are silently behind by however long we were
+  // gone. Come back, ask the room where it is, snap to it.
+  let hiddenSince = 0;
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      hiddenSince = Date.now();
+      return;
+    }
+    const away = hiddenSince ? Date.now() - hiddenSince : 0;
+    hiddenSince = 0;
+    if (inRoom && away > 5000) requestResync();
+  });
+
+  // Network came back. The socket reconnects on its own; make sure playback does too.
+  window.addEventListener("online", () => {
+    if (inRoom) setTimeout(requestResync, 1500);
+  });
+
+  // Shared handle for overlay.js. Both run in the same content-script world, so the
+  // overlay can read sync health and force a resync without a background round trip.
+  window.__wtCore = {
+    resync: requestResync,
+    isInRoom: () => inRoom,
+    // Drift goes stale fast: report null rather than a number the user would misread.
+    getDrift: () => (Date.now() - lastDriftAt > 12000 ? null : lastDrift),
+  };
+
   // Initialize
   connectToBackground();
 
@@ -662,7 +807,7 @@
     if (v) attachVideoListeners(v);
   }, 1000);
 
-  // Check for pending join — retry until port is ready
+  // Check for pending join - retry until port is ready
   let joinCheckCount = 0;
   const joinCheck = setInterval(() => {
     joinCheckCount++;

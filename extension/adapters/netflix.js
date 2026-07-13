@@ -1,4 +1,4 @@
-// Netflix adapter — handles netflix.com video player
+// Netflix adapter - handles netflix.com video player
 (function () {
   window.__watchTogetherAdapters = window.__watchTogetherAdapters || {};
 

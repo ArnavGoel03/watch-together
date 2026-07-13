@@ -1,8 +1,8 @@
 {
   "manifest_version": 2,
   "name": "Watch Together",
-  "version": "1.0.0",
-  "description": "Sync video playback across devices — watch anything together in real time",
+  "version": "1.1.0",
+  "description": "Sync video playback across devices - watch anything together in real time",
   "permissions": ["storage", "activeTab", "tabs", "<all_urls>"],
   "background": {
     "scripts": ["background-firefox.js"],

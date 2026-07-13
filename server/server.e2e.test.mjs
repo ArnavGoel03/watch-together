@@ -538,3 +538,151 @@ test("custom-name: random rooms are NOT persistent", async () => {
   assert.equal(m.persistent, false);
   closeAll({ ws });
 });
+
+// ====================================================================
+// REQUEST-STATE - authoritative playback state on demand.
+// Backs session resume (reloaded tab), post-ad catch-up, manual resync.
+// ====================================================================
+
+test("request-state: returns the room's current playback state to the asker", async () => {
+  const h = await host();
+  const g = await guest(h.code);
+  // Host moves the room to a known position.
+  send(h.ws, { type: "sync", action: "seek", playing: true, currentTime: 137.5, playbackRate: 1.5 });
+  await waitFor(g.ws, "sync");
+
+  send(g.ws, { type: "request-state" });
+  const m = await waitFor(g.ws, "sync");
+  assert.equal(m.action, "resync");
+  assert.equal(m.currentTime, 137.5);
+  assert.equal(m.playbackRate, 1.5);
+  assert.equal(m.playing, true);
+  assert.equal(typeof m.serverTime, "number", "resync must carry serverTime for clock offset");
+  assert.equal(typeof m.timestamp, "number", "resync must carry timestamp so the client can extrapolate");
+  closeAll(h, g);
+});
+
+test("request-state: is read-only, an asker cannot rewind the room", async () => {
+  const h = await host();
+  const g = await guest(h.code);
+  send(h.ws, { type: "sync", action: "seek", playing: true, currentTime: 200, playbackRate: 1 });
+  await waitFor(g.ws, "sync");
+
+  // A stale client asking where the room is must not move it.
+  send(g.ws, { type: "request-state" });
+  await waitFor(g.ws, "sync");
+  // Host sees no sync broadcast as a side effect of the guest's question.
+  await assertNoMessage(h.ws, "sync", 200);
+
+  // And the room is still where the host put it.
+  send(h.ws, { type: "request-state" });
+  const m = await waitFor(h.ws, "sync");
+  assert.equal(m.currentTime, 200);
+  closeAll(h, g);
+});
+
+// ====================================================================
+// ROOM REBUILD - the server holds rooms in memory, so a restart (a free-tier
+// idle spin-down is routine) wipes them. An auto-rejoin rebuilds the room from
+// the client's last known position instead of stranding the party.
+// ====================================================================
+
+test("rebuild: rejoining a vanished room with recreateIfMissing restores it and its position", async () => {
+  const ws = await createClient();
+  send(ws, {
+    type: "join-room",
+    roomCode: "GHOST1",
+    userName: "Returner",
+    recreateIfMissing: true,
+    resumeState: { playing: true, currentTime: 421.25, playbackRate: 1 },
+  });
+  const m = await waitFor(ws, "room-joined");
+  assert.equal(m.roomCode, "GHOST1");
+  assert.equal(m.isHost, true, "first one back steers the rebuilt room");
+  assert.equal(m.playbackState.currentTime, 421.25, "rebuilt room resumes where the party actually was");
+  assert.equal(m.playbackState.playing, true);
+  closeAll({ ws });
+});
+
+test("rebuild: a plain join to an unknown room still fails cleanly", async () => {
+  const ws = await createClient();
+  send(ws, { type: "join-room", roomCode: "NOSUCH", userName: "Typo" });
+  const m = await waitFor(ws, "error");
+  assert.match(m.message, /not found/i, "a human typing a bad code must not silently create a room");
+  await assertNoMessage(ws, "room-joined", 200);
+  closeAll({ ws });
+});
+
+test("rebuild: a garbage resumeState cannot poison the rebuilt room", async () => {
+  const ws = await createClient();
+  send(ws, {
+    type: "join-room",
+    roomCode: "GHOST2",
+    userName: "Returner",
+    recreateIfMissing: true,
+    resumeState: { playing: true, currentTime: -50, playbackRate: 99 },
+  });
+  const m = await waitFor(ws, "room-joined");
+  assert.equal(m.playbackState.currentTime, 0, "negative time is clamped");
+  assert.equal(m.playbackState.playbackRate, 1, "out-of-range rate falls back to 1x");
+  closeAll({ ws });
+});
+
+test("rebuild: others can join the rebuilt room and land in sync", async () => {
+  const a = await createClient();
+  send(a, {
+    type: "join-room",
+    roomCode: "GHOST3",
+    userName: "First",
+    recreateIfMissing: true,
+    resumeState: { playing: false, currentTime: 90, playbackRate: 1 },
+  });
+  await waitFor(a, "room-joined");
+
+  const g = await guest("GHOST3", "Second");
+  assert.equal(g.msg.playbackState.currentTime, 90, "a late joiner lands where the rebuilt room is");
+  closeAll({ ws: a }, g);
+});
+
+test("rebuild: a room code that could never have been issued is refused", async () => {
+  const ws = await createClient();
+  send(ws, {
+    type: "join-room",
+    roomCode: "not a real code!!",
+    userName: "Attacker",
+    recreateIfMissing: true,
+    resumeState: { playing: true, currentTime: 5, playbackRate: 1 },
+  });
+  const m = await waitFor(ws, "error");
+  assert.match(m.message, /not found/i);
+  closeAll({ ws });
+});
+
+test("rebuild: an infinite resume time cannot be seeded into the room", async () => {
+  const ws = await createClient();
+  send(ws, {
+    type: "join-room",
+    roomCode: "GHOST4",
+    userName: "Returner",
+    recreateIfMissing: true,
+    resumeState: { playing: true, currentTime: "Infinity", playbackRate: 1 },
+  });
+  const m = await waitFor(ws, "room-joined");
+  assert.equal(m.playbackState.currentTime, 0, "Infinity is not a position, it is a broken client");
+  closeAll({ ws });
+});
+
+test("rebuild: a host-only room comes back host-only, not a free-for-all", async () => {
+  const ws = await createClient();
+  send(ws, {
+    type: "join-room",
+    roomCode: "GHOST5",
+    userName: "Returner",
+    recreateIfMissing: true,
+    mode: "host",
+    resumeState: { playing: false, currentTime: 10, playbackRate: 1 },
+  });
+  const m = await waitFor(ws, "room-joined");
+  assert.equal(m.mode, "host", "a restart must not quietly unlock a locked room");
+  closeAll({ ws });
+});

@@ -1,4 +1,4 @@
-// Overlay — injects Watch Together UI directly into video player controls
+// Overlay - injects Watch Together UI directly into video player controls
 
 (function () {
   if (window.__watchTogetherOverlayLoaded) return;
@@ -18,20 +18,28 @@
 
   // ---------- Hotkey config ----------
   // Two modes: "click" (current behavior, button click toggles) or "hold" (panel only
-  // visible while configured key is held — push-to-show, like push-to-talk).
-  const HOTKEY_DEFAULT = "\\"; // backslash — rarely used by sites, easy to reach on most layouts
+  // visible while configured key is held - push-to-show, like push-to-talk).
+  const HOTKEY_DEFAULT = "\\"; // backslash - rarely used by sites, easy to reach on most layouts
   let overlayMode = "click";
   let overlayHotkey = HOTKEY_DEFAULT;
   let hotkeyHeld = false; // true while the configured hotkey is currently down
 
   // ---------- Voice mesh state ----------
   // WebRTC peer-to-peer audio. Server only relays SDP/ICE via voice-signal messages.
+  //
+  // SHIPPED OFF as of v1.1.0. Watch parties pair with a separate call (Zoom, Meet,
+  // Discord), so the built-in mesh is not worth the microphone permission: it would
+  // put an <all_urls> extension in front of a manual store review for a feature nobody
+  // asked for. The implementation is kept intact and unreferenced-but-live behind this
+  // flag. Flip to true to bring it back; the UI, signaling, and server relays all remain.
+  const VOICE_ENABLED = false;
+
   const ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
   // Voice quality modes:
-  //   "media"  — DEFAULT. Echo cancellation OFF. Chrome does NOT switch the tab into the
+  //   "media"  - DEFAULT. Echo cancellation OFF. Chrome does NOT switch the tab into the
   //              "communication" audio category, so the video's audio stays at full volume.
   //              Trade-off: people on speakers may hear themselves through their friend's mic.
-  //   "voice"  — Echo cancellation ON. Better voice quality on speakers. Chrome ducks the
+  //   "voice"  - Echo cancellation ON. Better voice quality on speakers. Chrome ducks the
   //              video audio, sometimes permanently until the tab is closed (known bug).
   let voiceQuality = "media";
   // Default playback volume for peer voices. Lower than 1.0 so voice doesn't drown out video.
@@ -52,14 +60,14 @@
         video: false,
       };
     }
-    // "media" — explicitly disable processing so Chrome stays in "playback" audio category
+    // "media" - explicitly disable processing so Chrome stays in "playback" audio category
     return {
       audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
       video: false,
     };
   }
 
-  // Robust clipboard write — must run synchronously inside the click handler
+  // Robust clipboard write - must run synchronously inside the click handler
   // (Chrome rejects clipboard writes outside the user-gesture context).
   async function safeCopy(text) {
     if (!text) return false;
@@ -107,15 +115,16 @@
   }
 
   // ============================================================
-  // Voice mesh — WebRTC peer-to-peer audio
+  // Voice mesh - WebRTC peer-to-peer audio
   // ============================================================
 
   async function startVoice() {
+    if (!VOICE_ENABLED) return;
     if (voice.active) return;
     try {
       voice.localStream = await navigator.mediaDevices.getUserMedia(micConstraints());
     } catch (err) {
-      addSystemMsg("Mic access denied — enable it in site settings");
+      addSystemMsg("Mic access denied - enable it in site settings");
       console.warn("[WatchTogether voice] getUserMedia failed:", err);
       return;
     }
@@ -129,7 +138,7 @@
       if (myUserId && myUserId < peerId) {
         ensurePeer(peerId, /*initiator*/ true);
       } else {
-        // Other side will initiate when they see our voice-state — we just open the slot
+        // Other side will initiate when they see our voice-state - we just open the slot
         ensurePeer(peerId, /*initiator*/ false);
       }
     }
@@ -148,7 +157,7 @@
       voice.localStream = null;
     }
     // 2. Tear down every peer connection. Remove all event listeners by setting
-    //    null handlers first — defensive against the close path firing late.
+    //    null handlers first - defensive against the close path firing late.
     for (const [peerId, pc] of voice.peers) {
       try {
         pc.ontrack = null;
@@ -333,7 +342,7 @@
   }
 
   // ============================================================
-  // Hotkey — tap to open (click mode) or hold to show (hold mode)
+  // Hotkey - tap to open (click mode) or hold to show (hold mode)
   // ============================================================
 
   function loadHotkeyConfig() {
@@ -351,8 +360,8 @@
   }
 
   // Match `key` representations the way they're stored in settings (a single
-  // displayable key — letters, digits, or punctuation like "\\"). Modifier-only
-  // hotkeys are not supported in V1 — just one key.
+  // displayable key - letters, digits, or punctuation like "\\"). Modifier-only
+  // hotkeys are not supported in V1 - just one key.
   function matchesHotkey(e) {
     if (!overlayHotkey) return false;
     // Don't trigger while typing in an input/textarea anywhere on the page
@@ -506,6 +515,10 @@
           </button>
           <button class="wt-btn-small" id="wt-pip" title="Picture-in-picture">PiP</button>
         </div>
+        <div class="wt-sync-row">
+          <span class="wt-sync-health" id="wt-sync-health" title="How far your video is from the room">Sync: checking...</span>
+          <button class="wt-btn-small" id="wt-resync" title="Snap to the room's current position">Resync</button>
+        </div>
         <div class="wt-voice-active" id="wt-voice-active"></div>
         <div class="wt-chat">
           <div class="wt-chat-messages" id="wt-messages"></div>
@@ -572,7 +585,7 @@
     chatInputEl.addEventListener("keydown", (e) => {
       e.stopPropagation();
       if (e.key !== "Enter") return;
-      // IME composition guard — emoji picker / IME insertion may keep input value
+      // IME composition guard - emoji picker / IME insertion may keep input value
       // unfinalized; sending now would lose the typed content. Defer until composition ends.
       if (e.isComposing || e.keyCode === 229) {
         pendingEnterSend = true;
@@ -613,10 +626,60 @@
           addSystemMsg("Picture-in-picture not supported on this video");
         }
       } catch (err) {
-        addSystemMsg("PiP blocked — try the player's own button");
+        addSystemMsg("PiP blocked - try the player's own button");
         console.warn("[WatchTogether] PiP failed:", err);
       }
     });
+
+    // Sync health readout. Drift is measured by content.js on every correction; we just
+    // render it, so an out-of-sync viewer can see it and fix it instead of guessing.
+    function startSyncHealth() {
+      const el = overlayPanel.querySelector("#wt-sync-health");
+      if (!el) return;
+      setInterval(() => {
+        if (!window.__wtCore?.isInRoom()) {
+          el.textContent = "Sync: not in a room";
+          el.className = "wt-sync-health";
+          return;
+        }
+        const drift = window.__wtCore.getDrift();
+        if (drift === null) {
+          el.textContent = "Sync: in sync";
+          el.className = "wt-sync-health wt-sync-good";
+          return;
+        }
+        const abs = Math.abs(drift);
+        const dir = drift > 0 ? "behind" : "ahead";
+        if (abs < 0.5) {
+          el.textContent = "Sync: in sync";
+          el.className = "wt-sync-health wt-sync-good";
+        } else if (abs < 1.5) {
+          el.textContent = `Sync: ${abs.toFixed(1)}s ${dir}, correcting`;
+          el.className = "wt-sync-health wt-sync-warn";
+        } else {
+          el.textContent = `Sync: ${abs.toFixed(1)}s ${dir}`;
+          el.className = "wt-sync-health wt-sync-bad";
+        }
+      }, 1000);
+    }
+
+    overlayPanel.querySelector("#wt-resync").addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (!window.__wtCore?.isInRoom()) { addSystemMsg("Not in a room"); return; }
+      window.__wtCore.resync();
+      addSystemMsg("Resyncing to the room...");
+    });
+
+    // Voice ships disabled (see VOICE_ENABLED). Hide its surfaces rather than deleting
+    // them, so re-enabling is a one-line change.
+    if (!VOICE_ENABLED) {
+      const micBtn = overlayPanel.querySelector("#wt-mic");
+      if (micBtn) micBtn.style.display = "none";
+      const voiceBadge = overlayPanel.querySelector("#wt-voice-active");
+      if (voiceBadge) voiceBadge.style.display = "none";
+    }
+
+    startSyncHealth();
 
     // Stop all events from reaching the video player
     overlayPanel.addEventListener("click", (e) => e.stopPropagation());
@@ -713,7 +776,7 @@
     const text = input.value.trim();
     if (!text) return;
     if (!safePost({ type: "chat", message: text })) {
-      addSystemMsg("Couldn't send — reconnecting");
+      addSystemMsg("Couldn't send - reconnecting");
       return;
     }
     addChatMsg(userName, text, true);
@@ -780,7 +843,7 @@
         }
       }, TYPING_IDLE_MS);
     } else if (typing.lastSentValue) {
-      // Input was cleared (e.g. message sent) — let peers know immediately
+      // Input was cleared (e.g. message sent) - let peers know immediately
       safePost({ type: "chat-typing", isTyping: false });
       typing.lastSentValue = false;
     }
@@ -1173,6 +1236,42 @@
         transition: background 0.15s;
       }
       .wt-btn-small:hover { background: rgba(120,120,128,0.36); }
+
+      /* Sync health: the one number that says whether the party is actually together. */
+      .wt-sync-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 8px;
+      }
+      .wt-sync-health {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 8px;
+        border-radius: 6px;
+        background: rgba(120,120,128,0.16);
+        color: rgba(235,235,245,0.6);
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.2px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .wt-sync-health::before {
+        content: "";
+        flex-shrink: 0;
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: currentColor;
+      }
+      .wt-sync-good { background: rgba(48,209,88,0.14); color: #30d158; }
+      .wt-sync-warn { background: rgba(255,159,10,0.14); color: #ff9f0a; }
+      .wt-sync-bad  { background: rgba(255,69,58,0.14); color: #ff453a; }
+      .wt-sync-row .wt-btn-small { flex: 0 0 auto; padding: 6px 10px; }
 
       #wt-mic.wt-mic-on {
         background: linear-gradient(135deg, #7c3aed, #a78bfa);

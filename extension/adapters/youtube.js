@@ -1,4 +1,4 @@
-// YouTube adapter — handles youtube.com video player
+// YouTube adapter - handles youtube.com video player
 (function () {
   window.__watchTogetherAdapters = window.__watchTogetherAdapters || {};
 

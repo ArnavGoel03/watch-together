@@ -17,12 +17,17 @@ const MAX_CONNECTIONS_PER_IP = 10;
 const MAX_VIDEO_URL_LENGTH = 2000;
 // Empty rooms linger for this long so a solo leaver / disconnect can rejoin
 // the same code. Override via env for tests.
-const EMPTY_ROOM_GRACE_MS = parseInt(process.env.EMPTY_ROOM_GRACE_MS, 10) || 60000;
+// 30 minutes, not 60 seconds: closing the tab, restarting the browser, rebooting, or
+// riding out a dead wifi stretch all used to destroy the room inside the old window,
+// and the party would come back to "Room not found". An empty room costs a Map entry.
+const EMPTY_ROOM_GRACE_MS = parseInt(process.env.EMPTY_ROOM_GRACE_MS, 10) || 30 * 60000;
 // Persistent (custom-named) rooms get longer TTLs so friends can keep reusing
 // the same name for days.
 const PERSISTENT_ROOM_TTL_MS = (parseInt(process.env.PERSISTENT_ROOM_TTL_HOURS, 10) || 24 * 30) * 3600000; // 30 days
 const PERSISTENT_ROOM_EMPTY_GRACE_MS = parseInt(process.env.PERSISTENT_EMPTY_GRACE_MS, 10) || 7 * 24 * 3600000; // 7 days
 const CUSTOM_NAME_REGEX = /^[a-zA-Z0-9-]{4,32}$/;
+// The shape generateRoomCode() hands out (no I, O, 0 or 1: they read the same out loud).
+const ROOM_CODE_REGEX = /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{6}$/;
 
 // --- State ---
 const rooms = new Map();
@@ -96,10 +101,10 @@ function cleanupRoom(roomCode) {
       console.log(`[cleanup] Room ${roomCode} deleted after ${grace}ms grace. Active rooms: ${rooms.size}`);
     }
   }, grace);
-  console.log(`[cleanup] Room ${roomCode} empty — deletion scheduled in ${grace}ms (persistent=${!!room.persistent})`);
+  console.log(`[cleanup] Room ${roomCode} empty - deletion scheduled in ${grace}ms (persistent=${!!room.persistent})`);
 }
 
-// Elect heartbeat leader — the first member in the room.
+// Elect heartbeat leader - the first member in the room.
 // Only this user sends heartbeats to avoid N^2 broadcast storm.
 function getHeartbeatLeader(room) {
   const firstEntry = room.members.entries().next();
@@ -191,7 +196,7 @@ function serveJoinPage(res, code, roomExists, memberCount) {
   res.writeHead(200, { "Content-Type": "text/html", "X-Frame-Options": "DENY", "Content-Security-Policy": "default-src 'self' 'unsafe-inline'" });
   res.end(`<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>Join Watch Together — ${safeCode}</title>
+<title>Join Watch Together - ${safeCode}</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#1c1c1e;color:#fff;min-height:100vh;display:flex;align-items:center;justify-content:center;-webkit-font-smoothing:antialiased}
@@ -210,7 +215,7 @@ h1{font-size:20px;font-weight:700;margin-bottom:4px}
   <p class="sub">You've been invited to watch together</p>
   <div class="code">${safeCode}</div>
   <div class="st">${roomExists ? memberCount + " watching now" : "Waiting for host"}</div>
-  ${!roomExists ? '<p class="err">Room not found — the host may have left.</p>' : ""}
+  ${!roomExists ? '<p class="err">Room not found - the host may have left.</p>' : ""}
   <button class="btn" onclick="navigator.clipboard.writeText('${safeCode}').then(function(){this.textContent='Copied!'}.bind(this))">Copy Room Code</button>
   <p class="hint">Open the video, click Watch Together, and paste this code.</p>
 </div></body></html>`);
@@ -250,7 +255,7 @@ const server = http.createServer((req, res) => {
 
 
   if (req.url.startsWith("/room/")) {
-    // Only expose minimal info — no videoUrl, no exact member count
+    // Only expose minimal info - no videoUrl, no exact member count
     const code = req.url.split("/room/")[1]?.split("?")[0]?.toUpperCase();
     const room = rooms.get(code);
     res.writeHead(200, headers);
@@ -358,7 +363,7 @@ wss.on("connection", (ws, req) => {
   ws.on("message", (raw) => {
     // Rate limit check
     if (!rateLimiter.check(userId)) {
-      sendTo(ws, { type: "error", message: "Rate limited — slow down" });
+      sendTo(ws, { type: "error", message: "Rate limited - slow down" });
       return;
     }
 
@@ -381,7 +386,7 @@ wss.on("connection", (ws, req) => {
           return;
         }
 
-        // Optional custom room name — makes the room "persistent" with a longer
+        // Optional custom room name - makes the room "persistent" with a longer
         // TTL so friends can keep reusing the same name for days.
         let roomCode;
         let persistent = false;
@@ -393,7 +398,7 @@ wss.on("connection", (ws, req) => {
           }
           const candidate = raw.toUpperCase();
           if (rooms.has(candidate)) {
-            sendTo(ws, { type: "error", message: "That room name is taken — try joining instead" });
+            sendTo(ws, { type: "error", message: "That room name is taken - try joining instead" });
             return;
           }
           roomCode = candidate;
@@ -445,7 +450,57 @@ wss.on("connection", (ws, req) => {
 
       case "join-room": {
         const code = typeof msg.roomCode === "string" ? msg.roomCode.toUpperCase().trim() : "";
-        const room = rooms.get(code);
+        let room = rooms.get(code);
+
+        // Rooms live in memory, so a server restart (on a free tier, an idle spin-down is
+        // routine) wipes every one of them and a happily-watching party would all get
+        // "Room not found" at once. A client that is REJOINING a room it was already in
+        // may rebuild it: it replays the code and the last playback position it saw, and
+        // the party carries on. Knowing the code is already the only credential this
+        // system has, so rebuilding with it grants nothing that joining would not.
+        //
+        // Only auto-rejoins set recreateIfMissing. A human typing an unknown code still
+        // gets a clean "Room not found" rather than silently landing in an empty room.
+        if (!room && msg.recreateIfMissing === true && code) {
+          if (rooms.size >= MAX_ROOMS) {
+            sendTo(ws, { type: "error", message: "Server is at capacity. Try again later." });
+            return;
+          }
+
+          // A rebuilt room has to look like a room we could have handed out in the first
+          // place: either a generated code or a valid custom name. Otherwise a client could
+          // key a room by any 4KB string it liked.
+          if (!ROOM_CODE_REGEX.test(code) && !CUSTOM_NAME_REGEX.test(code)) {
+            sendTo(ws, { type: "error", message: "Room not found" });
+            return;
+          }
+
+          const seed = msg.resumeState && typeof msg.resumeState === "object" ? msg.resumeState : {};
+          const seedTime = parseFloat(seed.currentTime);
+          const seedRate = parseFloat(seed.playbackRate);
+
+          room = {
+            code,
+            hostId: userId, // whoever gets back first steers until the room settles
+            mode: msg.mode === "host" ? "host" : "everyone",
+            persistent: CUSTOM_NAME_REGEX.test(code),
+            members: new Map(),
+            videoUrl: validateUrl(msg.videoUrl),
+            playbackState: {
+              playing: !!seed.playing,
+              // isFinite, not isNaN: parseFloat("Infinity") is a number, and handing that
+              // back to a real client would set video.currentTime = Infinity.
+              currentTime: !isFinite(seedTime) || seedTime < 0 ? 0 : seedTime,
+              playbackRate: !isFinite(seedRate) || seedRate < 0.1 || seedRate > 16 ? 1 : seedRate,
+              lastUpdate: Date.now(),
+            },
+            createdAt: Date.now(),
+            lastActivity: Date.now(),
+          };
+          rooms.set(code, room);
+          console.log(`[room] ${code} rebuilt after restart by ${sanitize(msg.userName, MAX_USERNAME_LENGTH) || "User"}`);
+        }
+
         if (!room) {
           sendTo(ws, { type: "error", message: "Room not found" });
           return;
@@ -459,12 +514,12 @@ wss.on("connection", (ws, req) => {
         // Leave current room if in one
         if (currentRoom) leaveCurrentRoom();
 
-        // The room may be in the empty-room grace window — cancel the
+        // The room may be in the empty-room grace window - cancel the
         // pending deletion since someone is rejoining.
         if (room.emptyDeleteTimer) {
           clearTimeout(room.emptyDeleteTimer);
           room.emptyDeleteTimer = null;
-          console.log(`[cleanup] Room ${code} grace deletion canceled — rejoined by ${msg.userName || "User"}`);
+          console.log(`[cleanup] Room ${code} grace deletion canceled - rejoined by ${msg.userName || "User"}`);
         }
 
         userName = sanitize(msg.userName, MAX_USERNAME_LENGTH) || "User";
@@ -594,6 +649,30 @@ wss.on("connection", (ws, req) => {
         break;
       }
 
+      // Authoritative state on demand. Backs session resume (a reloaded tab catches up
+      // instantly instead of drifting until the next heartbeat) and manual resync.
+      // Read-only: it never mutates room.playbackState, so a stale client cannot
+      // rewind everyone else by asking where the room is.
+      case "request-state": {
+        if (!currentRoom) return;
+        const rs = rooms.get(currentRoom);
+        if (!rs) return;
+
+        const st = rs.playbackState;
+        const rsNow = Date.now();
+        sendTo(ws, {
+          type: "sync",
+          action: "resync",
+          playing: !!st.playing,
+          currentTime: st.currentTime,
+          playbackRate: st.playbackRate,
+          videoUrl: rs.videoUrl || "",
+          timestamp: st.lastUpdate,
+          serverTime: rsNow,
+        });
+        break;
+      }
+
       case "navigate": {
         if (!currentRoom) return;
         const navRoom = rooms.get(currentRoom);
@@ -605,7 +684,7 @@ wss.on("connection", (ws, req) => {
         // Ignore if url didn't actually change (avoid noise)
         if (newUrl === navRoom.videoUrl) return;
         navRoom.videoUrl = newUrl;
-        // Reset playback state — we're on a different video now
+        // Reset playback state - we're on a different video now
         navRoom.playbackState = {
           playing: false,
           currentTime: 0,
@@ -645,7 +724,7 @@ wss.on("connection", (ws, req) => {
       }
 
       case "chat-typing": {
-        // Pure relay — no persistence. Tells other clients "{userName} is typing".
+        // Pure relay - no persistence. Tells other clients "{userName} is typing".
         if (!currentRoom) return;
         const r = rooms.get(currentRoom);
         if (!r) return;
@@ -659,7 +738,7 @@ wss.on("connection", (ws, req) => {
       }
 
       case "cc-state": {
-        // Pure relay — peer's CC toggle so we can show a presence toast.
+        // Pure relay - peer's CC toggle so we can show a presence toast.
         if (!currentRoom) return;
         const r = rooms.get(currentRoom);
         if (!r) return;
@@ -694,7 +773,7 @@ wss.on("connection", (ws, req) => {
       }
 
       // ---------- Voice chat (WebRTC mesh) ----------
-      // Server is purely a signaling relay — actual audio flows peer-to-peer.
+      // Server is purely a signaling relay - actual audio flows peer-to-peer.
 
       case "voice-state": {
         // Member toggled their mic on/off. Track state and broadcast.
@@ -726,7 +805,7 @@ wss.on("connection", (ws, req) => {
         if (!targetId || targetId === userId) return;
         const target = room.members.get(targetId);
         if (!target) return;
-        // Cap signal payload size — SDP is small, ICE smaller, anything huge is malformed
+        // Cap signal payload size - SDP is small, ICE smaller, anything huge is malformed
         const signal = msg.signal;
         if (!signal || JSON.stringify(signal).length > 8192) return;
         sendTo(target.ws, {

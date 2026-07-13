@@ -1,4 +1,4 @@
-// JioHotstar adapter — handles jiohotstar.com and hotstar.com video player
+// JioHotstar adapter - handles jiohotstar.com and hotstar.com video player
 (function () {
   window.__watchTogetherAdapters = window.__watchTogetherAdapters || {};
 
@@ -26,7 +26,7 @@
     applyState(video, state) {
       const DRIFT = 0.5;
 
-      // JioHotstar sometimes has ads — only sync if the video duration suggests real content
+      // JioHotstar sometimes has ads - only sync if the video duration suggests real content
       if (video.duration && video.duration < 30) {
         // Likely an ad, skip sync
         return;

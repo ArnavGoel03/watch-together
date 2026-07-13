@@ -1,4 +1,4 @@
-/* === WATCH TOGETHER — APPLE DESIGN === */
+/* === WATCH TOGETHER - APPLE DESIGN === */
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -749,4 +749,35 @@ header {
 /* === SELECTION === */
 ::selection {
   background: rgba(167, 139, 250, 0.25);
+}
+
+/* Shown when the room is alive but has no video tab bound to it: the user closed the
+   party tab. The session deliberately survives that, so offer the way back in. */
+.reattach-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  color: var(--label);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.reattach-bar svg {
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+.reattach-bar span {
+  flex: 1;
+}
+
+.reattach-bar .action-btn {
+  flex-shrink: 0;
+  padding: 5px 10px;
+  font-size: 12px;
 }

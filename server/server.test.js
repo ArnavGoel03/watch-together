@@ -9,7 +9,7 @@ const PORT = 4567;
 let serverProcess;
 
 // ========================
-// HELPERS — optimized for speed
+// HELPERS - optimized for speed
 // ========================
 
 function createClient() {
@@ -704,11 +704,15 @@ describe("Chat", () => {
   });
 
   it("truncates to 500 chars", async () => {
+    // Chat is broadcast to everyone EXCEPT the sender (the sender echoes its own message
+    // locally), so the truncation has to be observed on a receiving client. Asserting it
+    // on the sender's own socket just waits forever.
     const h = await host();
+    const g = await guest(h.code);
     h.ws.send(JSON.stringify({ type: "chat", message: "A".repeat(1000) }));
-    const c = await wait(h.ws, "chat");
+    const c = await wait(g.ws, "chat");
     expect(c.message.length).toBeLessThanOrEqual(500);
-    close(h);
+    close(h, g);
   });
 
   it("rejects empty", async () => {

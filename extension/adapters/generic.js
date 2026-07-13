@@ -1,4 +1,4 @@
-// Generic adapter — works with any HTML5 video element
+// Generic adapter - works with any HTML5 video element
 (function () {
   window.__watchTogetherAdapters = window.__watchTogetherAdapters || {};
 
