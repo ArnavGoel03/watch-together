@@ -17,6 +17,7 @@
   let activeVideo = null;
   let adapter = null;
   let isSyncing = false; // flag to prevent echo loops
+  let lastApplied = null; // the state the last remote sync wrote, so echoes can be told from real actions
   let heartbeatTimer = null;
   let inRoom = false;
   let currentRoom = null;
@@ -30,6 +31,7 @@
   let fullscreenGuardUntil = 0;
   let activeRateNudge = null;   // { normalRate, restoreTimer }
   let suppressNextNavigateUntil = 0; // when we just applied a remote nav, don't echo
+  let pendingNavigateTimer = null; // one in-flight remote redirect; a newer navigate replaces it
   let lastDrift = 0;    // seconds behind (+) or ahead (-) the room, from the last correction
   let lastDriftAt = 0;  // when we last measured it; drift older than a few seconds is stale
 
@@ -322,8 +324,26 @@
   }
   setInterval(updateAdState, 500);
 
+  // Applying a remote sync makes the video fire the very same events a viewer would, so for
+  // a short window afterwards we ignore them. Ignore only the ones that match what we just
+  // wrote, though. A blanket "drop everything for 300ms" also drops a viewer who really did
+  // seek or pause in that window: their player moves, the room never hears about it, and the
+  // two sit out of step until the next heartbeat drags one of them back.
+  const ECHO_WINDOW_MS = 1000;
+  const ECHO_SEEK_EPSILON = 1.0; // a seek we performed lands within a frame or two of its target
+
+  function isSyncEcho(action, video) {
+    // Drift correction retunes playbackRate constantly, so a rate change mid-sync is ours.
+    if (action === "ratechange") return true;
+    if (!lastApplied || Date.now() - lastApplied.at > ECHO_WINDOW_MS) return false;
+    if (action === "play") return lastApplied.playing === true;
+    if (action === "pause") return lastApplied.playing === false;
+    if (action === "seek") return Math.abs(video.currentTime - lastApplied.currentTime) < ECHO_SEEK_EPSILON;
+    return false;
+  }
+
   function onVideoEvent(e) {
-    if (isSyncing || !inRoom || isAdPlaying()) return;
+    if (!inRoom || isAdPlaying()) return;
 
     // Skip events triggered by fullscreen transitions (player often remounts the video,
     // firing play/seeked at currentTime=0 which would yank everyone else to the start)
@@ -338,6 +358,8 @@
           : e.type === "seeked"
             ? "seek"
             : "ratechange";
+
+    if (isSyncing && isSyncEcho(action, video)) return;
 
     // Suspect-jump guard: a fresh seek to ~0 right after we knew the video was much further in
     // is almost always a player remount, not a real user seek. Drop it.
@@ -421,6 +443,18 @@
 
   // Ask the room where it actually is and snap to it. Used on session resume, after an
   // ad, on reconnect, on tab wake, and by the manual resync control.
+  // Two URLs point at the same video if they differ only by our own join hint or a hash.
+  function normalizeUrl(raw) {
+    try {
+      const u = new URL(raw);
+      u.searchParams.delete("wt_room");
+      u.hash = "";
+      return u.toString().replace(/\/$/, "");
+    } catch {
+      return String(raw || "");
+    }
+  }
+
   function requestResync() {
     if (!inRoom) return;
     sendMsg({ type: "request-state" });
@@ -470,6 +504,10 @@
         targetTime = video.duration - 0.5;
       }
     }
+
+    // Remember what we are about to write so the events it provokes can be told apart from
+    // a viewer doing something of their own in the same moment.
+    lastApplied = { currentTime: targetTime, playing: !!msg.playing, at: Date.now() };
 
     if (adapter && adapter.applyState) {
       // Adapter handles its own seeking; pass adjusted state
@@ -591,6 +629,17 @@
             console.log("[WatchTogether] No video element found yet");
           }
           startHeartbeat();
+
+          // The party tab just came back from a full page load. If it landed somewhere
+          // other than where the room is, the user switched app (YouTube to Netflix, say):
+          // a cross-site jump tears down the content script, so the in-page URL watcher
+          // never saw it and nobody told the room. Tell it now, and everyone follows.
+          // Only on a resume: a fresh joiner sitting on some unrelated page must follow the
+          // room, not drag the room onto their page.
+          if (msg.resumed && msg.videoUrl && normalizeUrl(msg.videoUrl) !== normalizeUrl(location.href)) {
+            sendMsg({ type: "navigate", url: location.href, onResume: true });
+          }
+
           showNotification(
             msg.resumed
               ? `Back in room ${msg.roomCode}`
@@ -614,6 +663,17 @@
 
         case "navigate":
           applyRemoteNavigate(msg);
+          break;
+
+        // This tab is not the party any more: the user left the room, or attached the
+        // party to a different tab. Nothing else would tell us, and a tab that still
+        // thinks it is in a room keeps a live overlay up and keeps trying to drive sync.
+        case "room-ended":
+          inRoom = false;
+          currentRoom = null;
+          isHeartbeatLeader = false;
+          stopHeartbeat();
+          showNotification(msg.reason === "moved" ? "The party moved to another tab" : "Left the room");
           break;
 
         // The socket dropped and came back. We may have missed every sync in between,
@@ -706,6 +766,18 @@
     } catch {
       target = msg.url;
     }
+
+    // Already where the room wants us: cancel any redirect still pending. This is the
+    // tiebreaker when two people switch apps at the same instant. The server now echoes
+    // every navigate back to its sender and delivers them in the order it settled on, so
+    // the last one wins for everyone: whoever sent the losing URL first gets told to
+    // redirect, then immediately gets the winning URL (which is their own current page) and
+    // cancels that redirect. Without this, they would follow the stale one and strand there.
+    if (normalizeUrl(target) === normalizeUrl(location.href)) {
+      if (pendingNavigateTimer) { clearTimeout(pendingNavigateTimer); pendingNavigateTimer = null; }
+      return;
+    }
+
     // Avoid a feedback loop: block our own URL-watcher from re-broadcasting after the redirect
     suppressNextNavigateUntil = Date.now() + 8000;
     showNotification(`${msg.fromUser || "Someone"} switched videos - joining…`);
@@ -715,7 +787,9 @@
         pendingJoin: { roomCode: currentRoom, timestamp: Date.now() },
       });
     }
-    setTimeout(() => { location.href = target; }, 250);
+    // A newer navigate supersedes an older one, so only ever hold one pending redirect.
+    if (pendingNavigateTimer) clearTimeout(pendingNavigateTimer);
+    pendingNavigateTimer = setTimeout(() => { pendingNavigateTimer = null; location.href = target; }, 250);
   }
 
   // Watch for dynamically loaded videos (SPA navigation) - debounced

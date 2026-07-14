@@ -1,4 +1,4 @@
-// E2E tests for Watch Together server — node:test runner (vitest-free).
+// E2E tests for Watch Together server - node:test runner (vitest-free).
 // Run with: node --test server.e2e.test.mjs
 //
 // Covers the behaviors added in the April 2026 sync/UX hardening pass:
@@ -34,6 +34,14 @@ function createClient() {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const TEST_LEADER_STALE_MS = 600;
+
+// Everyone gets a heartbeat-role the moment the room settles. Those are not what a
+// watchdog test is looking for, so clear them before starting the clock.
+function drain(ws, type) {
+  ws.msgs = ws.msgs.filter((m) => m.type !== type);
+}
 
 function waitFor(ws, type, ms = 2000) {
   const idx = ws.msgs.findIndex((m) => m.type === type);
@@ -83,6 +91,10 @@ before(async () => {
       // Short grace so tests can verify both within-grace rejoin and
       // post-grace expiry without sleeping a real minute.
       EMPTY_ROOM_GRACE_MS: String(TEST_GRACE_MS),
+      // Same idea for the sync-leader watchdog: prove the handoff without sitting
+      // through fifteen real seconds of silence.
+      LEADER_STALE_MS: String(TEST_LEADER_STALE_MS),
+      LEADER_SWEEP_MS: "150",
     },
     silent: true,
   });
@@ -99,7 +111,7 @@ before(async () => {
 after(() => { if (serverProcess) serverProcess.kill("SIGTERM"); });
 
 // ====================================================================
-// 1. CHAT DUPLICATION FIX — server must NOT echo chat back to sender
+// 1. CHAT DUPLICATION FIX - server must NOT echo chat back to sender
 // ====================================================================
 
 test("chat: sender does not receive own chat broadcast", async () => {
@@ -169,14 +181,41 @@ test("room-created response carries serverTime", async () => {
 // 3. NAVIGATE EVENT
 // ====================================================================
 
-test("navigate: host can navigate, broadcast goes to others not sender", async () => {
+test("navigate: broadcast reaches everyone, including the sender", async () => {
+  // The sender gets its own navigate echoed back on purpose. It is how the content script
+  // learns the room's settled url and cancels a redirect a racing navigate had queued, so
+  // two people switching apps at once converge instead of stranding one of them.
   const h = await host({ videoUrl: "https://youtube.com/watch?v=v1" });
   const g = await guest(h.code);
   send(h.ws, { type: "navigate", url: "https://youtube.com/watch?v=v2" });
   const m = await waitFor(g.ws, "navigate");
   assert.equal(m.url, "https://youtube.com/watch?v=v2");
   assert.equal(m.fromUser, "Host");
-  await assertNoMessage(h.ws, "navigate", 200);
+  const own = await waitFor(h.ws, "navigate");
+  assert.equal(own.url, "https://youtube.com/watch?v=v2");
+  closeAll(h, g);
+});
+
+test("navigate: simultaneous conflicting switches converge on one url for everyone", async () => {
+  // Both members switch app at the same instant to different videos. Whatever order the
+  // server settles them in, the last url must reach both of them last, so the room ends up
+  // agreeing rather than split. The old exclude-the-sender behaviour left one member on a
+  // url the room had already moved off.
+  const h = await host({ videoUrl: "https://youtube.com/watch?v=v1" });
+  const g = await guest(h.code);
+  send(h.ws, { type: "navigate", url: "https://youtube.com/watch?v=hostPick" });
+  send(g.ws, { type: "navigate", url: "https://youtube.com/watch?v=guestPick" });
+  // Collect every navigate each side sees; the final one both land on must match.
+  const settle = async (ws) => {
+    let last = null;
+    for (let i = 0; i < 2; i++) {
+      try { last = (await waitFor(ws, "navigate", 500)).url; } catch { break; }
+    }
+    return last;
+  };
+  const [hLast, gLast] = await Promise.all([settle(h.ws), settle(g.ws)]);
+  assert.ok(hLast, "host saw at least one navigate");
+  assert.equal(hLast, gLast, `both members must end on the same url (host ${hLast} vs guest ${gLast})`);
   closeAll(h, g);
 });
 
@@ -235,7 +274,7 @@ test("navigate: resets room playbackState on switch", async () => {
 });
 
 // ====================================================================
-// 4. REGRESSION GUARD — existing behaviors I touched still work
+// 4. REGRESSION GUARD - existing behaviors I touched still work
 // ====================================================================
 
 test("regression: sync still excludes sender", async () => {
@@ -346,30 +385,30 @@ test("grace: rejoining cancels the deletion timer (room survives past grace)", a
   send(h.ws, { type: "leave-room" });
   await sleep(50);
   const g = await guest(code, "Back");
-  // Now wait past the original grace window — the timer should have been canceled
+  // Now wait past the original grace window - the timer should have been canceled
   await sleep(TEST_GRACE_MS + 100);
   // Should still be in room: a sync should still work without error
   send(g.ws, { type: "sync", action: "play", playing: true, currentTime: 5, playbackRate: 1 });
   await sleep(100);
-  // Room must still exist — verify by joining a third client
+  // Room must still exist - verify by joining a third client
   const g2 = await guest(code, "Third");
   assert.equal(g2.msg.roomCode, code);
   closeAll(h, g, g2);
 });
 
-test("grace: multi-user room — one leaves, no grace timer needed (room non-empty)", async () => {
+test("grace: multi-user room - one leaves, no grace timer needed (room non-empty)", async () => {
   const h = await host();
   const g1 = await guest(h.code, "G1");
   send(g1.ws, { type: "leave-room" });
   await waitFor(h.ws, "member-left");
-  // Room is still occupied by host — should be immediately joinable, no grace involved
+  // Room is still occupied by host - should be immediately joinable, no grace involved
   const g2 = await guest(h.code, "G2");
   assert.equal(g2.msg.roomCode, h.code);
   closeAll(h, g1, g2);
 });
 
 // ====================================================================
-// 6. VOICE — server is a pure relay; verify gating + relay semantics
+// 6. VOICE - server is a pure relay; verify gating + relay semantics
 // ====================================================================
 
 test("voice-state: broadcasts to room with active member ids", async () => {
@@ -450,7 +489,7 @@ test("voice-signal: rejects oversize payload (>8KB)", async () => {
 });
 
 // ====================================================================
-// 7. CHAT-TYPING + CC-STATE — pure relays, exclude sender
+// 7. CHAT-TYPING + CC-STATE - pure relays, exclude sender
 // ====================================================================
 
 test("chat-typing: relays to other members, not to sender", async () => {
@@ -467,7 +506,7 @@ test("chat-typing: relays to other members, not to sender", async () => {
 test("chat-typing: requires being in a room", async () => {
   const ws = await createClient();
   send(ws, { type: "chat-typing", isTyping: true });
-  // Should silently noop — not crash, not error
+  // Should silently noop - not crash, not error
   await sleep(150);
   assert.equal(ws.msgs.length, 0);
   closeAll({ ws });
@@ -685,4 +724,44 @@ test("rebuild: a host-only room comes back host-only, not a free-for-all", async
   const m = await waitFor(ws, "room-joined");
   assert.equal(m.mode, "host", "a restart must not quietly unlock a locked room");
   closeAll({ ws });
+});
+
+
+// The sync leader is whoever the server picked to broadcast position. If that person hits
+// an ad (or their tab freezes, or their laptop sleeps) they stop heartbeating, and without
+// this watchdog the room silently loses drift correction for as long as they stay quiet.
+test("watchdog: a silent sync leader is handed off to someone who can actually beat", async () => {
+  const h = await host();
+  const g = await guest(h.code, "Guest");
+  await waitFor(h.ws, "member-joined");
+  await sleep(50);
+  drain(h.ws, "heartbeat-role");
+  drain(g.ws, "heartbeat-role");
+
+  // The host is leader on creation. Say nothing and let the watchdog notice.
+  const demoted = await waitFor(h.ws, "heartbeat-role", 4000);
+  assert.equal(demoted.isLeader, false, "a leader that never beats must not keep the job");
+
+  const promoted = await waitFor(g.ws, "heartbeat-role", 4000);
+  assert.equal(promoted.isLeader, true, "the job has to land on someone still in the room");
+
+  closeAll(h, g);
+});
+
+test("watchdog: a leader that keeps beating keeps the job", async () => {
+  const h = await host();
+  const g = await guest(h.code, "Guest");
+  await waitFor(h.ws, "member-joined");
+  await sleep(50);
+  drain(h.ws, "heartbeat-role");
+
+  // Beat faster than the staleness window for well past one sweep.
+  const beat = setInterval(() => {
+    send(h.ws, { type: "heartbeat", playing: true, currentTime: 12, playbackRate: 1 });
+  }, TEST_LEADER_STALE_MS / 3);
+  await sleep(TEST_LEADER_STALE_MS * 3);
+  clearInterval(beat);
+
+  await assertNoMessage(h.ws, "heartbeat-role", 100);
+  closeAll(h, g);
 });

@@ -106,6 +106,10 @@ export default {
 // (userId, userName, currentRoom) lives in the WS attachment so it
 // survives DO hibernation cycles.
 // ============================================================
+// Three missed beats at a 5s heartbeat.
+const LEADER_STALE_MS = 15000;
+const LEADER_SWEEP_MS = 5000;
+
 export class RoomHubDO {
   constructor(state, env) {
     this.state = state;
@@ -124,7 +128,12 @@ export class RoomHubDO {
     const stored = await this.state.storage.list({ prefix: "room:" });
     for (const [key, value] of stored) {
       const code = key.slice("room:".length);
-      this.rooms.set(code, { ...value, members: new Map(), emptyDeleteTimer: null });
+      // A hibernation wake gives us no honest record of when the last heartbeat was: the
+      // stored snapshot froze whenever some earlier handler last persisted, which for a room
+      // that has only been heartbeating (no pause/seek/navigate) can be minutes stale or
+      // never set. Start the clock fresh so the surviving leader gets a full grace window to
+      // prove it is still beating, instead of being demoted on the very next alarm tick.
+      this.rooms.set(code, { ...value, members: new Map(), emptyDeleteTimer: null, lastHeartbeatAt: Date.now() });
     }
     // Re-attach surviving websockets to their rooms (after a hibernation wake)
     for (const ws of this.state.getWebSockets()) {
@@ -199,6 +208,48 @@ export class RoomHubDO {
     for (const [uid, m] of room.members) {
       this._sendTo(m.ws, { type: "heartbeat-role", isLeader: uid === leader });
     }
+  }
+
+  // -------- Stale sync-leader watchdog --------
+  // The leader is the only member who broadcasts position, so if they go quiet (an ad on
+  // their side, a frozen tab, a sleeping laptop) the whole room silently loses drift
+  // correction. Nobody else is talking either, so there is no message to hang this check
+  // off: it runs on a DO alarm, which is the only timer that survives hibernation.
+  _rotateStaleLeaders() {
+    const now = Date.now();
+    for (const room of this.rooms.values()) {
+      if (room.members.size < 2) continue; // nobody to hand it to
+      const since = now - (room.lastHeartbeatAt || room.createdAt || now);
+      if (since <= LEADER_STALE_MS) continue;
+      const leaderId = this._heartbeatLeader(room);
+      if (!leaderId) continue;
+      // The leader is whoever sits first in the member map, so demote by moving them to
+      // the back of the queue. The next member up inherits the job.
+      const demoted = room.members.get(leaderId);
+      room.members.delete(leaderId);
+      room.members.set(leaderId, demoted);
+      // Reset the clock, or a room where nobody can heartbeat would rotate every sweep.
+      room.lastHeartbeatAt = now;
+      this._notifyHeartbeatLeader(room);
+    }
+  }
+
+  async _scheduleLeaderSweep() {
+    // Only worth waking the object up while some room actually has a leader to replace.
+    let needed = false;
+    for (const room of this.rooms.values()) {
+      if (room.members.size >= 2) { needed = true; break; }
+    }
+    if (!needed) return;
+    const existing = await this.state.storage.getAlarm();
+    if (existing !== null) return; // one sweep in flight is enough
+    await this.state.storage.setAlarm(Date.now() + LEADER_SWEEP_MS);
+  }
+
+  async alarm() {
+    await this.bootPromise;
+    this._rotateStaleLeaders();
+    await this._scheduleLeaderSweep();
   }
 
   // -------- Empty-room grace --------
@@ -495,6 +546,8 @@ export class RoomHubDO {
       memberCount: room.members.size,
     }, ws);
     this._notifyHeartbeatLeader(room);
+    // The room now has someone to hand the job to, so start watching the leader.
+    await this._scheduleLeaderSweep();
   }
 
   async _handleLeave(ws, meta) {
@@ -592,6 +645,7 @@ export class RoomHubDO {
 
     room.playbackState = { playing: !!msg.playing, currentTime: ct, playbackRate: pr, lastUpdate: Date.now() };
     room.lastActivity = Date.now();
+    room.lastHeartbeatAt = Date.now(); // the leader is alive and watching
 
     const now = Date.now();
     this._broadcast(code, {
@@ -698,13 +752,17 @@ export class RoomHubDO {
     room.playbackState = { playing: false, currentTime: 0, playbackRate: 1, lastUpdate: Date.now() };
     room.lastActivity = Date.now();
     this._persistRoom(code);
+    // Echo to the sender too (see the Node server's navigate handler): when two people switch
+    // apps at once, delivering every navigate to everyone in one settled order lets the last
+    // url win for the whole room, and the loser cancels its queued redirect instead of
+    // stranding there.
     this._broadcast(code, {
       type: "navigate",
       url: newUrl,
       fromUser: meta.userName,
       fromUserId: meta.userId,
       serverTime: Date.now(),
-    }, ws);
+    });
   }
 
   _handleVoiceState(ws, meta, msg) {

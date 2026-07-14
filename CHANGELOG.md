@@ -2,6 +2,24 @@
 
 All notable changes to Watch Together are documented here.
 
+## [Unreleased]
+
+More of the same goal as 1.1.0: the party stays together through anything, now including switching to a whole different streaming app.
+
+### Added
+
+- **Sessions follow you across streaming apps.** Switch the party from one site to another (Netflix to YouTube, a torrent stream to Prime) and the room moves with you instead of ending. Whoever opens the new video pulls everyone else along to it, and a fresh tab auto-rejoins by room code. If two people switch at the same instant to different videos, the room now settles everyone on one of them rather than leaving one person stranded on a video the room already left.
+- **The stalled sync leader is now replaced automatically.** The leader is the only member broadcasting position, so if theirs goes quiet (a long ad, a frozen tab, a sleeping laptop) the whole room used to lose drift correction silently. The server now notices a leader that has stopped beating and hands the job to someone who can, on both the Node and Cloudflare backends.
+
+### Fixed
+
+- **A real action taken in the same instant as an incoming sync is no longer swallowed.** Applying a remote play, pause or seek briefly ignores the events it provokes, to avoid echoing them back. That window used to drop a genuine user action that happened to land inside it (you seek right as your friend pauses, and nobody sees your seek). It now ignores only the events that match what was just applied, so your own action still goes through.
+- **A Cloudflare room woken from hibernation no longer demotes a healthy sync leader.** The heartbeat clock is restarted on wake so the surviving leader gets a full grace window to prove it is still beating.
+
+### Testing
+
+- **A real two-browser test harness.** Two separate browser profiles (the only way to have two real participants, since one profile is one member), a real seekable video served over HTTP range requests, and assertions that play, pause and seek actually cross between them. It immediately caught two routing bugs in the background worker that no unit test could see.
+
 ## [1.1.0] - 2026-07-14
 
 The sync-robustness release. Everything in it serves one goal: the party stays together, and the session survives whatever the browser, the network, or the ad break throws at it.

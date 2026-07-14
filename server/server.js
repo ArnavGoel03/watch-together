@@ -112,6 +112,40 @@ function getHeartbeatLeader(room) {
   return firstEntry.value[0]; // userId
 }
 
+// The leader drives everyone else's drift correction, so a leader who has gone quiet is a
+// room that has quietly stopped syncing. It happens: their tab is mid-ad (we deliberately
+// stay silent through our own ads), their page never loaded a video, their tab froze.
+// Nobody notices, because nothing errors. So take the job away and give it to someone who
+// is actually watching.
+// Three missed beats at a 5s heartbeat. Configurable so tests do not have to sit
+// through fifteen real seconds to prove the handoff happens.
+const LEADER_STALE_MS = parseInt(process.env.LEADER_STALE_MS, 10) || 15000;
+const LEADER_SWEEP_MS = parseInt(process.env.LEADER_SWEEP_MS, 10) || 5000;
+
+function rotateStaleLeaders() {
+  const now = Date.now();
+  for (const room of rooms.values()) {
+    if (room.members.size < 2) continue; // nobody to hand it to
+    const since = now - (room.lastHeartbeatAt || room.createdAt || now);
+    if (since <= LEADER_STALE_MS) continue;
+
+    const leaderId = getHeartbeatLeader(room);
+    if (!leaderId) continue;
+
+    // The leader is whoever sits first in the member map, so demote by moving them to the
+    // back of the queue. The next member up inherits the job.
+    const demoted = room.members.get(leaderId);
+    room.members.delete(leaderId);
+    room.members.set(leaderId, demoted);
+
+    // Reset the clock, or a room where nobody can heartbeat would rotate on every sweep.
+    room.lastHeartbeatAt = now;
+    console.log(`[room] ${room.code} sync leader was silent for ${Math.round(since / 1000)}s, handing off`);
+    notifyHeartbeatLeader(room);
+  }
+}
+setInterval(rotateStaleLeaders, LEADER_SWEEP_MS);
+
 function notifyHeartbeatLeader(room) {
   const leaderId = getHeartbeatLeader(room);
   if (!leaderId) return;
@@ -630,6 +664,7 @@ wss.on("connection", (ws, req) => {
           lastUpdate: Date.now(),
         };
         rm.lastActivity = Date.now();
+        rm.lastHeartbeatAt = Date.now(); // the leader is alive and watching
 
         const hbNow = Date.now();
         broadcastToRoom(
@@ -692,13 +727,19 @@ wss.on("connection", (ws, req) => {
           lastUpdate: Date.now(),
         };
         navRoom.lastActivity = Date.now();
+        // Echo to the sender too, not just the others. If two people switch apps at the same
+        // instant, each sends a different url; the server settles them in one order and this
+        // reaches everyone in that same order, so the last url wins for the whole room. The
+        // sender of the losing url gets the winning one back (its own current page) and its
+        // content script cancels the redirect the losing url had queued. Excluding the sender
+        // is what used to leave that person stranded on a video the room had already moved off.
         broadcastToRoom(currentRoom, {
           type: "navigate",
           url: newUrl,
           fromUser: userName,
           fromUserId: userId,
           serverTime: Date.now(),
-        }, ws);
+        });
         break;
       }
 

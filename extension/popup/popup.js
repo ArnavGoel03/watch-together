@@ -72,6 +72,8 @@ connectPort();
 let currentRoom = null;
 let members = [];
 let activeTabUrl = "";
+let activeTabId = null;
+let partyTabId = null;
 let selectedMode = "everyone";
 let isHost = false;
 let currentMode = "everyone";
@@ -97,6 +99,7 @@ const memberCountEl = $("#memberCount");
 const membersListEl = $("#membersList");
 const leaderBadge = $("#leaderBadge");
 const reattachBar = $("#reattachBar");
+const reattachBarText = $("#reattachBarText");
 const btnReattach = $("#btnReattach");
 const chatMessages = $("#chatMessages");
 const chatInput = $("#chatInput");
@@ -223,7 +226,11 @@ const statePoll = setInterval(() => {
 function refreshActiveTabUrl() {
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     activeTabUrl = tabs[0]?.url || "";
+    activeTabId = typeof tabs[0]?.id === "number" ? tabs[0].id : null;
     updateCreateButton();
+    updateReattachBar();
+    // The user can switch tabs under an open popup, so keep asking where the party is.
+    if (currentRoom) safePost({ type: "get-state" });
   });
 }
 refreshActiveTabUrl();
@@ -268,7 +275,9 @@ btnCreate.addEventListener("click", () => {
   }
   withInFlight("create", btnCreate, () => {
     chrome.storage.local.set({ userName: name });
-    safePost({ type: "create-room", userName: name, videoUrl: activeTabUrl, mode: selectedMode, customName });
+    // tabId, not just the URL: the background must bind the party to the exact tab this
+    // popup is anchored over, not to whatever happens to be active by the time it looks.
+    safePost({ type: "create-room", userName: name, videoUrl: activeTabUrl, mode: selectedMode, customName, tabId: activeTabId });
     return new Promise((resolve) => setTimeout(resolve, 4000));
   });
 });
@@ -311,7 +320,7 @@ function joinRoom() {
   }
   withInFlight("join", $("#btnJoin"), () => {
     chrome.storage.local.set({ userName: name });
-    safePost({ type: "join-room", roomCode: code, userName: name });
+    safePost({ type: "join-room", roomCode: code, userName: name, tabId: activeTabId });
     return new Promise((resolve) => setTimeout(resolve, 4000));
   });
 }
@@ -329,7 +338,7 @@ $("#btnLeave").addEventListener("click", () => {
 });
 
 btnReattach.addEventListener("click", () => {
-  safePost({ type: "adopt-tab" });
+  safePost({ type: "adopt-tab", tabId: activeTabId });
 });
 
 $("#btnCopyCode").addEventListener("click", async () => {
@@ -434,11 +443,33 @@ function getUserName() {
   return userNameInput.value.trim() || "";
 }
 
-// The room can be live with no video tab attached: the user closed the party tab, or they
-// created the room from a page that cannot run a content script. Neither ends the session.
-function setReattachVisible(visible) {
+// The room can be live while the tab in front of you is not the one it is playing in: you
+// closed the party tab, or you opened the next thing you want to watch in a new tab. None
+// of that ends the session, so say what is going on and offer the one-click way back.
+function updateReattachBar() {
   if (!reattachBar) return;
-  reattachBar.style.display = visible ? "flex" : "none";
+  if (!currentRoom) {
+    reattachBar.style.display = "none";
+    return;
+  }
+
+  let text = "";
+  let label = "";
+  if (partyTabId === null) {
+    text = "The room is still live, but no video tab is attached.";
+    label = "Attach this tab";
+  } else if (activeTabId !== null && activeTabId !== partyTabId) {
+    text = "The party is playing in another tab.";
+    label = "Move it here";
+  }
+
+  if (!text) {
+    reattachBar.style.display = "none";
+    return;
+  }
+  reattachBarText.textContent = text;
+  if (btnReattach) btnReattach.textContent = label;
+  reattachBar.style.display = "flex";
 }
 
 function showView(name) {
@@ -602,7 +633,8 @@ function handlePortMessage(msg) {
           isHost = msg.isHost;
         }
         updateModeUI();
-        setReattachVisible(msg.hasPartyTab === false);
+        partyTabId = typeof msg.partyTabId === "number" ? msg.partyTabId : null;
+        updateReattachBar();
         showView("room");
       }
       if (msg.isHeartbeatLeader) {
@@ -617,12 +649,14 @@ function handlePortMessage(msg) {
     // The party tab was closed. The room deliberately outlives it, so all the user has to
     // do is point us at a new video tab.
     case "party-tab-closed":
-      setReattachVisible(true);
+      partyTabId = null;
+      updateReattachBar();
       break;
 
     case "party-tab-adopted":
-      setReattachVisible(false);
-      showToast("Attached to this tab");
+      partyTabId = activeTabId;
+      updateReattachBar();
+      showToast("The party is on this tab now");
       break;
 
     case "room-created":

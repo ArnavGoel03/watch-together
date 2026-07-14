@@ -29,6 +29,11 @@ let partyTabId = null;
 let cachedPlayback = { playing: false, currentTime: 0, playbackRate: 1 };
 let cachedVideoUrl = "";
 
+// While this is in the future, the party tab is mid-redirect to someone else's video and
+// must not announce a move of its own. It outlives the page load, and the MV3 worker, on
+// purpose: the whole point is to still be true once the new content script wakes up.
+let navSuppressUntil = 0;
+
 let lastPlaybackPersist = 0;
 function notePlayback(msg) {
   const t = parseFloat(msg.currentTime);
@@ -48,11 +53,12 @@ function notePlayback(msg) {
 
 // Restore state from storage (survives MV3 service worker restarts)
 chrome.storage.local.get(
-  ["serverUrl", "currentRoom", "userId", "partyTabId", "cachedPlayback", "cachedVideoUrl"],
+  ["serverUrl", "currentRoom", "userId", "partyTabId", "cachedPlayback", "cachedVideoUrl", "navSuppressUntil"],
   (data) => {
     if (data.serverUrl) serverUrl = data.serverUrl;
     if (data.cachedPlayback) cachedPlayback = data.cachedPlayback;
     if (data.cachedVideoUrl) cachedVideoUrl = data.cachedVideoUrl;
+    if (typeof data.navSuppressUntil === "number") navSuppressUntil = data.navSuppressUntil;
     if (data.currentRoom) {
       currentRoom = data.currentRoom;
       userId = data.userId;
@@ -169,10 +175,20 @@ function connect() {
         }
         break;
 
+      case "navigate":
+        // We are about to redirect the party tab to someone else's video. That tears down
+        // the content script, and the one that loads in its place will notice it is not
+        // where the room was and try to announce a move of its own. Muzzle it: this is us
+        // following, not us leading. Without this the room ping-pongs between two videos.
+        if (msg.url) cachedVideoUrl = msg.url;
+        navSuppressUntil = Date.now() + 30000;
+        saveState();
+        sendToParty(msg);
+        break;
+
       case "chat":
       case "chat-typing":
       case "cc-state":
-      case "navigate":
       case "voice-state":
       case "voice-signal":
       case "error":
@@ -217,6 +233,21 @@ function sendToServer(msg) {
 }
 
 function postTo(key, msg) {
+  // "popup" is a role, not one fixed port. A toolbar popup registers under the bare name,
+  // but the same page opened as a tab (or a second surface later) registers under
+  // "<tabId>:popup". Reach every popup surface rather than only the bare one, or the
+  // reattach bar and error toasts land nowhere.
+  if (key === "popup") {
+    for (const [k, p] of connectedPorts) {
+      if (k !== "popup" && !k.endsWith(":popup")) continue;
+      try {
+        p.postMessage(msg);
+      } catch {
+        connectedPorts.delete(k);
+      }
+    }
+    return;
+  }
   const p = connectedPorts.get(key);
   if (!p) return;
   try {
@@ -243,19 +274,32 @@ function isPartyTabPort(port) {
   return typeof tabId === "number" && tabId === partyTabId;
 }
 
-// The party binds to the tab that asked to create/join. A content script knows
-// its own tab; the popup does not, so fall back to the active tab it was opened over.
-function resolvePartyTab(port, cb) {
-  const tabId = port.sender?.tab?.id;
-  if (typeof tabId === "number") {
-    cb(tabId);
+// The party binds to a tab that can actually run the sync.
+//   - A content script speaks for its own tab, full stop.
+//   - The popup has no tab of its own, but it knows which tab it is anchored over and
+//     says so in msg.tabId. Trust that over re-querying: by the time this runs the user
+//     may already be looking at something else, and an extension page opened as a tab
+//     (which is what a test harness or a detached surface is) would otherwise nominate
+//     ITSELF as the party tab and strand the room in a page with no video.
+//   - Only if nobody said anything do we fall back to the active tab.
+// A chrome:// page, the Web Store or a PDF viewer has no content script, and binding the
+// party there would leave it mute forever with the popup still cheerfully claiming
+// everything is fine. Bind nothing instead: the popup then offers to reattach.
+function resolvePartyTab(port, msg, cb) {
+  if (port.name === "content") {
+    const own = port.sender?.tab?.id;
+    if (typeof own === "number") {
+      cb(own);
+      return;
+    }
+  }
+
+  const claimed = msg && msg.tabId;
+  if (typeof claimed === "number" && connectedPorts.has(`${claimed}:content`)) {
+    cb(claimed);
     return;
   }
-  // The popup has no tab of its own, so the party goes to whatever the user is looking at,
-  // but only if that tab can actually run the sync. A chrome:// page, the Web Store or a
-  // PDF viewer has no content script, and binding the party there would leave it mute
-  // forever with the popup still cheerfully claiming everything is fine. Bind nothing
-  // instead: the popup then offers to reattach once there is a real video tab.
+
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     const id = tabs[0]?.id;
     if (typeof id !== "number" || !connectedPorts.has(`${id}:content`)) {
@@ -267,7 +311,7 @@ function resolvePartyTab(port, cb) {
 }
 
 function saveState() {
-  chrome.storage.local.set({ currentRoom, userId, partyTabId });
+  chrome.storage.local.set({ currentRoom, userId, partyTabId, navSuppressUntil });
 }
 
 function clearRoomState() {
@@ -319,6 +363,7 @@ chrome.runtime.onConnect.addListener((port) => {
       mode: cachedMode,
       isHost: cachedIsHost,
       members: cachedMembers,
+      videoUrl: cachedVideoUrl,
       resumed: true,
     });
     connect();
@@ -338,7 +383,7 @@ chrome.runtime.onConnect.addListener((port) => {
 
       case "create-room":
         cachedVideoUrl = msg.videoUrl || "";
-        resolvePartyTab(port, (resolved) => {
+        resolvePartyTab(port, msg, (resolved) => {
           partyTabId = resolved;
           saveState();
           connect();
@@ -368,7 +413,7 @@ chrome.runtime.onConnect.addListener((port) => {
         }
 
         pendingJoin = true;
-        resolvePartyTab(port, (resolved) => {
+        resolvePartyTab(port, msg, (resolved) => {
           partyTabId = resolved;
           saveState();
           connect();
@@ -386,6 +431,9 @@ chrome.runtime.onConnect.addListener((port) => {
 
       case "leave-room":
         sendToServer({ type: "leave-room" });
+        // Tell the party tab before we forget which tab that was, or its overlay sits
+        // there claiming to be in a room nobody is in.
+        sendToParty({ type: "room-ended", reason: "left" });
         clearRoomState();
         break;
 
@@ -414,6 +462,12 @@ chrome.runtime.onConnect.addListener((port) => {
         break;
 
       case "navigate":
+        // onResume means the party tab woke up somewhere other than where the room is and
+        // wants to move the room to match. That is right when the user switched app, and
+        // wrong when we are the ones being redirected into someone else's video, which
+        // looks identical from inside the page. Only the background knows which it is.
+        if (msg.onResume && Date.now() < navSuppressUntil) break;
+
         // The party moved to a new video. That URL, not the one we started on, is what a
         // rebuilt room should point at.
         if (msg.url) cachedVideoUrl = msg.url;
@@ -444,14 +498,23 @@ chrome.runtime.onConnect.addListener((port) => {
       // tab the user is on now and pull the current playback state into it.
       case "adopt-tab":
         if (!currentRoom) break;
-        resolvePartyTab(port, (resolved) => {
+        resolvePartyTab(port, msg, (resolved) => {
           if (resolved === null) {
             // The tab in front of the user cannot run the sync (chrome://, the Web Store,
             // a PDF). Say so rather than pretending we attached.
             postTo("popup", { type: "error", message: "Open the video tab first, then attach." });
             return;
           }
+          // The old party tab may still be open (the user switched app in a new tab
+          // rather than closing the old one). Retire it explicitly: two tabs both
+          // believing they are the party is how a room ends up fighting itself.
+          if (partyTabId !== null && partyTabId !== resolved) {
+            postTo(`${partyTabId}:content`, { type: "room-ended", reason: "moved" });
+          }
           partyTabId = resolved;
+          // Attaching is an explicit "the party is here now". Drop any follow-the-leader
+          // muzzle left over from a redirect, so this tab is allowed to move the room.
+          navSuppressUntil = 0;
           saveState();
           postTo("popup", { type: "party-tab-adopted", roomCode: currentRoom });
           postTo(`${partyTabId}:content`, {
@@ -461,6 +524,7 @@ chrome.runtime.onConnect.addListener((port) => {
             mode: cachedMode,
             isHost: cachedIsHost,
             members: cachedMembers,
+            videoUrl: cachedVideoUrl,
             resumed: true,
           });
           connect();

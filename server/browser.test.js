@@ -1,54 +1,59 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+// Browser integration tests. This is the only layer that runs the extension the way a
+// user does: real Chrome, real content script, real background worker, real popup, real
+// server. Everything else in this repo tests one side of a wire.
+//
+// Three things this harness has to get right, all of them learned the hard way:
+//   1. Two participants need TWO browsers. One profile has one background worker, so it
+//      has one WebSocket, one userId and one room. A second tab in the same browser is
+//      not a second person: it joins over the same socket and evicts the first one. The
+//      host and the guest here are separate Chrome instances, which is what two people
+//      watching together actually are.
+//   2. Puppeteer cannot open a real toolbar popup, so the popup is opened as a tab. A page
+//      that is itself a tab reports ITSELF as the active tab, which is not what a real
+//      popup sees. chrome.tabs.query is stubbed in the popup page (and only there) to
+//      point at the video tab it stands in for. Nothing else is mocked.
+//   3. A video element with no real media cannot seek or play, so position assertions
+//      would pass or fail for reasons unrelated to sync. The fixture is a real 10-minute
+//      VP9 file (VP9 because Chromium always has it), served with range support.
+import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import puppeteer from "puppeteer";
 import { fork } from "child_process";
 import path from "path";
+import fs from "fs";
 import http from "http";
 
 const SERVER_PORT = 4568;
 const EXT_PATH = path.resolve(__dirname, "..", "extension");
+const VIDEO_FILE = path.resolve(__dirname, "fixtures", "test-video.webm");
+
 let serverProcess;
-let browser;
-
-// Simple HTML page that embeds a video element — simulates YouTube/Netflix
-const VIDEO_HTML = `<!DOCTYPE html>
-<html><head><title>Test Video</title></head>
-<body>
-<video id="v" src="data:video/mp4;base64,AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDE=" width="640" height="360" controls></video>
-<script>
-  // Make video seekable by giving it a duration
-  Object.defineProperty(document.getElementById('v'), 'duration', { get: () => 3600, configurable: true });
-</script>
-</body></html>`;
-
+let hostBrowser;
+let guestBrowser;
 let videoServer;
 let VIDEO_PORT;
 
-function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+const VIDEO_HTML = `<!DOCTYPE html>
+<html><head><title>Test Video</title></head>
+<body><video id="v" src="/video.webm" width="640" height="360" controls preload="auto"></video></body></html>`;
 
-beforeAll(async () => {
-  // Start sync server
-  serverProcess = fork("./server.js", [], {
-    env: { ...process.env, PORT: String(SERVER_PORT), MAX_CONNECTIONS_PER_IP: "50", RATE_LIMIT_MAX: "200" },
-    silent: true,
-  });
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  // Start a simple HTTP server that serves the test video page
-  videoServer = http.createServer((req, res) => {
-    res.writeHead(200, { "Content-Type": "text/html" });
-    res.end(VIDEO_HTML);
-  });
-  await new Promise((resolve) => {
-    videoServer.listen(0, () => {
-      VIDEO_PORT = videoServer.address().port;
-      resolve();
-    });
-  });
+// Poll instead of sleeping a fixed guess: sync is fast when it works, and a fixed sleep
+// either wastes seconds or flakes.
+async function waitUntil(fn, { timeout = 10000, interval = 100 } = {}) {
+  const deadline = Date.now() + timeout;
+  let last;
+  while (Date.now() < deadline) {
+    last = await fn();
+    if (last) return last;
+    await sleep(interval);
+  }
+  return last;
+}
 
-  await sleep(1000);
-
-  // Launch Chrome with the extension loaded
-  browser = await puppeteer.launch({
-    headless: false, // Extensions require headed mode
+function launchBrowser() {
+  return puppeteer.launch({
+    headless: "new",
     args: [
       `--disable-extensions-except=${EXT_PATH}`,
       `--load-extension=${EXT_PATH}`,
@@ -56,225 +61,295 @@ beforeAll(async () => {
       "--no-default-browser-check",
       "--disable-default-apps",
       "--disable-popup-blocking",
+      "--autoplay-policy=no-user-gesture-required",
+      "--mute-audio",
     ],
   });
-}, 30000);
+}
+
+beforeAll(async () => {
+  serverProcess = fork("./server.js", [], {
+    env: { ...process.env, PORT: String(SERVER_PORT), MAX_CONNECTIONS_PER_IP: "50", RATE_LIMIT_MAX: "500" },
+    silent: true,
+  });
+
+  const videoBytes = fs.readFileSync(VIDEO_FILE);
+  videoServer = http.createServer((req, res) => {
+    if (req.url.startsWith("/video.webm")) {
+      // Range support, or the element never becomes seekable.
+      const range = req.headers.range;
+      if (range) {
+        const [startStr, endStr] = range.replace(/bytes=/, "").split("-");
+        const start = parseInt(startStr, 10) || 0;
+        const end = endStr ? parseInt(endStr, 10) : videoBytes.length - 1;
+        res.writeHead(206, {
+          "Content-Type": "video/webm",
+          "Content-Range": `bytes ${start}-${end}/${videoBytes.length}`,
+          "Accept-Ranges": "bytes",
+          "Content-Length": end - start + 1,
+        });
+        res.end(videoBytes.subarray(start, end + 1));
+        return;
+      }
+      res.writeHead(200, {
+        "Content-Type": "video/webm",
+        "Content-Length": videoBytes.length,
+        "Accept-Ranges": "bytes",
+      });
+      res.end(videoBytes);
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end(VIDEO_HTML);
+  });
+  await new Promise((resolve) => videoServer.listen(0, resolve));
+  VIDEO_PORT = videoServer.address().port;
+
+  await sleep(1000);
+  [hostBrowser, guestBrowser] = await Promise.all([launchBrowser(), launchBrowser()]);
+}, 90000);
 
 afterAll(async () => {
-  if (browser) await browser.close();
+  if (hostBrowser) await hostBrowser.close();
+  if (guestBrowser) await guestBrowser.close();
   if (serverProcess) serverProcess.kill("SIGTERM");
   if (videoServer) videoServer.close();
 });
 
-// Helper: open a new page with the test video
-async function openVideoPage() {
+async function extensionId(browser) {
+  const target = await browser.waitForTarget(
+    (t) => t.type() === "service_worker" && t.url().startsWith("chrome-extension://"),
+    { timeout: 15000 }
+  );
+  return new URL(target.url()).hostname;
+}
+
+// Each video tab carries a marker in its URL so the popup that stands in for it can find
+// exactly that tab, even with several open.
+async function openVideoPage(browser, marker) {
   const page = await browser.newPage();
-  await page.goto(`http://localhost:${VIDEO_PORT}`, { waitUntil: "domcontentloaded" });
-  // Wait for content script to load
-  await sleep(2000);
+  await page.goto(`http://localhost:${VIDEO_PORT}/?tab=${marker}`, { waitUntil: "load" });
+  await page.waitForSelector("video");
+  // Wait for real media, not just the element: currentTime does not move without it.
+  await page.waitForFunction(
+    () => {
+      const v = document.querySelector("video");
+      return v && v.readyState >= 1 && v.duration > 0;
+    },
+    { timeout: 15000 }
+  );
+  // The overlay is injected by the content script, so its presence proves the content
+  // script is alive and attached in this tab.
+  await page.waitForSelector("[id^='wt-'], [class^='wt-']", { timeout: 10000 });
   return page;
 }
 
-// Helper: interact with the extension popup
-async function openPopup(page) {
-  // Get the extension ID from the service worker
-  const targets = await browser.targets();
-  const extTarget = targets.find((t) => t.type() === "service_worker" && t.url().includes("chrome-extension://"));
-  if (!extTarget) throw new Error("Extension service worker not found");
-  const extId = new URL(extTarget.url()).hostname;
-
+async function openPopupFor(browser, marker) {
+  const extId = await extensionId(browser);
   const popup = await browser.newPage();
+  await popup.evaluateOnNewDocument((mark) => {
+    const realQuery = chrome.tabs.query.bind(chrome.tabs);
+    chrome.tabs.query = (info, cb) => {
+      if (info && info.active && info.currentWindow) {
+        // A real popup is anchored over the user's tab. This one IS a tab, so left alone
+        // it would report itself. Hand it the video tab it is standing in for.
+        return realQuery({}, (tabs) => {
+          const t = tabs.find((x) => (x.url || "").includes(`tab=${mark}`));
+          cb(t ? [t] : []);
+        });
+      }
+      return realQuery(info, cb);
+    };
+  }, marker);
   await popup.goto(`chrome-extension://${extId}/popup/popup.html`, { waitUntil: "domcontentloaded" });
-  await sleep(500);
-  return { popup, extId };
+  await popup.waitForSelector("#btnCreate");
+  return popup;
 }
 
-// Helper: set the server URL in the popup
+// The extension holds exactly one room at a time, and it holds it in the background, not
+// in the page. Without this, the next test opens its popup straight into the previous
+// test's room and every assertion after that measures the wrong session.
+async function leaveRoom(browser) {
+  const extId = await extensionId(browser);
+  const p = await browser.newPage();
+  await p.goto(`chrome-extension://${extId}/popup/popup.html`, { waitUntil: "domcontentloaded" });
+  await p.evaluate(
+    () =>
+      new Promise((resolve) => {
+        const port = chrome.runtime.connect({ name: "popup" });
+        port.postMessage({ type: "leave-room" });
+        setTimeout(resolve, 400);
+      })
+  );
+  await p.close();
+}
+
+async function closeAllPages(browser) {
+  for (const p of await browser.pages()) {
+    if (p.url() !== "about:blank") await p.close().catch(() => {});
+  }
+}
+
 async function setServerUrl(popup) {
-  // Open server settings
-  await popup.click("details.server-config summary");
-  await sleep(200);
-  // Clear and type new URL
   await popup.evaluate((port) => {
     document.getElementById("serverUrl").value = `ws://localhost:${port}`;
+    document.getElementById("btnSaveServer").click();
   }, SERVER_PORT);
-  await popup.click("#btnSaveServer");
-  await sleep(1000); // Wait for reconnect
+  await sleep(800);
+}
+
+// The popup only enables Create once it believes it is over a real video tab.
+async function createRoom(popup, name) {
+  // Landing view, not the room view: if the popup opened straight into an existing room,
+  // the code read below would be the old room's and the test would silently pass on it.
+  await popup.waitForSelector("#view-landing.active", { timeout: 10000 });
+  await popup.waitForFunction(() => !document.getElementById("btnCreate").disabled, { timeout: 10000 });
+  await popup.evaluate((n) => {
+    document.getElementById("userName").value = n;
+    document.getElementById("btnCreate").click();
+  }, name);
+  return waitUntil(async () => popup.$eval("#displayRoomCode", (el) => el.textContent.trim()).catch(() => ""), {
+    timeout: 12000,
+  });
+}
+
+async function joinRoom(popup, name, code) {
+  await popup.waitForSelector("#view-landing.active", { timeout: 10000 });
+  await popup.evaluate(
+    (n, c) => {
+      document.getElementById("userName").value = n;
+      document.getElementById("roomCode").value = c;
+      document.getElementById("btnJoin").click();
+    },
+    name,
+    code
+  );
+  return waitUntil(async () => popup.$eval("#displayRoomCode", (el) => el.textContent.trim()).catch(() => ""), {
+    timeout: 12000,
+  });
+}
+
+const videoTime = (page) => page.evaluate(() => document.querySelector("video").currentTime);
+const videoPaused = (page) => page.evaluate(() => document.querySelector("video").paused);
+
+// Chrome suspends video-only playback in a background tab, so whoever is about to act has
+// to be the tab in front. That is also what actually happens: people drive the video they
+// are looking at.
+async function driveVideo(page, fn) {
+  await page.bringToFront();
+  await page.evaluate(fn);
 }
 
 describe("Browser integration", () => {
-  it("extension loads and popup opens", async () => {
-    const page = await openVideoPage();
-    const { popup } = await openPopup(page);
+  afterEach(async () => {
+    await Promise.all([leaveRoom(hostBrowser), leaveRoom(guestBrowser)]);
+    await Promise.all([closeAllPages(hostBrowser), closeAllPages(guestBrowser)]);
+  });
 
-    // Popup should show the landing view
-    const title = await popup.$eval(".logo-text", (el) => el.textContent);
-    expect(title).toBe("Watch Together");
+  it("extension loads and the popup opens", async () => {
+    await openVideoPage(hostBrowser, "solo");
+    const popup = await openPopupFor(hostBrowser, "solo");
 
-    // Should have name input, create button, join button
+    expect(await popup.$eval(".logo-text", (el) => el.textContent)).toBe("Watch Together");
     expect(await popup.$("#userName")).not.toBeNull();
     expect(await popup.$("#btnCreate")).not.toBeNull();
     expect(await popup.$("#btnJoin")).not.toBeNull();
+  }, 40000);
 
-    await popup.close();
-    await page.close();
-  }, 20000);
+  it("the content script attaches to the page and injects its overlay", async () => {
+    const page = await openVideoPage(hostBrowser, "inject");
+    const injected = await page.evaluate(() => Boolean(document.querySelector("[id^='wt-'], [class^='wt-']")));
+    expect(injected).toBe(true);
+  }, 40000);
 
-  it("creates room from video page", async () => {
-    const page = await openVideoPage();
-    const { popup } = await openPopup(page);
-
+  it("creates a room from a video page", async () => {
+    await openVideoPage(hostBrowser, "create");
+    const popup = await openPopupFor(hostBrowser, "create");
     await setServerUrl(popup);
 
-    // Enter name
-    await popup.evaluate(() => { document.getElementById("userName").value = "TestHost"; });
+    const code = await createRoom(popup, "TestHost");
+    expect(code).toMatch(/^[A-Z0-9]{6}$/);
+    expect(await popup.$eval("#statusText", (el) => el.textContent)).toBe("Live");
+  }, 60000);
 
-    // Create room
-    await popup.click("#btnCreate");
-    await sleep(3000); // Wait for WebSocket connect + room create
+  it("two people sync play, pause and seek", async () => {
+    const hostPage = await openVideoPage(hostBrowser, "host");
+    const hostPopup = await openPopupFor(hostBrowser, "host");
+    await setServerUrl(hostPopup);
+    const code = await createRoom(hostPopup, "Host");
+    expect(code).toMatch(/^[A-Z0-9]{6}$/);
+    await hostPopup.close();
 
-    // Should show room view with code
-    const roomCode = await popup.$eval("#displayRoomCode", (el) => el.textContent);
-    expect(roomCode).toMatch(/^[A-Z0-9]{6}$/);
+    const guestPage = await openVideoPage(guestBrowser, "guest");
+    const guestPopup = await openPopupFor(guestBrowser, "guest");
+    await setServerUrl(guestPopup);
+    expect(await joinRoom(guestPopup, "Guest", code)).toBe(code);
+    await guestPopup.close();
 
-    // Status should be connected
-    const status = await popup.$eval("#statusText", (el) => el.textContent);
-    expect(status).toBe("Live");
-
-    await popup.close();
-    await page.close();
-  }, 30000);
-
-  it("two tabs sync video playback", async () => {
-    // Tab 1: Host creates room
-    const page1 = await openVideoPage();
-    const { popup: popup1 } = await openPopup(page1);
-    await setServerUrl(popup1);
-
-    await popup1.evaluate(() => { document.getElementById("userName").value = "Host"; });
-    await popup1.click("#btnCreate");
-    await sleep(3000);
-
-    const roomCode = await popup1.$eval("#displayRoomCode", (el) => el.textContent);
-    expect(roomCode).toMatch(/^[A-Z0-9]{6}$/);
-    await popup1.close();
-
-    // Tab 2: Guest joins
-    const page2 = await openVideoPage();
-    const { popup: popup2 } = await openPopup(page2);
-    await setServerUrl(popup2);
-
-    await popup2.evaluate(() => { document.getElementById("userName").value = "Guest"; });
-    await popup2.evaluate((code) => { document.getElementById("roomCode").value = code; }, roomCode);
-    await popup2.click("#btnJoin");
-    await sleep(3000);
-
-    // Guest should see room view
-    const guestRoom = await popup2.$eval("#displayRoomCode", (el) => el.textContent);
-    expect(guestRoom).toBe(roomCode);
-    await popup2.close();
-
-    // Host plays video at 30s
-    await page1.evaluate(() => {
+    // The host seeks and plays. The guest should land on the same position.
+    await driveVideo(hostPage, () => {
       const v = document.querySelector("video");
       v.currentTime = 30;
-      v.play().catch(() => {});
+      return v.play().catch(() => {});
     });
-    await sleep(2000); // Wait for sync
+    const converged = await waitUntil(async () => Math.abs((await videoTime(guestPage)) - 30) < 5);
+    expect(converged, `guest sat at ${await videoTime(guestPage)}s while the host was at 30s`).toBe(true);
 
-    // Check guest video position
-    const guestTime = await page2.evaluate(() => document.querySelector("video")?.currentTime || 0);
-    // Should be near 30s (within drift threshold)
-    expect(Math.abs(guestTime - 30)).toBeLessThan(5);
+    // The host pauses. The guest should stop too.
+    await driveVideo(hostPage, () => document.querySelector("video").pause());
+    const paused = await waitUntil(async () => (await videoPaused(guestPage)) === true);
+    expect(paused, "guest kept playing after the host paused").toBe(true);
 
-    // Host pauses
-    await page1.evaluate(() => document.querySelector("video").pause());
-    await sleep(1500);
+    // Everyone mode: the guest can drive as well.
+    await driveVideo(guestPage, () => {
+      document.querySelector("video").currentTime = 120;
+    });
+    const hostFollowed = await waitUntil(async () => Math.abs((await videoTime(hostPage)) - 120) < 5);
+    expect(hostFollowed, `host sat at ${await videoTime(hostPage)}s while the guest was at 120s`).toBe(true);
+  }, 120000);
 
-    const guestPaused = await page2.evaluate(() => document.querySelector("video")?.paused);
-    expect(guestPaused).toBe(true);
+  it("a session survives the party tab reloading", async () => {
+    // The host drives, so the room has a real position to come back to.
+    const hostPage = await openVideoPage(hostBrowser, "rhost");
+    const hostPopup = await openPopupFor(hostBrowser, "rhost");
+    await setServerUrl(hostPopup);
+    const code = await createRoom(hostPopup, "Host");
+    await hostPopup.close();
 
-    // Guest seeks to 120s (everyone mode)
-    await page2.evaluate(() => {
+    const guestPage = await openVideoPage(guestBrowser, "rguest");
+    const guestPopup = await openPopupFor(guestBrowser, "rguest");
+    await setServerUrl(guestPopup);
+    expect(await joinRoom(guestPopup, "Guest", code)).toBe(code);
+    await guestPopup.close();
+
+    await driveVideo(hostPage, () => {
       const v = document.querySelector("video");
-      v.currentTime = 120;
+      v.currentTime = 90;
+      return v.play().catch(() => {});
     });
-    await sleep(1500);
+    expect(await waitUntil(async () => Math.abs((await videoTime(guestPage)) - 90) < 6)).toBe(true);
 
-    const hostTime = await page1.evaluate(() => document.querySelector("video")?.currentTime || 0);
-    expect(Math.abs(hostTime - 120)).toBeLessThan(5);
+    // A reload tears the content script down completely. The background has to hand the
+    // room back and pull the position, or the session is over as far as the user is
+    // concerned. This is the whole point of the v1.1.0 persistence work.
+    await guestPage.reload({ waitUntil: "load" });
+    await guestPage.waitForFunction(
+      () => {
+        const v = document.querySelector("video");
+        return v && v.duration > 0;
+      },
+      { timeout: 15000 }
+    );
 
-    await page1.close();
-    await page2.close();
-  }, 45000);
+    const popupAfter = await openPopupFor(guestBrowser, "rguest");
+    const stillIn = await waitUntil(
+      async () => popupAfter.$eval("#displayRoomCode", (el) => el.textContent.trim()).catch(() => ""),
+      { timeout: 12000 }
+    );
+    expect(stillIn, "the reloaded tab lost the room").toBe(code);
 
-  it("content script injects overlay button", async () => {
-    const page = await openVideoPage();
-    await sleep(2000);
-
-    // The overlay button should be injected
-    const overlayBtn = await page.$("#wt-overlay-btn");
-    // May or may not be present depending on player detection
-    // But the content script should at least have loaded
-    const loaded = await page.evaluate(() => window.__watchTogetherLoaded);
-    expect(loaded).toBe(true);
-
-    await page.close();
-  }, 15000);
-
-  it("auto-join via wt_room URL parameter", async () => {
-    // First create a room
-    const page1 = await openVideoPage();
-    const { popup: popup1 } = await openPopup(page1);
-    await setServerUrl(popup1);
-    await popup1.evaluate(() => { document.getElementById("userName").value = "Host"; });
-    await popup1.click("#btnCreate");
-    await sleep(3000);
-    const roomCode = await popup1.$eval("#displayRoomCode", (el) => el.textContent);
-    await popup1.close();
-
-    // Open a new tab with wt_room param
-    const page2 = await browser.newPage();
-
-    // First set the userName in storage so auto-join has a name
-    const targets = await browser.targets();
-    const extTarget = targets.find((t) => t.type() === "service_worker");
-    const extId = new URL(extTarget.url()).hostname;
-    const setupPage = await browser.newPage();
-    await setupPage.goto(`chrome-extension://${extId}/popup/popup.html`);
-    await sleep(500);
-    await setupPage.evaluate(() => { document.getElementById("userName").value = "AutoGuest"; });
-    // Save by triggering storage
-    await setupPage.evaluate(() => chrome.storage.local.set({ userName: "AutoGuest" }));
-    await setServerUrl(setupPage);
-    await setupPage.close();
-
-    // Navigate to video page with wt_room param
-    await page2.goto(`http://localhost:${VIDEO_PORT}/?wt_room=${roomCode}`, { waitUntil: "domcontentloaded" });
-    await sleep(5000); // Wait for auto-join
-
-    // Check if joined — the notification should have appeared
-    const notification = await page2.evaluate(() => {
-      const el = document.getElementById("wt-notification");
-      return el ? el.textContent : "";
-    });
-
-    // Should contain room code in some form
-    // Or check via the popup
-    const { popup: popup2 } = await openPopup(page2);
-    await sleep(1000);
-    const guestRoom = await popup2.evaluate(() => {
-      const el = document.getElementById("displayRoomCode");
-      return el ? el.textContent : "";
-    });
-
-    // Room should match or at least popup should show room view
-    if (guestRoom) {
-      expect(guestRoom).toBe(roomCode);
-    }
-
-    await popup2.close();
-    await page1.close();
-    await page2.close();
-  }, 45000);
+    // And it should be back at the room's position, not at zero.
+    const resumed = await waitUntil(async () => (await videoTime(guestPage)) > 60, { timeout: 15000 });
+    expect(resumed, `the tab came back at ${await videoTime(guestPage)}s instead of near 90s`).toBe(true);
+  }, 120000);
 });
