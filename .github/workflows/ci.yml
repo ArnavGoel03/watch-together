@@ -98,7 +98,7 @@ jobs:
           node-version: "22"
       - name: Build both store packages
         run: node scripts/package.mjs
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: extension-packages
           path: dist/*.zip
