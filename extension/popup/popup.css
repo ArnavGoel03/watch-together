@@ -48,7 +48,12 @@
 body {
   width: 360px;
   font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display', 'Helvetica Neue', sans-serif;
-  background: var(--bg);
+  /* The popup is its own window, so there is nothing behind it to blur: real glass is
+     impossible here. What it can share with the icon and the in-player panel is the
+     MATERIAL, a dark pane lit along its top edge, so the three read as one product. */
+  background:
+    radial-gradient(120% 80% at 50% 0%, rgba(255, 255, 255, 0.045) 0%, rgba(255, 255, 255, 0) 60%),
+    var(--bg);
   color: var(--label);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;

@@ -1897,9 +1897,23 @@
         max-width: calc(100vw - 32px);
         max-height: calc(100vh - 76px);
         flex-direction: column;
-        background: var(--wt-bg);
-        border-radius: 12px;
-        box-shadow: 0 12px 48px rgba(0,0,0,0.5);
+        /* Glass, because the panel floats over moving video and because the app icon is
+           built from the same material: a translucent dark pane with a lit top edge. It
+           makes the icon read as part of the product rather than a sticker on it.
+           
+           Opacity is high enough (0.86) that white text stays legible over a bright scene,
+           which is the thing most glass panels get wrong. The saturate() lifts the colour
+           of whatever is behind it so it looks like tinted glass rather than grey film. */
+        background: rgba(13, 13, 15, 0.86);
+        backdrop-filter: blur(28px) saturate(160%);
+        -webkit-backdrop-filter: blur(28px) saturate(160%);
+        border: 1px solid rgba(255, 255, 255, 0.09);
+        border-radius: 14px;
+        box-shadow:
+          /* The lit top edge, the same one the icon's container has. */
+          inset 0 1px 0 rgba(255, 255, 255, 0.09),
+          0 16px 48px rgba(0, 0, 0, 0.55),
+          0 2px 8px rgba(0, 0, 0, 0.4);
         z-index: 2147483647;
         font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif;
         color: #fff;
@@ -1917,6 +1931,7 @@
       }
 
       .wt-panel-header {
+        background: linear-gradient(180deg, rgba(255,255,255,0.045) 0%, rgba(255,255,255,0) 100%);
         display: flex;
         align-items: center;
         padding: 12px 14px;
@@ -2284,6 +2299,12 @@
         transform: scale(0.985);
         box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.5);
         transition-duration: 90ms;
+      }
+
+      /* Without backdrop-filter the translucency would just be a washed-out pane with video
+         showing through the text, so fall back to something solid. */
+      @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+        #wt-overlay-panel { background: #0d0d0f; }
       }
 
       @media (prefers-reduced-motion: reduce) {
