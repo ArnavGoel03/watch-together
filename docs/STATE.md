@@ -294,6 +294,26 @@ microphone consumers on one machine is at best an echo problem, and a microphone
 next to `<all_urls>` is what got an earlier version rejected from the store. There is a test
 asserting `getUserMedia` is unreachable.
 
+## render.yaml has never actually been applied
+
+Worth knowing before trusting it. The live Render service's environment was completely
+EMPTY until `HOST_TOKEN_SECRET` was set by hand through the API, which means the service was
+created through the dashboard rather than from the blueprint, and none of the variables
+`server/render.yaml` declares (`PORT`, `MAX_ROOMS`, `MAX_ROOM_MEMBERS`, `TRUSTED_PROXY_HOPS`,
+and the `generateValue` secret) were ever in effect.
+
+Nothing was broken by that, because every one of them has a sensible default in code and
+`TRUSTED_PROXY_HOPS` defaults to 1, which is right for Render. But it does mean the file is
+documentation of intent rather than a description of the running service, so do not read it
+and assume. If the service is ever recreated from the blueprint, the declared values take
+over, including a freshly generated host-token secret, which would invalidate every host
+token currently held by a client.
+
+The Render CLI cannot set environment variables (no `env` subcommand as of v2.24.0). Use the
+REST API with the key the CLI stores in `~/.render/cli.yaml`, and note that setting a
+variable does NOT restart the service on its own: trigger a deploy afterwards, or the change
+sits there doing nothing.
+
 ## Moving the backend (to Cloudflare, Oracle, anywhere)
 
 Neither step needs a store release to reach existing users:
@@ -341,10 +361,9 @@ or the watchdog demotes a leader who is healthy and merely quiet.
 4. **Decide on the Chrome Web Store upload.** 1.2.0 is packaged and the known review risks
    are addressed (`activeTab` removed, privacy policy now matches what the code does), but
    `<all_urls>` remains the standing rejection risk.
-5. **Set `HOST_TOKEN_SECRET` on Render too**, if you want host status to survive a restart
-   on the fallback as well. It is already set on Cloudflare, which is primary. Render has no
-   CLI login here yet (`render login`), and `render.yaml` declares it with `generateValue`,
-   which only applies if the service was created from that blueprint.
+5. ~~Set `HOST_TOKEN_SECRET` on Render~~ **Done 2026-08-22.** Set on both backends and
+   verified by actually reconnecting: the host reclaims their own room, a host-only room
+   stays locked through a reload, and a forged token is refused.
 6. **Voice is off, not deleted.** `VOICE_ENABLED = false` in `overlay.js`, WebRTC mesh
    intact behind it, deliberately, per the owner. A mic permission is what got an earlier
    version rejected.
