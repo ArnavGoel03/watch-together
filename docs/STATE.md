@@ -109,6 +109,40 @@ Client-side detection is heuristic (player ad markers, plus a duration-collapse 
 warmup after navigation and a three-minute safety valve). It has never been tested against
 a real player, because the automated harness only ever drives a bare `<video>`.
 
+## Permissions: a short list, then ask (changed 2026-08-21)
+
+The extension used to require `<all_urls>` before doing anything. That is the single biggest
+thing a Chrome Web Store reviewer weighs, and an earlier version of this extension was
+already rejected once over permission breadth.
+
+It now requires only the sites that actually have adapters (YouTube, Netflix, Hotstar,
+JioHotstar, Prime Video, Disney+) plus loopback, and offers `<all_urls>` as an OPTIONAL
+grant. On any other site the popup shows "Enable on this site", the viewer grants that one
+origin, and:
+
+1. `site-granted` injects the scripts into the tab they are already looking at, because
+   nobody expects to reload a page after saying yes, and
+2. `chrome.scripting.registerContentScripts` registers the granted origins so it keeps
+   working on every future visit without asking again.
+
+Same capability, completely different posture: "reads every page you visit" becomes "works
+on six video sites, and asks before touching anything else".
+
+Two things to know if you touch this:
+
+- **`http://localhost/*` and `http://127.0.0.1/*` are in the required list on purpose.** They
+  grant access to nobody's data, and without them the two-browser harness cannot run at all,
+  because Chrome's permission dialog cannot be automated. Removing them means the real
+  browser tests stop covering anything.
+- **The file list is defined once**, as `INJECT_FILES` in `config.js`, and the manifest is
+  checked against it by a test. A file present in one and missing from the other loads an
+  extension that silently does nothing on exactly the sites a viewer granted by hand, which
+  is close to undiagnosable from a bug report.
+
+The optional-permission flow itself is covered by unit-level checks, not by the browser
+harness, for the dialog reason above. It wants one manual pass on a site outside the list
+before the store upload.
+
 ## Why rooms used to die halfway through a film
 
 This was the most damaging failure the product had, and it had several causes. All are now

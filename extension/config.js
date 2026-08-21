@@ -30,6 +30,24 @@
   const SERVER_URL = SERVER_URLS[0];
 
   root.__wtConfig = {
+    // Every file that makes up the in-page half of the extension, in load order.
+    //
+    // Defined here because it is needed in two places that must never disagree: the
+    // manifest's content_scripts (for the sites we are granted up front) and the runtime
+    // injection used when a viewer grants access to some other site. A file present in one
+    // list and missing from the other produces an extension that loads and silently does
+    // nothing, which is the worst kind of bug to diagnose.
+    INJECT_FILES: [
+      "config.js",
+      "relay.js",
+      "adapters/generic.js",
+      "adapters/jiohotstar.js",
+      "adapters/netflix.js",
+      "adapters/youtube.js",
+      "content.js",
+      "overlay.js",
+    ],
+
     // Stamped on everything this client sends. Old extension versions stay installed for
     // weeks after a store release, so the server is permanently talking to clients it
     // cannot upgrade: a version on the wire makes that explicit instead of leaving the

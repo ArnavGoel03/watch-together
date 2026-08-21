@@ -135,6 +135,47 @@ describe("Static checks", () => {
     expect(m.content_scripts[0].run_at).toBe("document_start");
   });
 
+  // The extension asks for a short list of video sites and nothing else. Asking for every
+  // site on the internet at install time, before doing anything, is what got an earlier
+  // version rejected from the Chrome Web Store, and it is the single biggest thing a
+  // reviewer weighs. Everything else is granted per site, by the viewer, when they want it.
+  it("does not demand access to every site up front", () => {
+    for (const name of ["manifest.json", "manifest.firefox.json"]) {
+      const manifest = JSON.parse(readFileSync(join(extDir, name), "utf8"));
+      const required = manifest.host_permissions || manifest.permissions || [];
+      expect(required, `${name} must not require <all_urls>`).not.toContain("<all_urls>");
+
+      // But it must still be POSSIBLE to use it anywhere, or the product stops being what
+      // it says it is.
+      const optional = manifest.optional_host_permissions || manifest.optional_permissions || [];
+      expect(optional, `${name} should offer <all_urls> as an optional grant`).toContain("<all_urls>");
+
+      for (const cs of manifest.content_scripts) {
+        expect(cs.matches, `${name} content scripts must not match <all_urls>`).not.toContain("<all_urls>");
+      }
+    }
+  });
+
+  // The manifest and the runtime injection list are two descriptions of the same thing. A
+  // file in one and not the other produces an extension that loads and silently does
+  // nothing on exactly the sites the viewer granted by hand, which is close to
+  // undiagnosable from a bug report.
+  it("the manifest and the runtime injection list agree, file for file", () => {
+    const manifest = JSON.parse(readFileSync(join(extDir, "manifest.json"), "utf8"));
+    const fromManifest = manifest.content_scripts.flatMap((cs) => cs.js).filter((f) => f !== "auto-join-extract.js");
+
+    const config = readFileSync(join(extDir, "config.js"), "utf8");
+    const block = config.slice(config.indexOf("INJECT_FILES: ["));
+    const listed = block
+      .slice(0, block.indexOf("]"))
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.startsWith('"'))
+      .map((l) => l.replace(/[",]/g, ""));
+
+    expect(listed).toEqual(fromManifest);
+  });
+
   // What this is actually protecting against is a development endpoint shipping to users:
   // a relay URL pointing at the machine it was written on, which works perfectly for the
   // author and for nobody else.

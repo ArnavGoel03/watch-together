@@ -235,7 +235,7 @@ function refreshActiveTabUrl() {
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     activeTabUrl = tabs[0]?.url || "";
     activeTabId = typeof tabs[0]?.id === "number" ? tabs[0].id : null;
-    updateCreateButton();
+    refreshSitePermission();
     updateReattachBar();
     // The user can switch tabs under an open popup, so keep asking where the party is.
     if (currentRoom) safePost({ type: "get-state" });
@@ -246,16 +246,72 @@ refreshActiveTabUrl();
 const tabRefreshInterval = setInterval(refreshActiveTabUrl, 1500);
 window.addEventListener("unload", () => clearInterval(tabRefreshInterval));
 
+// The extension only asks for a handful of video sites up front. Anywhere else, the viewer
+// grants access themselves, at the moment they actually want it, which is the difference
+// between an extension that reads every page you visit and one that reads the page you
+// asked it to.
+let siteNeedsPermission = false;
+
+function originOf(url) {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== "https:" && u.protocol !== "http:") return null;
+    return `${u.protocol}//${u.hostname}/*`;
+  } catch {
+    return null;
+  }
+}
+
+function refreshSitePermission() {
+  const origin = originOf(activeTabUrl);
+  const row = $("#site-permission");
+  if (!row) return;
+  if (!origin) {
+    siteNeedsPermission = false;
+    row.style.display = "none";
+    updateCreateButton();
+    return;
+  }
+  chrome.permissions.contains({ origins: [origin] }, (granted) => {
+    siteNeedsPermission = !granted;
+    row.style.display = granted ? "none" : "block";
+    const label = $("#site-permission-host");
+    if (label) {
+      try { label.textContent = new URL(activeTabUrl).hostname; } catch { label.textContent = "this site"; }
+    }
+    updateCreateButton();
+  });
+}
+
+function requestSitePermission() {
+  const origin = originOf(activeTabUrl);
+  if (!origin) return;
+  // Must be called straight from the click: Chrome only shows this dialog for a real
+  // user gesture, and an await before it silently turns the request into a no-op.
+  chrome.permissions.request({ origins: [origin] }, (granted) => {
+    if (!granted) {
+      showToast("Not enabled here");
+      return;
+    }
+    // Make it work in the tab they are already looking at, rather than asking them to
+    // reload a page they never expected to have to reload.
+    safePost({ type: "site-granted", tabId: activeTabId });
+    showToast("Enabled on this site");
+    refreshSitePermission();
+  });
+}
+
 function updateCreateButton() {
   const hint = $("#tab-hint");
-  if (isVideoTab(activeTabUrl)) {
+  // A site we cannot touch yet is not a site we can start a party on.
+  if (isVideoTab(activeTabUrl) && !siteNeedsPermission) {
     btnCreate.disabled = false;
     btnCreate.style.opacity = "1";
     if (hint) hint.style.display = "none";
   } else {
     btnCreate.disabled = true;
     btnCreate.style.opacity = "0.35";
-    if (hint) hint.style.display = "block";
+    if (hint) hint.style.display = siteNeedsPermission ? "none" : "block";
   }
 }
 
@@ -391,6 +447,8 @@ $("#btnCopyLink").addEventListener("click", async () => {
     showToast("Couldn't copy - try Copy Code instead");
   }
 });
+
+$("#btnEnableSite").addEventListener("click", requestSitePermission);
 
 $("#btnSaveServer").addEventListener("click", () => {
   const url = serverUrlInput.value.trim();

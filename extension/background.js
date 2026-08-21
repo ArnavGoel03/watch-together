@@ -374,6 +374,68 @@ function resolvePartyTab(port, msg, cb) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Access to sites the user has granted us since install
+// ---------------------------------------------------------------------------
+// The extension asks for a short list of video sites up front and nothing else. Asking
+// every user for every site they visit, before doing anything, is what an extension does
+// when it has not earned the access yet, and it is what got an earlier version of this one
+// rejected. Everything beyond that list is granted per site, by the viewer, at the moment
+// they actually want it.
+//
+// Two things have to happen when they do. The tab in front of them needs the scripts NOW,
+// because nobody expects to reload a page after saying yes, and the site needs to keep
+// working on every future visit without being asked again.
+const DYNAMIC_SCRIPT_ID = "wt-granted-sites";
+
+async function syncGrantedSiteScripts() {
+  try {
+    const granted = await chrome.permissions.getAll();
+    const origins = (granted.origins || []).filter((o) => o !== "<all_urls>");
+    const wildcard = (granted.origins || []).includes("<all_urls>");
+    const matches = wildcard ? ["<all_urls>"] : origins;
+
+    const existing = await chrome.scripting.getRegisteredContentScripts({ ids: [DYNAMIC_SCRIPT_ID] });
+    if (matches.length === 0) {
+      if (existing.length) await chrome.scripting.unregisterContentScripts({ ids: [DYNAMIC_SCRIPT_ID] });
+      return;
+    }
+
+    const script = /** @type {chrome.scripting.RegisteredContentScript} */ ({
+      id: DYNAMIC_SCRIPT_ID,
+      matches,
+      js: self.__wtConfig.INJECT_FILES,
+      runAt: "document_idle",
+      persistAcrossSessions: true,
+    });
+    if (existing.length) await chrome.scripting.updateContentScripts([script]);
+    else await chrome.scripting.registerContentScripts([script]);
+  } catch (err) {
+    // Registering against an origin the manifest already covers throws, which is harmless.
+    console.log("[WatchTogether] Could not sync granted-site scripts:", err && err.message);
+  }
+}
+
+chrome.permissions.onAdded.addListener(syncGrantedSiteScripts);
+chrome.permissions.onRemoved.addListener(syncGrantedSiteScripts);
+chrome.runtime.onInstalled.addListener(syncGrantedSiteScripts);
+chrome.runtime.onStartup.addListener(syncGrantedSiteScripts);
+
+// Put the scripts into a tab that is already open, so saying yes takes effect immediately
+// rather than after a reload the viewer did not expect to need.
+async function injectIntoTab(tabId) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: self.__wtConfig.INJECT_FILES,
+    });
+    return true;
+  } catch (err) {
+    console.log("[WatchTogether] Could not inject into tab:", err && err.message);
+    return false;
+  }
+}
+
 function saveState() {
   // The MV3 worker is killed whenever Chrome feels like it, mid-party, routinely. Anything
   // held only in module scope comes back as its default, so the fields that decide what
@@ -623,6 +685,18 @@ chrome.runtime.onConnect.addListener((port) => {
           connect();
           waitForConnection(() => sendToServer({ type: "request-state" }));
         });
+        break;
+
+      // The viewer has just granted access to a site we did not have. Make it work in the
+      // tab they are looking at, and keep working next time they visit.
+      case "site-granted":
+        if (port.name !== "popup") break;
+        syncGrantedSiteScripts();
+        if (typeof msg.tabId === "number") {
+          injectIntoTab(msg.tabId).then((ok) => {
+            postTo("popup", { type: "site-granted-result", ok, tabId: msg.tabId });
+          });
+        }
         break;
 
       case "get-state":

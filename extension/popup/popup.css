@@ -781,3 +781,24 @@ header {
   padding: 5px 10px;
   font-size: 12px;
 }
+
+
+/* Asking for one site, at the moment it is wanted, instead of every site at install time. */
+.site-permission {
+  margin: 10px 0 4px;
+  padding: 12px;
+  border-radius: 10px;
+  background: rgba(167, 139, 250, 0.12);
+  border: 1px solid rgba(167, 139, 250, 0.25);
+}
+.site-permission-text {
+  margin: 0 0 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: rgba(235, 235, 245, 0.75);
+}
+.site-permission-text strong {
+  color: #a78bfa;
+  font-weight: 600;
+  word-break: break-all;
+}

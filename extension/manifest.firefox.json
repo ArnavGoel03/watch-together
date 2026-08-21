@@ -3,20 +3,67 @@
   "name": "Watch Together",
   "version": "1.2.0",
   "description": "Sync video playback across devices - watch anything together in real time",
-  "permissions": ["storage", "tabs", "<all_urls>"],
+  "permissions": [
+    "storage",
+    "tabs",
+    "https://*.youtube.com/*",
+    "https://*.youtu.be/*",
+    "https://*.netflix.com/*",
+    "https://*.hotstar.com/*",
+    "https://*.jiohotstar.com/*",
+    "https://*.primevideo.com/*",
+    "https://*.disneyplus.com/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
   "background": {
-    "scripts": ["config.js", "relay.js", "background-firefox.js"],
+    "scripts": [
+      "config.js",
+      "relay.js",
+      "background-firefox.js"
+    ],
     "persistent": false
   },
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
-      "js": ["auto-join-extract.js"],
+      "matches": [
+        "https://*.youtube.com/*",
+        "https://*.youtu.be/*",
+        "https://*.netflix.com/*",
+        "https://*.hotstar.com/*",
+        "https://*.jiohotstar.com/*",
+        "https://*.primevideo.com/*",
+        "https://*.disneyplus.com/*",
+        "http://localhost/*",
+        "http://127.0.0.1/*"
+      ],
+      "js": [
+        "auto-join-extract.js"
+      ],
       "run_at": "document_start"
     },
     {
-      "matches": ["<all_urls>"],
-      "js": ["config.js", "relay.js", "adapters/generic.js", "adapters/jiohotstar.js", "adapters/netflix.js", "adapters/youtube.js", "content.js", "overlay.js"],
+      "matches": [
+        "https://*.youtube.com/*",
+        "https://*.youtu.be/*",
+        "https://*.netflix.com/*",
+        "https://*.hotstar.com/*",
+        "https://*.jiohotstar.com/*",
+        "https://*.primevideo.com/*",
+        "https://*.disneyplus.com/*",
+        "http://localhost/*",
+        "http://127.0.0.1/*"
+      ],
+      "js": [
+        "config.js",
+        "relay.js",
+        "adapters/generic.js",
+        "adapters/jiohotstar.js",
+        "adapters/netflix.js",
+        "adapters/youtube.js",
+        "content.js",
+        "overlay.js"
+      ],
       "run_at": "document_idle"
     }
   ],
@@ -38,5 +85,8 @@
       "id": "watch-together@extension",
       "strict_min_version": "109.0"
     }
-  }
+  },
+  "optional_permissions": [
+    "<all_urls>"
+  ]
 }

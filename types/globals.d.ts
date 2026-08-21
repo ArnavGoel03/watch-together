@@ -18,6 +18,13 @@ interface WatchTogetherAdapter {
 }
 
 interface WatchTogetherConfig {
+  /**
+   * Every file making up the in-page half of the extension, in load order. Needed both by
+   * the manifest's content_scripts and by the runtime injection used when a viewer grants
+   * access to a site the manifest does not cover, and the two must never disagree: a file
+   * in one list and not the other loads an extension that silently does nothing.
+   */
+  INJECT_FILES: string[];
   PROTOCOL_VERSION: 1;
   /** Relays in priority order. SERVER_URL is the head of this list, not a second copy. */
   SERVER_URLS: string[];

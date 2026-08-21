@@ -3,19 +3,55 @@
   "name": "Watch Together - Sync Videos with Friends",
   "version": "1.2.0",
   "description": "Sync video playback with friends in real-time. Works on any video site, with shared controls and built-in chat.",
-  "permissions": ["storage", "tabs"],
-  "host_permissions": ["<all_urls>"],
+  "permissions": [
+    "storage",
+    "tabs",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://*.youtube.com/*",
+    "https://*.youtu.be/*",
+    "https://*.netflix.com/*",
+    "https://*.hotstar.com/*",
+    "https://*.jiohotstar.com/*",
+    "https://*.primevideo.com/*",
+    "https://*.disneyplus.com/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
   "background": {
     "service_worker": "background.js"
   },
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
-      "js": ["auto-join-extract.js"],
+      "matches": [
+        "https://*.youtube.com/*",
+        "https://*.youtu.be/*",
+        "https://*.netflix.com/*",
+        "https://*.hotstar.com/*",
+        "https://*.jiohotstar.com/*",
+        "https://*.primevideo.com/*",
+        "https://*.disneyplus.com/*",
+        "http://localhost/*",
+        "http://127.0.0.1/*"
+      ],
+      "js": [
+        "auto-join-extract.js"
+      ],
       "run_at": "document_start"
     },
     {
-      "matches": ["<all_urls>"],
+      "matches": [
+        "https://*.youtube.com/*",
+        "https://*.youtu.be/*",
+        "https://*.netflix.com/*",
+        "https://*.hotstar.com/*",
+        "https://*.jiohotstar.com/*",
+        "https://*.primevideo.com/*",
+        "https://*.disneyplus.com/*",
+        "http://localhost/*",
+        "http://127.0.0.1/*"
+      ],
       "js": [
         "config.js",
         "relay.js",
@@ -42,5 +78,8 @@
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
-  }
+  },
+  "optional_host_permissions": [
+    "<all_urls>"
+  ]
 }
