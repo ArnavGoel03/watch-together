@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Watch Together - watch anything, with anyone, anywhere</title>
+<meta name="description" content="Keep video in step with people anywhere. Works on YouTube, Netflix, Prime Video and any site with a player. Free, no account, nothing you watch is recorded.">
+<link rel="icon" href="/assets/favicon-32.png" sizes="32x32">
+<link rel="apple-touch-icon" href="/assets/logo-256.png">
+<link rel="canonical" href="https://watch.arnavgoel.dev/">
+<meta name="theme-color" content="#0b0b0d">
+<meta property="og:title" content="Watch Together">
+<meta property="og:description" content="Press play once. Everyone stays in step, wherever they are.">
+<meta property="og:image" content="https://watch.arnavgoel.dev/assets/logo-256.png">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://watch.arnavgoel.dev/">
+<meta name="twitter:card" content="summary">
+<link rel="stylesheet" href="/styles.css">
+<script type="module" src="/app.js"></script>
+</head>
+<body>
+<div class="glow" aria-hidden="true"></div>
+<span data-top aria-hidden="true"></span>
+
+<nav>
+  <a class="brand" href="/"><img src="/assets/logo-256.png" alt=""> Watch Together</a>
+  <a class="btn btn-sm" href="https://chromewebstore.google.com/detail/kilmggcpfkcfpkaapillgloabbgmeeoa">Add to Chrome</a>
+</nav>
+
+<header class="wrap">
+  <h1>
+    <span class="line"><span>Watch anything,</span></span>
+    <span class="line"><span>with anyone, anywhere.</span></span>
+  </h1>
+  <p class="sub">Press play once. Everyone stays in step, on whatever they are watching.</p>
+  <div class="cta">
+    <a class="btn" href="https://chromewebstore.google.com/detail/kilmggcpfkcfpkaapillgloabbgmeeoa">Add to Chrome</a>
+    <a class="btn btn-quiet" href="#how">See how it holds up</a>
+  </div>
+  <p class="note">Free. No account. Nothing you watch is recorded.</p>
+
+  <!-- Not a video of the product: the product's actual behaviour, running. -->
+  <div class="stage" data-demo>
+    <div class="screens">
+      <div class="screen" data-screen="you">
+        <div class="screen-bar"><span class="dot"></span><span class="screen-who">You</span><span class="screen-state">watching</span></div>
+        <div class="pic"><div class="band"></div><div class="vig"></div><div class="adcard">Advert</div></div>
+        <div class="controls"><div class="track"><div class="fill"></div><div class="head"></div></div><span class="time">0:34</span></div>
+      </div>
+      <div class="screen" data-screen="them">
+        <div class="screen-bar"><span class="dot"></span><span class="screen-who">Priya, 4,800 miles away</span><span class="screen-state">watching</span></div>
+        <div class="pic"><div class="band"></div><div class="vig"></div><div class="adcard">Advert</div></div>
+        <div class="controls"><div class="track"><div class="fill"></div><div class="head"></div></div><span class="time">0:34</span></div>
+      </div>
+    </div>
+    <div class="stage-controls">
+      <button class="btn btn-sm" data-play>Pause</button>
+      <button class="btn btn-sm btn-quiet" data-ad-one>Give her an ad</button>
+      <button class="btn btn-sm btn-quiet" data-ad-both>Mid-roll, both of you</button>
+      <button class="btn btn-sm btn-quiet" data-buffer>Stall her connection</button>
+    </div>
+    <p class="stage-hint" data-hint>Drag either scrubber. Both move, because it is one room.</p>
+  </div>
+</header>
+
+<main>
+<section class="wrap" id="how">
+  <p class="eyebrow reveal">The hard part</p>
+  <h2 class="reveal">Staying together is easy.<br>Staying together through everything else is not.</h2>
+  <p class="lead reveal">Anything can keep two videos at the same number. What breaks a watch party is adverts, weak connections, and the moment somebody changes what you are watching.</p>
+
+  <div class="grid">
+    <div class="card reveal">
+      <h3>Ad breaks do not scatter everyone</h3>
+      <p>Adverts are personal, so you sit out your own and land back exactly where the room is. When a break catches everybody at once, the film is held rather than running on without you.</p>
+    </div>
+    <div class="card reveal">
+      <h3>It waits for slow connections</h3>
+      <p>Switch it on and nobody is left buffering while the rest carry on. It gives up after a minute, so one bad connection cannot hold the room hostage.</p>
+    </div>
+    <div class="card reveal">
+      <h3>You can see what everyone is doing</h3>
+      <p>Watching, buffering, or in an ad break, per person. When something looks wrong you can see why instead of guessing.</p>
+    </div>
+    <div class="card reveal">
+      <h3>Switch what you are watching</h3>
+      <p>Next episode, different series, or a different service entirely. The room comes with you on the same code, and latecomers land on whatever you are watching now.</p>
+    </div>
+    <div class="card reveal">
+      <h3>Talk over it without pausing</h3>
+      <p>Pin a Zoom or Meet link to the room so latecomers get a button for it, and duck the film while you talk instead of stopping it for everyone.</p>
+    </div>
+    <div class="card reveal">
+      <h3>Different copies still line up</h3>
+      <p>If your version runs a different length, say so once and you stay in step from then on, instead of the two of you dragging each other back and forth.</p>
+    </div>
+  </div>
+</section>
+
+<section class="wrap">
+  <p class="eyebrow reveal">Getting started</p>
+  <h2 class="reveal">Three steps, no account.</h2>
+  <div class="grid">
+    <div class="card reveal"><h3>1. Open something</h3><p>Anywhere with a video player. YouTube, Netflix, Prime Video, or a site nobody has heard of.</p></div>
+    <div class="card reveal"><h3>2. Create a room</h3><p>Send the code, or the link, to whoever is joining.</p></div>
+    <div class="card reveal"><h3>3. Press play</h3><p>Play, pause and skip as normal. Everyone follows, wherever they are.</p></div>
+  </div>
+</section>
+
+<section class="wrap privacy">
+  <p class="eyebrow reveal">Privacy</p>
+  <h2 class="reveal">It knows where the playhead is.<br>That is genuinely all.</h2>
+  <ul style="margin-top:26px">
+    <li class="reveal"><strong>No account, ever.</strong> There is nothing to sign up for.</li>
+    <li class="reveal"><strong>Nothing you watch is recorded.</strong> Only the position of the playhead crosses the network, so the room can stay together.</li>
+    <li class="reveal"><strong>One tab, not all of them.</strong> The address of the page you attached a party to is shared with that room while it runs. Every other tab you have open is never reported anywhere.</li>
+    <li class="reveal"><strong>Chat is relayed, not stored.</strong> It exists while the room does, then it is gone.</li>
+    <li class="reveal"><strong>No microphone.</strong> The extension does not ask for one.</li>
+  </ul>
+  <p class="note reveal" style="margin-top:18px"><a href="/privacy" style="text-decoration:underline">Read the full privacy policy</a></p>
+</section>
+</main>
+
+<footer class="wrap">
+  <span>Watch Together</span>
+  <span>
+    <a href="https://github.com/ArnavGoel03/watch-together">Source</a> &nbsp;·&nbsp;
+    <a href="/privacy">Privacy</a>
+  </span>
+</footer>
+</body>
+</html>

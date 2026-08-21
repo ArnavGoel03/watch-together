@@ -1,0 +1,204 @@
+/* Watch Together, the site.
+ *
+ * Same material as the product: near-black, hairline edges, one lit top edge on every
+ * raised surface, colour spent only on status. No framework, because the page is one
+ * document and a framework would cost more than it returns. Motion is done with CSS
+ * scroll-driven animations where they are supported, so reveals run off the main thread
+ * and cost no JavaScript at all.
+ */
+:root {
+  --bg: #0b0b0d;
+  --raised: rgba(255,255,255,0.045);
+  --raised-2: rgba(255,255,255,0.075);
+  --line: rgba(255,255,255,0.09);
+  --line-2: rgba(255,255,255,0.16);
+  --text: #f4f4f5;
+  --dim: rgba(244,244,245,0.64);
+  --faint: rgba(244,244,245,0.4);
+  --good: #4ade80;
+  --warn: #fbbf24;
+  --info: #60a5fa;
+  --r: 14px;
+  --r-lg: 20px;
+  --ease: cubic-bezier(.2,0,0,1);
+}
+
+* { margin:0; padding:0; box-sizing:border-box; }
+html { scroll-behavior:smooth; -webkit-text-size-adjust:100%; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  line-height: 1.6;
+  overflow-x: hidden;
+}
+a { color: inherit; text-decoration: none; }
+.wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+
+/* A single soft light above the fold, so the page has a direction rather than being
+   uniformly dark. Fixed, so it does not scroll away and turn into a band. */
+.glow {
+  position: fixed; inset: -20% 0 auto 0; height: 70vh; pointer-events: none; z-index: 0;
+  background: radial-gradient(60% 60% at 50% 0%, rgba(255,255,255,0.07) 0%, rgba(255,255,255,0) 70%);
+}
+main, header, footer { position: relative; z-index: 1; }
+
+/* ---------- nav ---------- */
+nav {
+  position: sticky; top: 0; z-index: 20;
+  display:flex; align-items:center; justify-content:space-between;
+  padding: 14px 24px;
+  background: rgba(11,11,13,0.72);
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  border-bottom: 1px solid transparent;
+  transition: border-color 220ms var(--ease);
+}
+nav.stuck { border-bottom-color: var(--line); }
+nav .brand { display:flex; align-items:center; gap:10px; font-weight:650; letter-spacing:-.01em; }
+nav .brand img { width:28px; height:28px; border-radius:8px; }
+
+/* ---------- buttons ---------- */
+.btn {
+  display:inline-flex; align-items:center; gap:9px;
+  padding: 12px 22px; border-radius: 11px;
+  font-size: 15px; font-weight: 600; letter-spacing:-.01em;
+  border: 1px solid var(--line-2);
+  background: linear-gradient(180deg,#26262b 0%,#1d1d21 100%);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.07), 0 1px 2px rgba(0,0,0,.5);
+  transition: background 180ms var(--ease), transform 180ms var(--ease);
+  cursor:pointer;
+}
+.btn:hover { background: linear-gradient(180deg,#2e2e34 0%,#232328 100%); }
+.btn:active { transform: scale(.985); }
+.btn-sm { padding: 9px 16px; font-size: 13.5px; }
+.btn-quiet { background:none; box-shadow:none; border-color: var(--line); color: var(--dim); }
+.btn-quiet:hover { background: var(--raised); color: var(--text); }
+
+/* ---------- hero ---------- */
+header { padding: 76px 0 40px; text-align:center; }
+h1 {
+  font-size: clamp(40px, 7vw, 76px);
+  line-height: 1.02; letter-spacing: -.038em; font-weight: 700;
+}
+h1 .line { display:block; overflow:hidden; }
+h1 .line > span {
+  display:block;
+  animation: rise 900ms var(--ease) both;
+}
+h1 .line:nth-child(2) > span { animation-delay: 90ms; }
+@keyframes rise { from { transform: translateY(105%); } to { transform: translateY(0); } }
+
+.sub {
+  margin: 22px auto 0; max-width: 40ch;
+  font-size: clamp(17px, 2.2vw, 20px); color: var(--dim); letter-spacing:-.011em;
+  animation: fade 900ms var(--ease) 240ms both;
+}
+.cta { margin-top: 34px; display:flex; gap:12px; justify-content:center; flex-wrap:wrap;
+  animation: fade 900ms var(--ease) 340ms both; }
+.note { margin-top: 15px; font-size: 13px; color: var(--faint);
+  animation: fade 900ms var(--ease) 440ms both; }
+@keyframes fade { from { opacity:0; transform: translateY(10px); } to { opacity:1; transform:none; } }
+
+/* ---------- the demo ---------- */
+.stage {
+  margin: 54px auto 0; max-width: 980px;
+  animation: fade 1000ms var(--ease) 520ms both;
+}
+.screens { display:grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+@media (max-width: 720px) { .screens { grid-template-columns: 1fr; } }
+
+.screen {
+  border-radius: var(--r-lg);
+  border: 1px solid var(--line);
+  background: rgba(255,255,255,0.035);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 20px 50px rgba(0,0,0,.5);
+  overflow:hidden;
+  text-align:left;
+}
+.screen-bar {
+  display:flex; align-items:center; gap:8px;
+  padding: 10px 13px; border-bottom: 1px solid var(--line);
+  font-size: 12px; color: var(--faint);
+}
+.dot { width:7px; height:7px; border-radius:50%; background: var(--good); flex:0 0 auto; }
+.dot.ad { background: var(--warn); }
+.dot.buf { background: var(--info); }
+.screen-who { color: var(--dim); font-weight:600; }
+.screen-state { margin-left:auto; font-variant-numeric: tabular-nums; }
+
+/* The picture: a cheap, tasteful stand-in for video rather than a real file, so the page
+   stays instant and nothing has to be licensed. */
+.pic { position:relative; aspect-ratio: 16/9; overflow:hidden; background:#050506; }
+.pic .band {
+  position:absolute; inset:0;
+  background:
+    linear-gradient(115deg, rgba(96,165,250,.30), rgba(167,139,250,.22) 40%, rgba(74,222,128,.18) 75%),
+    repeating-linear-gradient(115deg, rgba(255,255,255,.05) 0 2px, transparent 2px 9px);
+  transform: translateX(var(--shift, 0%));
+  transition: transform 120ms linear;
+}
+.pic .vig { position:absolute; inset:0; background: radial-gradient(75% 75% at 50% 45%, transparent 0%, rgba(0,0,0,.55) 100%); }
+.pic .adcard {
+  position:absolute; inset:0; display:grid; place-items:center;
+  background: rgba(8,8,10,.92);
+  color: var(--warn); font-size: 13px; font-weight:650; letter-spacing:.02em;
+  opacity:0; pointer-events:none; transition: opacity 260ms var(--ease);
+}
+.screen.is-ad .adcard { opacity:1; }
+
+.controls { display:flex; align-items:center; gap:11px; padding: 12px 13px; }
+.track { position:relative; flex:1; height:5px; border-radius:3px; background: rgba(255,255,255,.11); cursor:pointer; }
+.fill { position:absolute; inset:0 auto 0 0; width:0%; border-radius:3px; background: var(--text); }
+.head {
+  position:absolute; top:50%; left:0; width:12px; height:12px; margin:-6px 0 0 -6px;
+  border-radius:50%; background: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.6);
+}
+.time { font-size:12px; color: var(--faint); font-variant-numeric: tabular-nums; min-width:38px; }
+
+.stage-controls { margin-top:18px; display:flex; gap:10px; justify-content:center; flex-wrap:wrap; }
+.stage-hint { margin-top:12px; font-size:13px; color:var(--faint); text-align:center; min-height:1.4em; }
+
+/* ---------- sections ---------- */
+section { padding: 88px 0; }
+h2 { font-size: clamp(26px,3.6vw,38px); letter-spacing:-.028em; line-height:1.12; font-weight:700; }
+.eyebrow { font-size:11px; font-weight:700; letter-spacing:.9px; text-transform:uppercase; color:var(--faint); margin-bottom:14px; }
+.lead { margin-top:14px; color:var(--dim); max-width:56ch; font-size:17px; }
+
+.grid { margin-top:36px; display:grid; gap:14px; grid-template-columns: repeat(auto-fit, minmax(268px,1fr)); }
+.card {
+  padding: 24px; border-radius: var(--r);
+  background: var(--raised); border:1px solid var(--line);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.05);
+  transition: background 200ms var(--ease), transform 200ms var(--ease), border-color 200ms var(--ease);
+}
+.card:hover { background: var(--raised-2); border-color: var(--line-2); transform: translateY(-2px); }
+.card h3 { font-size:16.5px; font-weight:650; letter-spacing:-.014em; margin-bottom:8px; }
+.card p { font-size:14.5px; color:var(--dim); }
+
+/* Reveal on scroll, off the main thread where the browser supports it. */
+.reveal { opacity:0; transform: translateY(18px); }
+@supports (animation-timeline: view()) {
+  .reveal {
+    animation: reveal 1ms linear both;
+    animation-timeline: view();
+    animation-range: entry 8% cover 26%;
+  }
+  @keyframes reveal { to { opacity:1; transform:none; } }
+}
+@supports not (animation-timeline: view()) {
+  .reveal { opacity:1; transform:none; }
+}
+
+.privacy li { font-size:15px; color:var(--dim); margin: 0 0 9px 20px; }
+.privacy strong { color:var(--text); font-weight:600; }
+
+footer { padding: 44px 0 68px; border-top:1px solid var(--line); display:flex; justify-content:space-between; gap:16px; flex-wrap:wrap; font-size:13px; color:var(--faint); }
+footer a:hover { color: var(--text); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration:1ms !important; animation-delay:0ms !important; transition-duration:1ms !important; }
+  html { scroll-behavior:auto; }
+  .reveal { opacity:1; transform:none; }
+}
