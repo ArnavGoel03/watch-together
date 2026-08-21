@@ -109,6 +109,60 @@ Client-side detection is heuristic (player ad markers, plus a duration-collapse 
 warmup after navigation and a three-minute safety valve). It has never been tested against
 a real player, because the automated harness only ever drives a bare `<video>`.
 
+## The look, and why it is not purple
+
+A watch party happens in the dark, on top of somebody else's player. So the design is a
+projection booth rather than a dashboard: near-black surfaces, hairline rules, one warm
+lamp-amber accent (`#e8a33d`), and no gradients anywhere.
+
+The previous violet-to-indigo gradient was removed deliberately, not incidentally. That
+palette is the house style of every generated interface, and a product that looks
+auto-produced is not trusted with a viewer's Netflix session. The amber also earns its place
+practically: every player this sits on top of has already claimed a colour (YouTube and
+Netflix red, Prime blue), and a warm accent stays legible as OURS rather than reading as
+part of the page underneath.
+
+Colours are defined once per surface as CSS custom properties, in the token block at the top
+of `overlay.js`'s injected stylesheet and in `:root` in `popup.css`, and both servers' join
+pages use the same values so the first thing an invited person sees is recognisably the same
+product. **A colour written out by hand anywhere else is drift**, and the two token blocks
+are kept in step by hand, which is the one place this repo still has a manual invariant.
+
+## Progressive disclosure
+
+The default surface is three things: the room code, who is here, and chat. That is the whole
+job for most people, and it is what somebody sees on first open.
+
+Everything else lives in one drawer, grouped into five sections (Sync, Room, Voice call, On
+this device, Connection). The grouping is not decoration: each heading carries the answer to
+the question people actually have about a setting, which is whether it affects the room or
+only them. Host-only controls are disabled with a badge that reads "you" or "host only"
+depending on who is looking, rather than describing the control in the abstract.
+
+Both disclosures remember being opened, so a power user opens them once. That persistence is
+why the browser test asserting the collapsed default uses the GUEST profile: the host profile
+has opened them by then, and the preference is real.
+
+## Wait for slow connections
+
+When somebody's connection stalls they fall behind, and drift correction then seeks them
+FORWARD to catch up, skipping exactly the footage they were waiting to load. Then it happens
+again. On a weak connection that person watches the film as a slideshow with pieces missing
+while everybody else sees nothing wrong.
+
+Turning this on makes the room pause until they are ready and resume from where it stopped.
+Three things about it are deliberate:
+
+- **Off by default and host-controlled.** One person's wifi stopping everyone else's film is
+  a social decision, not a technical one.
+- **It gives up after `WAIT_FOR_SLOW_MAX_MS` (60s).** A connection that never recovers must
+  not hold four other people hostage, so the room carries on without them.
+- **The room says who it is waiting for.** A room that stops on its own with nothing on
+  screen to explain it reads as a bug.
+
+Buffering comes from the player's own `waiting`/`stalled` events, announced only after it has
+lasted more than a moment, and cleared the instant playback resumes.
+
 ## Permissions: a short list, then ask (changed 2026-08-21)
 
 The extension used to require `<all_urls>` before doing anything. That is the single biggest
@@ -261,6 +315,9 @@ or the watchdog demotes a leader who is healthy and merely quiet.
 
 ## Open, in rough priority order
 
+0. **Nothing is blocking a store upload except your decision and one manual pass.** The
+   packages are built and verified in `dist/`, the permission breadth that caused the earlier
+   rejection is fixed, and the privacy policy matches the code.
 1. **Manual smoke on real streaming sites.** Everything automated runs against a bare
    `<video>` element. Real YouTube, Netflix and JioHotstar players, their ad breaks and
    their DRM are not covered by any test and never have been. The ad-break logic is now
