@@ -73,11 +73,17 @@ function resolveChromePath() {
   return undefined; // puppeteer's own Chrome for Testing
 }
 
+// Chrome's sandbox cannot start in a CI container, and the failure is a raw crash dump
+// rather than a message about sandboxing. --disable-dev-shm-usage covers the other classic
+// container problem: /dev/shm is small there, and Chrome runs out of it mid-test.
+const CI_ARGS = process.env.CI ? ["--no-sandbox", "--disable-dev-shm-usage"] : [];
+
 function launchBrowser() {
   return puppeteer.launch({
     executablePath: resolveChromePath(),
     headless: "new",
     args: [
+      ...CI_ARGS,
       `--disable-extensions-except=${EXT_PATH}`,
       `--load-extension=${EXT_PATH}`,
       "--no-first-run",

@@ -29,6 +29,10 @@ jobs:
           node-version: "22"
           cache: npm
       - run: npm ci
+      - name: Install server deps
+        # server.js requires `ws`, and the typecheck follows that import. Without this the
+        # types job fails on a missing module rather than on anything about our code.
+        run: npm ci --prefix server
       - name: Lint
         run: npm run lint
       - name: Typecheck every surface
