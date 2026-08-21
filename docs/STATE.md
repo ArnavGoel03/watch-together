@@ -109,6 +109,57 @@ Client-side detection is heuristic (player ad markers, plus a duration-collapse 
 warmup after navigation and a three-minute safety valve). It has never been tested against
 a real player, because the automated harness only ever drives a bare `<video>`.
 
+## Why rooms used to die halfway through a film
+
+This was the most damaging failure the product had, and it had several causes. All are now
+closed, but the shape of the problem is worth keeping in mind, because every one of them was
+a SILENCE being mistaken for an ending:
+
+- **The free-tier host spinning down.** Render sleeps a service after roughly fifteen
+  minutes without traffic, and rooms live in memory, so a spin-down took every room with it.
+- **The adaptive heartbeat made this worse before it made it better.** Once a paused room
+  and a room of one stopped sending anything (correct, and a large cost saving), a party
+  pausing for dinner produced exactly zero traffic and looked identical to a party that had
+  ended.
+- **Room TTL.** A room ages out from `lastActivity`, which playback traffic used to be the
+  only thing refreshing.
+
+The fix is a keepalive: while anybody is in a room, the client sends `ping` once a minute.
+It marks the room alive and nothing else. It deliberately does NOT count as proof that
+somebody is watching, because treating it that way would unfreeze the clock during the very
+ad break the freeze exists for. Sixty messages an hour against the 720 the old fixed
+heartbeat cost.
+
+`.github/workflows/keep-warm.yml` covers the other half, the quiet period BEFORE a party
+starts, so the first person to create a room does not sit through a cold boot. It is free
+only because this repository is public; see the comment in that file.
+
+Rooms also survive a genuine restart via `recreateIfMissing`, and empty rooms linger for 30
+minutes so a browser restart or a dead wifi stretch can rejoin the same code.
+
+Moving to Cloudflare removes the whole class: Durable Objects hibernate and wake on the next
+message, with no spin-down and no cold start.
+
+## Switching what you are watching, mid-party
+
+This already works, and it works for all three cases people ask about:
+
+- **Next episode of the same series.** Netflix changes the URL, so the move is detected and
+  broadcast, and everyone follows.
+- **A different series on the same site.** Identical mechanism.
+- **A different site entirely, YouTube to Netflix.** Also works, but by a different route: a
+  cross-site jump destroys the content script, so nothing in the page sees the change. The
+  party tab announces the move when it comes back up and finds it is not where the room is
+  (`onResume`), and the background muzzles the opposite case with `navSuppressUntil` so a tab
+  being redirected INTO someone else's video does not bounce the room back.
+
+The room code never changes, and the shareable `/join/CODE` link redirects to whatever the
+room is watching NOW, so somebody arriving an hour late lands on the right video. What none
+of this can solve is access: a friend still needs their own Netflix login.
+
+Note that whoever's autoplay fires first drags the room to the next episode. That is the
+intended behaviour for a watch party, but it is worth knowing before someone reports it.
+
 ## Voice calls: a link, not an integration (decided 2026-08-21)
 
 The room carries a call link that the host pins once, and everyone gets a button for it,

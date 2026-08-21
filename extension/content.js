@@ -159,6 +159,11 @@
       video.addEventListener(event, onVideoEvent);
     });
 
+    // Stalling is the other reason a viewer falls out of step, and unlike an ad break the
+    // room has no way to guess it. Saying so out loud is what lets the others see "Priya is
+    // buffering" instead of watching her drift and assuming the extension is broken.
+    BUFFER_EVENTS.forEach((event) => video.addEventListener(event, onBufferEvent));
+
     // A different element, or the same element loading different content, means whatever
     // we learned about "how long the show is" belongs to something else now.
     if (isNewElement) forgetContentDuration();
@@ -180,6 +185,37 @@
       video.removeEventListener(event, onVideoEvent);
     });
     video.removeEventListener("durationchange", onDurationChange);
+    BUFFER_EVENTS.forEach((event) => video.removeEventListener(event, onBufferEvent));
+  }
+
+  // A brief stall is normal and not worth telling anyone about; a sustained one is the
+  // difference between "it is fine" and "something is wrong with my connection". Wait
+  // before announcing, and clear the moment playback actually resumes.
+  const BUFFER_EVENTS = ["waiting", "stalled", "playing", "canplay", "seeked", "pause"];
+  const BUFFER_ANNOUNCE_MS = 1200;
+  let isBuffering = false;
+  let bufferTimer = null;
+
+  function onBufferEvent(e) {
+    const stalling = e.type === "waiting" || e.type === "stalled";
+    if (stalling) {
+      if (isBuffering || bufferTimer) return;
+      bufferTimer = setTimeout(() => {
+        bufferTimer = null;
+        // A paused video is not a stalled one, however it got there.
+        if (activeVideo && activeVideo.paused) return;
+        isBuffering = true;
+        sendPresence();
+      }, BUFFER_ANNOUNCE_MS);
+      return;
+    }
+    if (bufferTimer) { clearTimeout(bufferTimer); bufferTimer = null; }
+    if (!isBuffering) return;
+    isBuffering = false;
+    sendPresence();
+    // Whatever we missed while stalled wants correcting now, not on a relaxed beat.
+    requestResync();
+    quickenHeartbeat();
   }
 
   // The player swapped what this element is playing. If the new thing is materially
@@ -451,7 +487,7 @@
     // convinces the room that the film advanced through it and hurls everybody forward by
     // the length of the ads), and it stops handing the sync-leader job to somebody who has
     // deliberately stopped broadcasting.
-    sendMsg({ type: "ad-state", active: nowAd });
+    sendPresence();
 
     if (nowAd) {
       showNotification("Ad break, you will be caught up automatically");
@@ -620,7 +656,31 @@
   // edge arrived.
   function reassertAdState() {
     if (!inRoom) return;
-    sendMsg({ type: "ad-state", active: adActive });
+    sendPresence(true);
+  }
+
+  // What this viewer is doing, as far as the room is concerned. Three states, because three
+  // different things follow from them:
+  //   watching  - normal. Eligible to drive everyone else's position.
+  //   ad        - sitting out an advert. Stops the room's clock if EVERYONE is doing it.
+  //   buffering - stalled. The film is still running for everybody else, so the clock keeps
+  //               going, but this member's position is not one to hold others to.
+  // What we last told the room. Compared against, so a state that has not changed does not
+  // become a message: presence is edge-triggered on purpose.
+  let lastSentPresence = null;
+
+  function currentPresence() {
+    if (adActive) return "ad";
+    if (isBuffering) return "buffering";
+    return "watching";
+  }
+
+  function sendPresence(force = false) {
+    if (!inRoom) return;
+    const state = currentPresence();
+    if (!force && state === lastSentPresence) return;
+    lastSentPresence = state;
+    sendMsg({ type: "presence", state });
   }
 
   // Apply sync state from another user
@@ -806,6 +866,34 @@
     }
   }
 
+  // A room dying halfway through a film is the worst thing this product can do, and the
+  // adaptive heartbeat made it MORE likely, not less: a paused room and a room of one now
+  // send nothing at all, which is exactly right for cost and exactly wrong for staying
+  // alive. A free-tier host spins down after a quiet spell and takes every in-memory room
+  // with it, so a party that pauses for twenty minutes over dinner comes back to nothing.
+  //
+  // So while we are in a room, say something once a minute regardless. It costs 60 messages
+  // an hour against the 720 the old fixed heartbeat cost, keeps the room's activity clock
+  // fresh so its TTL never expires mid-film, and keeps inbound traffic flowing so the host
+  // does not decide nobody is there.
+  const KEEPALIVE_MS = 60000;
+  let keepaliveTimer = null;
+
+  function startKeepalive() {
+    stopKeepalive();
+    keepaliveTimer = setInterval(() => {
+      if (!inRoom) return;
+      sendMsg({ type: "ping" });
+    }, KEEPALIVE_MS);
+  }
+
+  function stopKeepalive() {
+    if (keepaliveTimer) {
+      clearInterval(keepaliveTimer);
+      keepaliveTimer = null;
+    }
+  }
+
   function stopHeartbeat() {
     if (heartbeatTimer) {
       clearTimeout(heartbeatTimer);
@@ -878,6 +966,7 @@
             if (v) attachVideoListeners(v);
           }
           startHeartbeat();
+          startKeepalive();
 
           // The party tab just came back from a full page load. If it landed somewhere
           // other than where the room is, the user switched app (YouTube to Netflix, say):
@@ -928,6 +1017,7 @@
           inRoom = false;
           currentRoom = null;
           stopHeartbeat();
+          stopKeepalive();
           showNotification(msg.reason === "moved" ? "The party moved to another tab" : "Left the room");
           break;
 

@@ -252,16 +252,16 @@ test("ad freeze: the clock holds while every member is in a break and restarts w
   await hub.bootPromise;
   const room = hub.rooms.get("ABCDEF");
 
-  hub._handleAdState(a, hub._meta(a), { active: true });
+  hub._handleAdState(a, hub._meta(a), { type: "ad-state", active: true });
   assert.ok(!room.playbackState.frozenAt, "one person in a break must not stop the film");
 
-  hub._handleAdState(b, hub._meta(b), { active: true });
+  hub._handleAdState(b, hub._meta(b), { type: "ad-state", active: true });
   assert.ok(room.playbackState.frozenAt, "with nobody watching, the clock holds");
   // The held position is where the film actually was, not where it started.
   assert.ok(room.playbackState.currentTime >= 104, "and it holds at the true position, ~105s");
 
   const heldAt = room.playbackState.currentTime;
-  hub._handleAdState(a, hub._meta(a), { active: false });
+  hub._handleAdState(a, hub._meta(a), { type: "ad-state", active: false });
   assert.equal(room.playbackState.frozenAt, null, "somebody is watching again");
   assert.equal(room.playbackState.currentTime, heldAt, "and it restarts from where it stopped");
 });

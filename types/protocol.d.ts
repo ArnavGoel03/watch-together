@@ -138,6 +138,17 @@ export type ClientMessage =
    * stopped broadcasting.
    */
   | { type: "ad-state"; active: boolean; v?: ProtocolVersion }
+  /**
+   * What this viewer is doing. Supersedes the narrower ad-state above, which the server
+   * still accepts so a client mid-update is never misread.
+   *
+   * watching  - normal, and eligible to drive everyone else's position.
+   * ad        - sitting out an advert. Stops the room's clock only if EVERY member is.
+   * buffering - stalled. The film is still running for everybody else, so the clock keeps
+   *             going, but this member is not one to hold the others to.
+   */
+  | { type: "presence"; state: "watching" | "ad" | "buffering"; v?: ProtocolVersion }
+  | { type: "set-call-url"; url: string; v?: ProtocolVersion }
   | { type: "voice-state"; active: boolean; v?: ProtocolVersion }
   | { type: "voice-signal"; toUserId: string; signal: unknown; v?: ProtocolVersion };
 
@@ -193,6 +204,17 @@ export type ServerMessage =
   | ({ type: "chat"; message: string; userName: string; userId: string; timestamp: number } & ServerStamped)
   | ({ type: "chat-typing"; userId: string; userName: string; isTyping: boolean } & ServerStamped)
   | ({ type: "cc-state"; userId: string; userName: string; active: boolean } & ServerStamped)
+  | ({
+      type: "presence";
+      userId: string;
+      userName: string;
+      state: "watching" | "ad" | "buffering";
+      /** The older boolean shape, kept alongside the state. */
+      active: boolean;
+      watchingCount: number;
+      memberCount: number;
+    } & ServerStamped)
+  | ({ type: "call-url"; callUrl: string; fromUser: string } & ServerStamped)
   | ({
       type: "ad-state";
       userId: string;

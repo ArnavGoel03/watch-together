@@ -1152,7 +1152,10 @@
       row.className = "wt-member";
 
       const dot = document.createElement("span");
-      dot.className = "wt-member-dot" + (m.inAd ? " wt-member-away" : "");
+      const state = m.state || (m.inAd ? "ad" : "watching");
+      dot.className =
+        "wt-member-dot" +
+        (state === "ad" ? " wt-member-away" : state === "buffering" ? " wt-member-stalled" : "");
       row.appendChild(dot);
 
       const name = document.createElement("span");
@@ -1160,20 +1163,24 @@
       name.textContent = isYou ? `${m.userName || "You"} (you)` : m.userName || "Someone";
       row.appendChild(name);
 
-      const state = document.createElement("span");
-      state.className = "wt-member-state";
-      if (m.inAd) {
-        state.textContent = "ad break";
+      const stateEl = document.createElement("span");
+      stateEl.className = "wt-member-state";
+      if (state === "ad") {
+        stateEl.textContent = "ad break";
+      } else if (state === "buffering") {
+        stateEl.textContent = "buffering";
       } else if (isYou) {
+        // Only your own drift is measurable here: it is the difference between where the
+        // room says it is and where your own player actually is.
         const drift = window.__wtCore?.getDrift?.();
-        state.textContent =
+        stateEl.textContent =
           typeof drift !== "number" ? "watching"
           : Math.abs(drift) < 0.5 ? "in sync"
           : `${drift > 0 ? "behind" : "ahead"} ${Math.abs(drift).toFixed(1)}s`;
       } else {
-        state.textContent = "watching";
+        stateEl.textContent = "watching";
       }
-      row.appendChild(state);
+      row.appendChild(stateEl);
 
       if (isYou && iAmHost) {
         const badge = document.createElement("span");
@@ -1585,19 +1592,23 @@
         // Who is doing what. This is what turns "it looks broken" into "Anshul is in an
         // ad break and will be back", which is the difference between trusting the thing
         // and closing it.
-        case "presence": {
+        case "presence":
+        case "ad-state": {
           const entry = membersById.get(msg.userId);
+          const state = msg.state || (msg.active ? "ad" : "watching");
           const next = {
             userName: msg.userName || entry?.userName || "Someone",
-            inAd: msg.state === "ad",
-            state: msg.state || "watching",
-            drift: typeof msg.drift === "number" ? msg.drift : null,
+            inAd: state === "ad",
+            state,
           };
           membersById.set(msg.userId, next);
           renderMembers();
-          if (msg.userId !== myUserId) {
-            if (next.inAd) addSystemMsg(`${next.userName} is in an ad break`);
-            else if (entry && entry.inAd) addSystemMsg(`${next.userName} is back`);
+          // Say it once, on the way in and on the way out. Without this the others simply
+          // watch somebody drift and conclude the extension is broken.
+          if (msg.userId !== myUserId && entry && entry.state !== state) {
+            if (state === "ad") addSystemMsg(`${next.userName} is in an ad break`);
+            else if (state === "buffering") addSystemMsg(`${next.userName} is buffering`);
+            else if (entry.state && entry.state !== "watching") addSystemMsg(`${next.userName} is back`);
           }
           break;
         }
@@ -1917,6 +1928,7 @@
         background: #30d158;
       }
       .wt-member-away { background: #ff9f0a; }
+      .wt-member-stalled { background: #0a84ff; }
       .wt-member-name {
         flex: 1;
         color: rgba(235,235,245,0.9);

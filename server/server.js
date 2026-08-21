@@ -200,6 +200,11 @@ function cleanupRoom(roomCode) {
 //
 // So when the last viewer goes dark, freeze the clock. When the first one comes back,
 // start it again from where it stopped.
+// What a member can be doing. "buffering" is not the same as an ad break: it does not stop
+// the room's clock, because the film genuinely is playing for everybody else, but it does
+// disqualify that member from driving everyone's position while their own is stalled.
+const PRESENCE_STATES = ["watching", "ad", "buffering"];
+
 function everyMemberInAd(room) {
   let live = 0;
   for (const member of room.members.values()) {
@@ -267,7 +272,11 @@ function getHeartbeatLeader(room) {
   // stops broadcasting position; handing the job to either one stalls drift correction for
   // the whole room until the next sweep, silently.
   for (const [uid, member] of room.members) {
-    if (member.ws && member.ws.readyState === 1 && !member.adActive) return uid;
+    if (!member.ws || member.ws.readyState !== 1) continue;
+    // Not somebody in an ad break, and not somebody whose own playback is stalled: either
+    // way their position is not one to hold everybody else to.
+    if (member.adActive || member.presence === "buffering") continue;
+    return uid;
   }
   // Everyone is either gone or in an ad. Fall back to anyone still connected: the room has
   // nothing to sync to right now anyway, and this keeps the role assigned.
@@ -713,7 +722,10 @@ wss.on("connection", (ws, req) => {
     // without a path like this a lost "my ad ended" leaves them marked in a break with no
     // organic way back: their heartbeats are dropped before the reset line if they are not
     // the leader, and a solo viewer stops heartbeating altogether.
-    if (msg.type !== "ad-state" && currentRoom) {
+    // A ping says "we are still here", not "I am watching the film", so it must not be
+    // taken as proof an ad break ended: doing that would unfreeze the room's clock during
+    // the very break the freeze exists for.
+    if (msg.type !== "ad-state" && msg.type !== "presence" && msg.type !== "ping" && currentRoom) {
       const self = rooms.get(currentRoom)?.members.get(userId);
       if (self && self.adActive) {
         self.adActive = false;
@@ -1191,30 +1203,47 @@ wss.on("connection", (ws, req) => {
         break;
       }
 
+      // What this member is actually doing right now. Three things depend on knowing it,
+      // and none can be worked out from silence: the room clock has to stop when every
+      // member is in an ad break, the sync leader must not be somebody who has deliberately
+      // stopped broadcasting, and the others deserve to see WHY one person went quiet
+      // rather than concluding the extension is broken.
+      //
+      // "ad-state" is the older, narrower spelling of the same message and is still
+      // accepted, so a client mid-update is never misread.
+      case "presence":
       case "ad-state": {
         if (!currentRoom) return;
-        const adRoom = rooms.get(currentRoom);
-        if (!adRoom) return;
-        const adMember = adRoom.members.get(userId);
-        if (!adMember) return;
+        const pRoom = rooms.get(currentRoom);
+        if (!pRoom) return;
+        const pMember = pRoom.members.get(userId);
+        if (!pMember) return;
 
-        const wasLeader = getHeartbeatLeader(adRoom);
-        adMember.adActive = !!msg.active;
-        adRoom.lastActivity = Date.now();
-        updateRoomAdFreeze(adRoom);
+        const state =
+          msg.type === "ad-state"
+            ? (msg.active ? "ad" : "watching")
+            : PRESENCE_STATES.includes(msg.state) ? msg.state : "watching";
+
+        const wasLeader = getHeartbeatLeader(pRoom);
+        pMember.presence = state;
+        pMember.adActive = state === "ad";
+        pRoom.lastActivity = Date.now();
+        updateRoomAdFreeze(pRoom);
 
         broadcastToRoom(currentRoom, {
-          type: "ad-state",
+          type: "presence",
           userId,
           userName,
-          active: adMember.adActive,
-          // How many people are watching the film right now, as opposed to an advert.
-          watchingCount: Array.from(adRoom.members.values()).filter((m) => !m.adActive).length,
-          memberCount: adRoom.members.size,
+          state,
+          // Kept for anything still reading the older shape.
+          active: pMember.adActive,
+          // How many people are watching the film right now, rather than an advert.
+          watchingCount: Array.from(pRoom.members.values()).filter((m) => !m.adActive).length,
+          memberCount: pRoom.members.size,
         }, ws);
 
-        // The leader may have just walked into an ad, or come back out of one.
-        if (getHeartbeatLeader(adRoom) !== wasLeader) notifyHeartbeatLeader(adRoom);
+        // The leader may have just walked into a break, or come back out of one.
+        if (getHeartbeatLeader(pRoom) !== wasLeader) notifyHeartbeatLeader(pRoom);
         break;
       }
 
@@ -1245,6 +1274,24 @@ wss.on("connection", (ws, req) => {
           mode: newMode,
           fromUser: userName,
         });
+        break;
+      }
+
+      // Proof the party is still there, sent once a minute while anybody is in a room.
+      //
+      // It exists because a room dying halfway through a film is the worst thing this
+      // service can do, and the two things that cause it are both silences: a free-tier
+      // host spinning down after a quiet spell and taking every in-memory room with it, and
+      // a room ageing past its TTL because nothing touched it. A paused room legitimately
+      // sends no playback traffic at all, so without this a party that pauses for dinner
+      // looks identical to a party that ended.
+      //
+      // Deliberately does nothing except mark the room as alive: no broadcast, no state.
+      case "ping": {
+        if (!currentRoom) return;
+        const pingRoom = rooms.get(currentRoom);
+        if (!pingRoom) return;
+        pingRoom.lastActivity = Date.now();
         break;
       }
 

@@ -6,6 +6,10 @@
 // ---------- Configuration ----------
 // Kept in lockstep with the Node twin and extension/config.js.
 const PROTOCOL_VERSION = 1;
+// Kept in step with server/server.js. "buffering" does not stop the room's clock, because
+// the film really is playing for everybody else; it only disqualifies that member from
+// driving everyone's position while their own is stalled.
+const PRESENCE_STATES = ["watching", "ad", "buffering"];
 const MAX_ROOM_MEMBERS = 50;
 const MAX_ROOMS = 10000;
 const ROOM_TTL_MS = 12 * 3600000; // 12h
@@ -211,6 +215,7 @@ export class RoomHubDO {
             userName: meta.userName,
             voiceActive: !!meta.voiceActive,
             adActive: !!meta.adActive,
+            presence: meta.presence || (meta.adActive ? "ad" : "watching"),
           });
         }
       }
@@ -313,7 +318,10 @@ export class RoomHubDO {
     // Promoting a dead socket, or someone who has deliberately stopped broadcasting,
     // makes the room go quiet with nobody able to notice until the next sweep.
     for (const [uid, m] of room.members) {
-      if (m.ws && m.ws.readyState === 1 /* WebSocket.OPEN */ && !m.adActive) return uid;
+      if (!m.ws || m.ws.readyState !== 1 /* WebSocket.OPEN */) continue;
+      // Not somebody in an ad break, and not somebody whose own playback has stalled.
+      if (m.adActive || m.presence === "buffering") continue;
+      return uid;
     }
     for (const [uid, m] of room.members) {
       if (m.ws && m.ws.readyState === 1 /* WebSocket.OPEN */) return uid;
@@ -624,7 +632,15 @@ export class RoomHubDO {
       case "chat": return this._handleChat(ws, meta, msg);
       case "chat-typing": return this._handleChatTyping(ws, meta, msg);
       case "cc-state": return this._handleCcState(ws, meta, msg);
-      case "ad-state": return this._handleAdState(ws, meta, msg);
+      case "ad-state":
+      case "presence": return this._handleAdState(ws, meta, msg);
+      // Proof the party is still there, sent once a minute. Marks the room alive so its
+      // TTL never expires mid-film, and nothing else.
+      case "ping": {
+        const pingRoom = this.rooms.get(meta.currentRoom);
+        if (pingRoom) pingRoom.lastActivity = Date.now();
+        return;
+      }
       case "set-mode": return this._handleSetMode(ws, meta, msg);
       case "navigate": return this._handleNavigate(ws, meta, msg);
       case "voice-state": return this._handleVoiceState(ws, meta, msg);
@@ -1063,9 +1079,18 @@ export class RoomHubDO {
     const member = room.members.get(meta.userId);
     if (!member) return;
 
+    // Accept both spellings, and do not depend on the envelope's type field being present:
+    // a message carrying `active` is the older ad-state shape whatever it calls itself.
+    const state = PRESENCE_STATES.includes(msg.state)
+      ? msg.state
+      : typeof msg.active === "boolean"
+        ? (msg.active ? "ad" : "watching")
+        : "watching";
+
     const wasLeader = this._heartbeatLeader(room);
-    member.adActive = !!msg.active;
-    this._setMeta(ws, { adActive: member.adActive });
+    member.presence = state;
+    member.adActive = state === "ad";
+    this._setMeta(ws, { adActive: member.adActive, presence: state });
     room.lastActivity = Date.now();
     this._updateRoomAdFreeze(room);
     // The freeze itself (frozenAt, and the position it was held at) has to reach storage,
@@ -1074,9 +1099,11 @@ export class RoomHubDO {
     this._persistRoom(code);
 
     this._broadcast(code, {
-      type: "ad-state",
+      type: "presence",
       userId: meta.userId,
       userName: meta.userName,
+      state,
+      // Kept for anything still reading the older shape.
       active: member.adActive,
       watchingCount: Array.from(room.members.values()).filter((m) => !m.adActive).length,
       memberCount: room.members.size,

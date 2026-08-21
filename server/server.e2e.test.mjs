@@ -977,6 +977,119 @@ test("call link: only real meeting platforms are accepted", async () => {
   }
 });
 
+// presence supersedes the narrower "ad-state" message. Inbound, both are accepted: a client
+// updating mid-session must never be misread as "watching" when it said it was in a break.
+test("presence: the older ad-state spelling is still understood", async () => {
+  let h, g;
+  try {
+    h = await host();
+    g = await guest(h.code, "Guest");
+    await waitFor(h.ws, "member-joined");
+
+    send(g.ws, { type: "ad-state", active: true });
+    const seen = await waitFor(h.ws, "presence");
+    assert.equal(seen.state, "ad", "the old spelling still means the same thing");
+    assert.equal(seen.watchingCount, 1);
+  } finally {
+    if (h) closeAll(h);
+    if (g) closeAll(g);
+  }
+});
+
+// Buffering is not an ad break. The film really is playing for everyone else, so the room's
+// clock must keep running; what changes is that a member whose own playback has stalled
+// stops being a candidate to drive everybody else's position.
+test("presence: a buffering member does not stop the room, but does lose the leader role", async () => {
+  let h, g;
+  try {
+    h = await host();
+    g = await guest(h.code, "Guest");
+    await waitFor(h.ws, "member-joined");
+    send(h.ws, { type: "sync", action: "play", playing: true, currentTime: 20, playbackRate: 1 });
+    await sleep(80);
+    for (const c of [h, g]) drain(c.ws, "heartbeat-role");
+
+    // The host is leader on creation; their connection stalls.
+    send(h.ws, { type: "presence", state: "buffering" });
+    const promoted = await waitFor(g.ws, "heartbeat-role", 3000);
+    assert.equal(promoted.isLeader, true, "somebody who is actually playing takes over");
+
+    await sleep(600);
+    drain(g.ws, "sync");
+    send(g.ws, { type: "request-state" });
+    const state = await waitFor(g.ws, "sync");
+    const elapsed = (state.serverTime - state.timestamp) / 1000;
+    assert.ok(elapsed > 0.3, "the film is still running for everyone who can see it");
+  } finally {
+    if (h) closeAll(h);
+    if (g) closeAll(g);
+  }
+});
+
+// Rooms dying halfway through a film is the worst thing this service can do, and the two
+// causes are both silences: the host spinning down after a quiet spell, and a room ageing
+// out because nothing touched it. A paused party legitimately sends no playback traffic at
+// all, so it has to say "we are still here" some other way.
+test("keepalive: a ping keeps the room alive without touching anything else", async () => {
+  let h, g;
+  try {
+    h = await host();
+    g = await guest(h.code, "Guest");
+    await waitFor(h.ws, "member-joined");
+    send(h.ws, { type: "sync", action: "pause", playing: false, currentTime: 300, playbackRate: 1 });
+    await waitFor(g.ws, "sync");
+    await sleep(60);
+
+    drain(g.ws, "sync");
+    drain(g.ws, "presence");
+    send(h.ws, { type: "ping" });
+    await sleep(250);
+
+    // Says nothing to anybody: it is not a playback event.
+    assert.equal(g.ws.msgs.some((m) => m.type === "sync"), false, "a keepalive is not a sync");
+    assert.equal(g.ws.msgs.some((m) => m.type === "presence"), false, "and not a presence change");
+
+    // And the room is still perfectly usable afterwards.
+    drain(g.ws, "sync");
+    send(h.ws, { type: "sync", action: "play", playing: true, currentTime: 301, playbackRate: 1 });
+    const still = await waitFor(g.ws, "sync");
+    assert.equal(still.currentTime, 301, "the room is alive and still relaying");
+  } finally {
+    if (h) closeAll(h);
+    if (g) closeAll(g);
+  }
+});
+
+// A keepalive says "we are still here", not "I am watching the film". Treating it as the
+// latter would unfreeze the room's clock during the very ad break the freeze exists for.
+test("keepalive: a ping during an ad break does not end the break", async () => {
+  let h, g;
+  try {
+    h = await host();
+    g = await guest(h.code, "Guest");
+    await waitFor(h.ws, "member-joined");
+    send(h.ws, { type: "sync", action: "play", playing: true, currentTime: 500, playbackRate: 1 });
+    await sleep(60);
+    send(h.ws, { type: "presence", state: "ad" });
+    send(g.ws, { type: "presence", state: "ad" });
+    await sleep(150);
+
+    // Both are mid-break; the keepalive still fires, as it does every minute.
+    send(h.ws, { type: "ping" });
+    send(g.ws, { type: "ping" });
+    await sleep(900);
+
+    drain(h.ws, "sync");
+    send(h.ws, { type: "request-state" });
+    const held = await waitFor(h.ws, "sync");
+    const elapsed = (held.serverTime - held.timestamp) / 1000;
+    assert.ok(elapsed < 0.5, `the break must still be holding the clock, got ${elapsed.toFixed(2)}s`);
+  } finally {
+    if (h) closeAll(h);
+    if (g) closeAll(g);
+  }
+});
+
 // ============================================================
 // Four people in a room
 // ============================================================
@@ -1033,7 +1146,8 @@ test("four people: one ad does not hold the film for the other three", async () 
     await sleep(80);
 
     send(room.guests[0].ws, { type: "ad-state", active: true });
-    const notice = await waitFor(room.host.ws, "ad-state");
+    const notice = await waitFor(room.host.ws, "presence");
+    assert.equal(notice.state, "ad");
     assert.equal(notice.watchingCount, 3, "three of the four are still watching the film");
     assert.equal(notice.memberCount, 4);
 
@@ -1186,8 +1300,9 @@ test("ad break: one viewer's ad does not stop the film for everyone else", async
 
     // The guest hits an ad. The host keeps watching.
     send(g.ws, { type: "ad-state", active: true });
-    const notice = await waitFor(h.ws, "ad-state");
-    assert.equal(notice.active, true, "the room is told who stepped out");
+    const notice = await waitFor(h.ws, "presence");
+    assert.equal(notice.state, "ad", "the room is told who stepped out, and why");
+    assert.equal(notice.active, true, "and the older field still reads correctly");
     assert.equal(notice.watchingCount, 1, "one person is still watching the film");
 
     await sleep(600);

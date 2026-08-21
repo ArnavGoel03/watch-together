@@ -1,0 +1,50 @@
+name: Keep the sync server warm
+
+# Render's free tier spins a service down after about fifteen minutes without traffic, and
+# because rooms live in memory, a spin-down takes every one of them with it. Clients do
+# rebuild their room on reconnect, but the party still stalls while that happens, and the
+# first person back pays a cold start of roughly a minute.
+#
+# The extension already pings once a minute while anybody is in a room, which covers the
+# case that used to hurt most: a party pausing for dinner and coming back to nothing. This
+# covers the other half, the quiet period BEFORE a party starts, so the first person to
+# create a room does not sit through a cold boot.
+#
+# This is free: scheduled workflows on public repositories do not consume Actions minutes.
+# It is not free on a private repository, where every run bills a full minute and this
+# schedule would exceed the monthly allowance, so if this repo is ever made private, delete
+# this workflow and use an external pinger instead (cron-job.org, UptimeRobot).
+#
+# Note GitHub disables scheduled workflows on repositories with no commits for 60 days, so
+# a long-dormant project will quietly stop being kept warm. Moving to Cloudflare removes
+# the need for any of this: Durable Objects hibernate and wake on the next message, with no
+# cold-start penalty of this kind.
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    name: Ping /health
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Wake the server
+        run: |
+          set -uo pipefail
+          URL="https://watch-together-server-acwi.onrender.com/health"
+          # A cold start on the free tier can take the best part of a minute, so allow for
+          # it rather than reporting a failure for a server that is merely waking up.
+          for attempt in 1 2 3; do
+            code=$(curl -sS -o /tmp/health.json -w '%{http_code}' --max-time 90 "$URL" || echo 000)
+            if [ "$code" = "200" ]; then
+              echo "Server is awake: $(cat /tmp/health.json)"
+              exit 0
+            fi
+            echo "Attempt $attempt returned $code, retrying"
+            sleep 10
+          done
+          echo "Server did not respond after three attempts"
+          exit 1
