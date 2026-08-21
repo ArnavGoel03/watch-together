@@ -12,7 +12,8 @@
     "test:node": "node --test server.e2e.test.mjs client-logic.test.mjs relay.test.mjs",
     "test:vitest": "vitest run server.test.js",
     "test:browser": "vitest run browser.test.js",
-    "test:all": "node --test server.e2e.test.mjs client-logic.test.mjs relay.test.mjs && vitest run"
+    "test:all": "node --test server.e2e.test.mjs client-logic.test.mjs relay.test.mjs && vitest run",
+    "screenshots": "node store-screenshots.mjs"
   },
   "dependencies": {
     "ws": "^8.16.0"
