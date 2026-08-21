@@ -84,6 +84,65 @@
       }
     },
 
+    // A video-call link the room can share. Deliberately an allowlist of the platforms
+    // people actually use, not "any https URL": this link is handed to everyone in the
+    // room and rendered as a button, so a free-text URL field would be a tidy way to get
+    // strangers to click on anything at all. Zoom's own deep link scheme is included so
+    // the desktop app opens directly rather than bouncing through the browser.
+    CALL_HOSTS: [
+      "zoom.us",
+      "zoomgov.com",
+      "meet.google.com",
+      "teams.microsoft.com",
+      "teams.live.com",
+      "discord.gg",
+      "discord.com",
+      "whereby.com",
+      "meet.jit.si",
+   ],
+
+    // Which platform a pinned link belongs to, so the button can say "Join Zoom call"
+    // rather than a vague "Join the call". Knowing what you are about to be dropped into
+    // matters when the answer might be a different app opening over your film.
+    describeCall(raw) {
+      try {
+        const u = new URL(String(raw).trim());
+        if (u.protocol === "zoommtg:" || u.protocol === "zoomus:") return { id: "zoom", name: "Zoom" };
+        const host = u.hostname.toLowerCase();
+        const match = (d) => host === d || host.endsWith("." + d);
+        if (match("zoom.us") || match("zoomgov.com")) return { id: "zoom", name: "Zoom" };
+        if (match("meet.google.com")) return { id: "meet", name: "Google Meet" };
+        if (match("teams.microsoft.com") || match("teams.live.com")) return { id: "teams", name: "Teams" };
+        if (match("discord.gg") || match("discord.com")) return { id: "discord", name: "Discord" };
+        if (match("whereby.com")) return { id: "whereby", name: "Whereby" };
+        if (match("meet.jit.si")) return { id: "jitsi", name: "Jitsi" };
+      } catch { /* not a URL we can read */ }
+      return { id: "call", name: "call" };
+    },
+
+    // Pages that start a brand new meeting on the platforms people actually use. Both work
+    // for anyone already signed in, and neither needs an API key, an OAuth app, or a review:
+    // creating meetings through the vendors' APIs would mean a published app and weeks of
+    // approval for something a signed-in user does in one click anyway.
+    NEW_CALL_URLS: {
+      zoom: "https://zoom.us/start/videomeeting",
+      meet: "https://meet.google.com/new",
+    },
+
+    isValidCallUrl(raw) {
+      if (typeof raw !== "string" || !raw.trim()) return false;
+      try {
+        const u = new URL(raw.trim());
+        // Zoom's app scheme, which opens the installed client straight into the meeting.
+        if (u.protocol === "zoommtg:" || u.protocol === "zoomus:") return true;
+        if (u.protocol !== "https:") return false;
+        const host = u.hostname.toLowerCase();
+        return root.__wtConfig.CALL_HOSTS.some((d) => host === d || host.endsWith("." + d));
+      } catch {
+        return false;
+      }
+    },
+
     // True only for a URL it is safe to send someone's tab to.
     isSafeNavigateUrl(raw) {
       if (typeof raw !== "string" || !raw) return false;

@@ -522,12 +522,14 @@ chrome.runtime.onConnect.addListener((port) => {
       case "chat-typing":
       case "cc-state":
       case "ad-state":
+      case "call-url":
       case "voice-state":
       case "voice-signal":
         sendToServer(msg);
         break;
 
       case "set-mode":
+      case "set-call-url":
         sendToServer(msg);
         break;
 

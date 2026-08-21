@@ -242,6 +242,7 @@ function connect() {
       case "chat-typing":
       case "cc-state":
       case "ad-state":
+      case "call-url":
       case "voice-state":
       case "voice-signal":
       case "error":
@@ -562,6 +563,7 @@ chrome.runtime.onConnect.addListener((port) => {
         break;
 
       case "set-mode":
+      case "set-call-url":
         sendToServer(msg);
         break;
 

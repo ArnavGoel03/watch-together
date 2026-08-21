@@ -30,6 +30,17 @@ interface WatchTogetherConfig {
   isSafeNavigateUrl(raw: unknown): boolean;
   /** A relay we are willing to talk to: wss only, never plaintext. */
   isValidServerUrl(raw: unknown): boolean;
+
+  /**
+   * Video-call platforms a room may pin a link to. An allowlist, not "any https URL":
+   * the link becomes a button every member is invited to press.
+   */
+  CALL_HOSTS: string[];
+  /** Pages that start a brand new meeting, for the platforms that expose one. */
+  NEW_CALL_URLS: Record<string, string>;
+  isValidCallUrl(raw: unknown): boolean;
+  /** Which platform a pinned link belongs to, so the button can name it. */
+  describeCall(raw: unknown): { id: string; name: string };
 }
 
 /** Chooses which relay to talk to, and where to go when one stops answering. */

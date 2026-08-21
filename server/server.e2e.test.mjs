@@ -898,6 +898,85 @@ test("host mode: the host keeps the leader role rather than handing it to a gues
   }
 });
 
+// Watching together and talking together are the same activity. Making somebody re-paste
+// the call link into chat every time a friend arrives late is exactly the kind of small
+// friction that makes a product feel unfinished, so the room carries it.
+test("call link: the host pins one and everybody gets it, including late arrivals", async () => {
+  let h, g, late;
+  try {
+    h = await host();
+    g = await guest(h.code, "Guest");
+    await waitFor(h.ws, "member-joined");
+
+    send(h.ws, { type: "set-call-url", url: "https://meet.google.com/abc-defg-hij" });
+    const seen = await waitFor(g.ws, "call-url");
+    assert.equal(seen.callUrl, "https://meet.google.com/abc-defg-hij");
+
+    // Somebody joining an hour later gets it with their room state, not by asking.
+    late = await guest(h.code, "Latecomer");
+    assert.equal(late.msg.callUrl, "https://meet.google.com/abc-defg-hij", "the room carries the call link");
+  } finally {
+    if (h) closeAll(h);
+    if (g) closeAll(g);
+    if (late) closeAll(late);
+  }
+});
+
+test("call link: only the host may pin one", async () => {
+  let h, g;
+  try {
+    h = await host();
+    g = await guest(h.code, "Guest");
+    await waitFor(h.ws, "member-joined");
+
+    send(g.ws, { type: "set-call-url", url: "https://zoom.us/j/999" });
+    await sleep(250);
+    const gotOne = h.ws.msgs.some((m) => m.type === "call-url");
+    assert.equal(gotOne, false, "a guest cannot put a link in front of the whole room");
+  } finally {
+    if (h) closeAll(h);
+    if (g) closeAll(g);
+  }
+});
+
+// The link becomes a button everyone in the room is invited to press, so a free-text URL
+// field would be a tidy way to get a room full of people to click on anything at all.
+test("call link: only real meeting platforms are accepted", async () => {
+  let h;
+  try {
+    h = await host();
+
+    for (const bad of [
+      "https://evil.example/j/1",
+      "javascript:alert(1)",
+      "https://zoom.us.evil.example/j/1",
+      "http://zoom.us/j/1",
+    ]) {
+      drain(h.ws, "error");
+      drain(h.ws, "call-url");
+      send(h.ws, { type: "set-call-url", url: bad });
+      const err = await waitFor(h.ws, "error");
+      assert.match(err.message, /link/i, `${bad} must be refused`);
+    }
+
+    for (const good of [
+      "https://zoom.us/j/123456789",
+      "https://us02web.zoom.us/j/1?pwd=x",
+      "zoommtg://zoom.us/join?confno=1",
+      "https://meet.google.com/abc-defg-hij",
+      "https://teams.microsoft.com/l/meetup-join/x",
+      "https://discord.gg/abcdef",
+    ]) {
+      drain(h.ws, "call-url");
+      send(h.ws, { type: "set-call-url", url: good });
+      const ok = await waitFor(h.ws, "call-url");
+      assert.equal(ok.callUrl, good, `${good} should be accepted`);
+    }
+  } finally {
+    if (h) closeAll(h);
+  }
+});
+
 // ============================================================
 // Four people in a room
 // ============================================================

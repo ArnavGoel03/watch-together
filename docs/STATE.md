@@ -109,6 +109,45 @@ Client-side detection is heuristic (player ad markers, plus a duration-collapse 
 warmup after navigation and a three-minute safety valve). It has never been tested against
 a real player, because the automated harness only ever drives a bare `<video>`.
 
+## Voice calls: a link, not an integration (decided 2026-08-21)
+
+The room carries a call link that the host pins once, and everyone gets a button for it,
+including people who join an hour late. There are quick "Start a Zoom" and "Start a Meet"
+buttons that open the platform's own new-meeting page; the host then copies that link back.
+
+This is deliberately NOT an API integration. Creating meetings through the Zoom or Google
+APIs needs OAuth, a published and reviewed vendor app, and server-side token storage, which
+is weeks of work and an ongoing compliance surface, for something a signed-in user already
+does in one click. The link approach needs no keys, no review, and no new permissions.
+
+**Standing decision: we only ever replace this with our own video, never with a deeper
+third-party integration.** If we build voice or video ourselves, this becomes the fallback
+for people who prefer their own tool. Until then, adding Zoom OAuth would be buying a large
+maintenance burden to remove one paste.
+
+The link is validated on both the client and the server against an allowlist of real
+platforms (Zoom, Google Meet, Teams, Discord, Whereby, Jitsi, plus Zoom's `zoommtg:` deep
+link). It has to be: this becomes a button a whole room is invited to press, so a free-text
+URL field would be a convenient way to get strangers to click on anything. Only the host can
+set it.
+
+## Audio: there is no shared audio channel, and that is the point
+
+A common worry is the film's audio colliding with the call. It cannot, because this
+extension never transmits audio: every viewer plays their own copy from their own source
+and hears their own speakers. Only playback POSITION crosses the network.
+
+The real problem is local, and physical: your speakers reaching your own microphone. So the
+control that helps is a per-viewer volume with a Duck button, which drops the film to 15%
+while you talk instead of pausing it for everybody, and restores it after. It touches only
+`video.volume` on the one element, never the system volume or an output device, so it cannot
+interfere with the call's own audio.
+
+The built-in voice mesh stays disabled for the same reason (`VOICE_ENABLED = false`): two
+microphone consumers on one machine is at best an echo problem, and a microphone permission
+next to `<all_urls>` is what got an earlier version rejected from the store. There is a test
+asserting `getUserMedia` is unreachable.
+
 ## Moving the backend (to Cloudflare, Oracle, anywhere)
 
 Neither step needs a store release to reach existing users:

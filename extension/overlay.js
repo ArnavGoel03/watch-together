@@ -20,6 +20,7 @@
   let iAmLeader = false;
   let roomMode = "everyone";
   let syncOffset = 0; // seconds this viewer's copy runs ahead of the room's timeline
+  let roomCallUrl = ""; // a voice call pinned to this room by its host
   let pendingEnterSend = false; // true if user pressed Enter during IME composition
   const inFlight = new Set();
 
@@ -473,6 +474,8 @@
       }
     );
 
+    wireCallControls();
+    wireVolumeControls();
     wireOffsetControls();
     wireHotkeyCapture();
     wireServerControls();
@@ -491,6 +494,121 @@
       const mode = btn.dataset.mode === "host" ? "host" : "everyone";
       if (mode === roomMode) return;
       safePost({ type: "set-mode", mode });
+    });
+  }
+
+  // Watching together and talking together are the same activity, and making somebody
+  // re-paste the call link into chat every time a friend arrives late is exactly the kind
+  // of small friction that makes a product feel unfinished. The host pins it once; the
+  // room carries it, including for people who join an hour in.
+  function renderCallLink() {
+    if (!overlayPanel) return;
+    const link = overlayPanel.querySelector("#wt-call");
+    const field = overlayPanel.querySelector("#wt-call-field");
+    const input = overlayPanel.querySelector("#wt-call-input");
+    if (!link) return;
+
+    link.toggleAttribute("hidden", !roomCallUrl);
+    if (roomCallUrl) {
+      link.href = roomCallUrl;
+      // Name the platform. "Join the call" does not tell you that a different application
+      // is about to open over the film you are watching; "Join Zoom call" does.
+      const platform = window.__wtConfig.describeCall(roomCallUrl);
+      const label = overlayPanel.querySelector("#wt-call-label");
+      if (label) label.textContent = platform.id === "call" ? "Join the call" : `Join ${platform.name}`;
+    }
+
+    // Only the host can set it, so do not offer the controls to everyone else.
+    if (field) field.toggleAttribute("hidden", !iAmHost);
+    if (input && document.activeElement !== input) input.value = roomCallUrl || "";
+  }
+
+  function wireCallControls() {
+    const input = overlayPanel.querySelector("#wt-call-input");
+    const hint = overlayPanel.querySelector("#wt-call-hint");
+
+    // Open the platform's own "new meeting" page. Both work for anyone already signed in,
+    // and neither needs an API key or an OAuth app: creating meetings through the vendors'
+    // APIs would mean a published app and weeks of review for something a signed-in user
+    // does in one click anyway. They start the call, copy its link, and paste it below.
+    const startCall = (id) => {
+      window.open(window.__wtConfig.NEW_CALL_URLS[id], "_blank", "noopener");
+      hint.textContent = "Start the meeting, then copy its link and paste it here.";
+      input.focus();
+    };
+    overlayPanel.querySelector("#wt-call-new-zoom").addEventListener("click", (e) => {
+      e.stopPropagation();
+      startCall("zoom");
+    });
+    overlayPanel.querySelector("#wt-call-new-meet").addEventListener("click", (e) => {
+      e.stopPropagation();
+      startCall("meet");
+    });
+
+    overlayPanel.querySelector("#wt-call-save").addEventListener("click", (e) => {
+      e.stopPropagation();
+      const url = input.value.trim();
+      if (url && !window.__wtConfig.isValidCallUrl(url)) {
+        hint.textContent = "That is not a link we recognise. Zoom, Meet, Teams, Discord, Whereby or Jitsi.";
+        return;
+      }
+      hint.textContent = "Everyone in the room gets a button for it, including people who join later.";
+      safePost({ type: "set-call-url", url });
+    });
+
+    overlayPanel.querySelector("#wt-call-clear").addEventListener("click", (e) => {
+      e.stopPropagation();
+      input.value = "";
+      safePost({ type: "set-call-url", url: "" });
+    });
+  }
+
+  // Talking over a film is the normal case: people watch together on a call. Pausing so one
+  // person can say something stops it for everyone, and reaching for the system volume
+  // affects the call too. This changes one thing, locally: the video element's own volume.
+  // Nothing is broadcast, because everyone is playing their own copy and hearing their own
+  // speakers, so there is no shared audio channel to collide with.
+  const DUCK_LEVEL = 0.15;
+
+  function applyVolume(value, { remember = true } = {}) {
+    const v = Math.max(0, Math.min(1, value));
+    const video = document.querySelector("video");
+    if (video) video.volume = v;
+    const slider = overlayPanel?.querySelector("#wt-volume");
+    const label = overlayPanel?.querySelector("#wt-volume-label");
+    if (slider) slider.value = String(Math.round(v * 100));
+    if (label) label.textContent = `${Math.round(v * 100)}%`;
+    if (remember) chrome.storage.local.set({ filmVolume: v });
+  }
+
+  function wireVolumeControls() {
+    const slider = overlayPanel.querySelector("#wt-volume");
+    const duck = overlayPanel.querySelector("#wt-duck");
+    let restoreTo = null;
+
+    slider.addEventListener("input", (e) => {
+      e.stopPropagation();
+      restoreTo = null;
+      duck.textContent = "Duck";
+      applyVolume(Number(slider.value) / 100);
+    });
+
+    duck.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (restoreTo === null) {
+        const video = document.querySelector("video");
+        restoreTo = video ? video.volume : 1;
+        duck.textContent = "Restore";
+        applyVolume(DUCK_LEVEL, { remember: false });
+      } else {
+        applyVolume(restoreTo, { remember: false });
+        restoreTo = null;
+        duck.textContent = "Duck";
+      }
+    });
+
+    chrome.storage.local.get(["filmVolume"], /** @param {any} d */ (d) => {
+      if (typeof d.filmVolume === "number") applyVolume(d.filmVolume, { remember: false });
     });
   }
 
@@ -738,6 +856,10 @@
           <button class="wt-btn-small" id="wt-copy-code">Copy Code</button>
           <button class="wt-btn-small" id="wt-copy-link">Copy Link</button>
         </div>
+        <a class="wt-call" id="wt-call" target="_blank" rel="noopener noreferrer" hidden>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 10l4.55-2.27A1 1 0 0121 8.6v6.8a1 1 0 01-1.45.87L15 14"/><rect x="3" y="6" width="12" height="12" rx="2"/></svg>
+          <span id="wt-call-label">Join the call</span>
+        </a>
         <div class="wt-members" id="wt-members" hidden></div>
         <div class="wt-voice-active" id="wt-voice-active"></div>
         <div class="wt-chat">
@@ -767,6 +889,28 @@
                 <button class="wt-seg-btn" data-mode="host">Host only</button>
               </div>
               <span class="wt-adv-hint" id="wt-mode-hint"></span>
+            </div>
+            <div class="wt-adv-field" id="wt-call-field">
+              <span class="wt-adv-label">Voice call for this room</span>
+              <div class="wt-actions">
+                <button class="wt-btn-small" id="wt-call-new-zoom">Start a Zoom</button>
+                <button class="wt-btn-small" id="wt-call-new-meet">Start a Meet</button>
+              </div>
+              <input type="text" id="wt-call-input" class="wt-input" placeholder="Paste a Zoom, Meet, Teams or Discord link" spellcheck="false">
+              <div class="wt-actions">
+                <button class="wt-btn-small" id="wt-call-save">Pin call link</button>
+                <button class="wt-btn-small" id="wt-call-clear">Remove</button>
+              </div>
+              <span class="wt-adv-hint" id="wt-call-hint">Everyone in the room gets a button for it, including people who join later.</span>
+            </div>
+            <div class="wt-adv-field">
+              <span class="wt-adv-label">Film volume, just for me</span>
+              <div class="wt-offset">
+                <input type="range" id="wt-volume" class="wt-range" min="0" max="100" step="5" value="100">
+                <span class="wt-offset-unit" id="wt-volume-label">100%</span>
+                <button class="wt-btn-small" id="wt-duck">Duck</button>
+              </div>
+              <span class="wt-adv-hint">Everyone plays their own copy, so nothing here is heard by the room: this only changes your speakers. Use Duck to drop the film while you talk, instead of pausing it for everybody.</span>
             </div>
             <div class="wt-adv-field">
               <span class="wt-adv-label">My video runs ahead of the room by</span>
@@ -1299,6 +1443,8 @@
           memberCount = 1;
           iAmHost = true;
           roomMode = msg.mode || "everyone";
+          roomCallUrl = "";
+          renderCallLink();
           membersById.clear();
           membersById.set(myUserId, { userName: userName || "You", inAd: false });
           renderModeControl();
@@ -1319,6 +1465,8 @@
           memberCount = msg.members?.length || 1;
           iAmHost = !!msg.isHost;
           roomMode = msg.mode || "everyone";
+          roomCallUrl = window.__wtConfig.isValidCallUrl(msg.callUrl) ? msg.callUrl : "";
+          renderCallLink();
           membersById.clear();
           for (const m of msg.members || []) membersById.set(m.id, { userName: m.userName, inAd: false });
           if (!membersById.has(myUserId)) membersById.set(myUserId, { userName: userName || "You", inAd: false });
@@ -1454,6 +1602,12 @@
           break;
         }
 
+        case "call-url":
+          roomCallUrl = window.__wtConfig.isValidCallUrl(msg.callUrl) ? msg.callUrl : "";
+          renderCallLink();
+          addSystemMsg(roomCallUrl ? `${msg.fromUser || "The host"} pinned a call link` : "The call link was removed");
+          break;
+
         case "mode-changed":
           roomMode = msg.mode || "everyone";
           renderModeControl();
@@ -1466,6 +1620,7 @@
 
         case "host-transferred":
           iAmHost = !!msg.isHost;
+          renderCallLink();
           renderModeControl();
           renderMembers();
           if (iAmHost) addSystemMsg("You are the host now");
@@ -1717,6 +1872,25 @@
       .wt-watchers .wt-chev { transition: transform 0.15s; }
       .wt-watchers.wt-open .wt-chev { transform: rotate(180deg); }
 
+      /* The call button sits on the PRIMARY surface, not in the drawer: if a room has a
+         call, joining it is one of the two things a person opening this panel wants. */
+      .wt-call {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        margin-bottom: 10px;
+        padding: 9px;
+        border-radius: 8px;
+        background: rgba(48,209,88,0.14);
+        color: #30d158;
+        font-size: 12px;
+        font-weight: 700;
+        text-decoration: none;
+      }
+      .wt-call:hover { background: rgba(48,209,88,0.22); }
+      .wt-call[hidden] { display: none; }
+
       .wt-members {
         margin: 0 0 10px;
         padding: 6px;
@@ -1861,6 +2035,7 @@
       }
       .wt-step:hover { background: rgba(120,120,128,0.36); }
       .wt-hotkey-input { text-align: center; margin: 0; }
+      .wt-range { flex: 1; accent-color: #a78bfa; margin: 0; }
       .wt-room-code {
         display: block;
         font-size: 24px;

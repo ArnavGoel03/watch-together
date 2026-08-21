@@ -103,6 +103,40 @@ function escapeHtml(str) {
   return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
+// A video-call link the room can share, so people watching together can also talk. This
+// is deliberately an allowlist of the platforms people actually use rather than "any https
+// URL": the link is handed to every member and rendered as a button, so a free-text field
+// would be a convenient way to get a room full of strangers to click on anything. Kept in
+// step with CALL_HOSTS in extension/config.js, and validated on both sides.
+const CALL_HOSTS = [
+  "zoom.us",
+  "zoomgov.com",
+  "meet.google.com",
+  "teams.microsoft.com",
+  "teams.live.com",
+  "discord.gg",
+  "discord.com",
+  "whereby.com",
+  "meet.jit.si",
+];
+const MAX_CALL_URL_LENGTH = 500;
+
+function validateCallUrl(str) {
+  if (typeof str !== "string") return "";
+  const trimmed = str.trim().substring(0, MAX_CALL_URL_LENGTH);
+  if (!trimmed) return "";
+  try {
+    const u = new URL(trimmed);
+    // Zoom's own scheme, which opens the installed client straight into the meeting.
+    if (u.protocol === "zoommtg:" || u.protocol === "zoomus:") return trimmed;
+    if (u.protocol !== "https:") return "";
+    const host = u.hostname.toLowerCase();
+    return CALL_HOSTS.some((d) => host === d || host.endsWith("." + d)) ? trimmed : "";
+  } catch {
+    return "";
+  }
+}
+
 function validateUrl(str) {
   if (typeof str !== "string") return "";
   const trimmed = str.substring(0, MAX_VIDEO_URL_LENGTH).trim();
@@ -896,6 +930,7 @@ wss.on("connection", (ws, req) => {
           // Only ever handed back to someone who already proved they hold it.
           hostToken: reclaimsHost ? mintHostToken(code) : undefined,
           videoUrl: room.videoUrl || "",
+          callUrl: room.callUrl || "",
           serverTime: Date.now(),
           playbackState: {
             ...room.playbackState,
@@ -1130,6 +1165,32 @@ wss.on("connection", (ws, req) => {
       // can be worked out from silence alone: the room clock has to stop when every member
       // is in a break, and the sync leader should not be somebody who has deliberately
       // stopped broadcasting. It also lets the others see why one person went quiet.
+      // The host pins a call link to the room. Everyone watching together is usually also
+      // talking, and making them paste the link into the chat every time somebody joins
+      // late is the kind of small friction that makes a product feel unfinished.
+      case "set-call-url": {
+        if (!currentRoom) return;
+        const callRoom = rooms.get(currentRoom);
+        if (!callRoom) return;
+        // Only the host: this becomes a button that everyone in the room is invited to
+        // click, so it is not something any member should be able to change under them.
+        if (callRoom.hostId !== userId) return;
+
+        const raw = typeof msg.url === "string" ? msg.url.trim() : "";
+        if (raw && !validateCallUrl(raw)) {
+          sendTo(ws, { type: "error", message: "That does not look like a Zoom, Meet, Teams, Discord or Whereby link" });
+          return;
+        }
+        callRoom.callUrl = validateCallUrl(raw);
+        callRoom.lastActivity = Date.now();
+        broadcastToRoom(currentRoom, {
+          type: "call-url",
+          callUrl: callRoom.callUrl,
+          fromUser: userName,
+        });
+        break;
+      }
+
       case "ad-state": {
         if (!currentRoom) return;
         const adRoom = rooms.get(currentRoom);
