@@ -84,6 +84,39 @@ function sanitize(str, maxLen) {
 function escapeHtml(str) {
   return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
+// A video-call link the room can share. An allowlist rather than "any https URL", because
+// this becomes a button every member is invited to press, so a free-text field would be a
+// convenient way to get a room full of people to click on anything. Kept in step with
+// server/server.js and extension/config.js.
+const CALL_HOSTS = [
+  "zoom.us",
+  "zoomgov.com",
+  "meet.google.com",
+  "teams.microsoft.com",
+  "teams.live.com",
+  "discord.gg",
+  "discord.com",
+  "whereby.com",
+  "meet.jit.si",
+];
+const MAX_CALL_URL_LENGTH = 500;
+
+function validateCallUrl(str) {
+  if (typeof str !== "string") return "";
+  const trimmed = str.trim().substring(0, MAX_CALL_URL_LENGTH);
+  if (!trimmed) return "";
+  try {
+    const u = new URL(trimmed);
+    // Zoom's own scheme, which opens the installed client straight into the meeting.
+    if (u.protocol === "zoommtg:" || u.protocol === "zoomus:") return trimmed;
+    if (u.protocol !== "https:") return "";
+    const host = u.hostname.toLowerCase();
+    return CALL_HOSTS.some((d) => host === d || host.endsWith("." + d)) ? trimmed : "";
+  } catch {
+    return "";
+  }
+}
+
 function validateUrl(str) {
   if (typeof str !== "string") return "";
   const trimmed = str.substring(0, MAX_VIDEO_URL_LENGTH).trim();
@@ -650,6 +683,7 @@ export class RoomHubDO {
         return;
       }
       case "set-mode": return this._handleSetMode(ws, meta, msg);
+      case "set-call-url": return this._handleSetCallUrl(ws, meta, msg);
       case "navigate": return this._handleNavigate(ws, meta, msg);
       case "voice-state": return this._handleVoiceState(ws, meta, msg);
       case "voice-signal": return this._handleVoiceSignal(ws, meta, msg);
@@ -836,6 +870,7 @@ export class RoomHubDO {
       persistent: !!room.persistent,
       isHost: meta.userId === room.hostId,
       waitForSlow: !!room.waitForSlow,
+      callUrl: room.callUrl || "",
       hostToken: reclaimsHost ? await mintHostToken(this.env.HOST_TOKEN_SECRET, code) : undefined,
       videoUrl: room.videoUrl || "",
       serverTime: Date.now(),
@@ -1194,6 +1229,28 @@ export class RoomHubDO {
     }, ws);
 
     if (this._heartbeatLeader(room) !== wasLeader) this._notifyHeartbeatLeader(room);
+  }
+
+  // The host pins a call to the room. Everyone watching together is usually also talking,
+  // and making them paste the link into chat every time somebody joins late is the kind of
+  // small friction that makes a product feel unfinished.
+  _handleSetCallUrl(ws, meta, msg) {
+    const code = meta.currentRoom;
+    if (!code) return;
+    const room = this.rooms.get(code);
+    if (!room) return;
+    // Host only: this becomes a button the whole room is invited to press.
+    if (room.hostId !== meta.userId) return;
+
+    const raw = typeof msg.url === "string" ? msg.url.trim() : "";
+    if (raw && !validateCallUrl(raw)) {
+      this._sendTo(ws, { type: "error", message: "That does not look like a Zoom, Meet, Teams, Discord or Whereby link" });
+      return;
+    }
+    room.callUrl = validateCallUrl(raw);
+    room.lastActivity = Date.now();
+    this._persistRoom(code);
+    this._broadcast(code, { type: "call-url", callUrl: room.callUrl, fromUser: meta.userName });
   }
 
   _handleSetMode(ws, meta, msg) {

@@ -49,9 +49,16 @@ Consequences, in order of how often they bite:
 - **Version 1.2.0**, both manifests, tagged `v1.2.0`. NOT yet uploaded to the Chrome Web
   Store. Every store version is re-reviewed, and an earlier version was rejected once for
   requesting a microphone permission next to `<all_urls>`.
-- **Production backend: Render** (`wss://watch-together-server-acwi.onrender.com`), free
-  tier. The Cloudflare port exists, is now tested, and is the better platform, but is not
-  what users connect to yet.
+- **Production backend: Cloudflare** (`wss://watch-together-cf.goelhome.workers.dev`),
+  deployed 2026-08-21, with `HOST_TOKEN_SECRET` set as a Worker secret. **Render is the
+  fallback**, and a real one: if the first relay does not answer, `relay.js` walks to the
+  next on its own. Render is also what every already-installed v1.1.0 copy still talks to,
+  so it does not get to rot.
+
+  Cloudflare is primary because Durable Objects hibernate and wake on the next message: no
+  spin-down, no cold start, and the whole "we paused for dinner and the room was gone" class
+  of failure does not exist there. It was safe to switch because v1.2.0 has not shipped, so
+  no installed copy had the new list yet.
 - **Tests: 170 green** (97 node, 61 vitest, 12 worker) plus 6 real-browser tests driving
   two separate Chrome profiles. Lint and typecheck clean. CI runs all of it.
 
@@ -334,8 +341,10 @@ or the watchdog demotes a leader who is healthy and merely quiet.
 4. **Decide on the Chrome Web Store upload.** 1.2.0 is packaged and the known review risks
    are addressed (`activeTab` removed, privacy policy now matches what the code does), but
    `<all_urls>` remains the standing rejection risk.
-5. **Move production to Cloudflare.** The port is fixed and tested; it needs a deploy, a
-   `HOST_TOKEN_SECRET`, and then the `SERVER_MOVED_URL` migration above.
+5. **Set `HOST_TOKEN_SECRET` on Render too**, if you want host status to survive a restart
+   on the fallback as well. It is already set on Cloudflare, which is primary. Render has no
+   CLI login here yet (`render login`), and `render.yaml` declares it with `generateValue`,
+   which only applies if the service was created from that blueprint.
 6. **Voice is off, not deleted.** `VOICE_ENABLED = false` in `overlay.js`, WebRTC mesh
    intact behind it, deliberately, per the owner. A mic permission is what got an earlier
    version rejected.

@@ -25,6 +25,15 @@
   //      `server-moved` handler in background.js.
   //   2. Add the URL to this list so fresh installs go straight there.
   const SERVER_URLS = [
+    // Cloudflare first. Durable Objects hibernate and wake on the next message, so there is
+    // no spin-down and no cold start: the whole class of "we paused for dinner and the room
+    // was gone" simply does not exist there. One object per room, with real persistent
+    // storage behind it.
+    "wss://watch-together-cf.goelhome.workers.dev",
+    // Render stays as the fallback, and it is a real one rather than a formality: if the
+    // first relay does not answer, relay.js walks to this one on its own. It is also the
+    // deployment that every already-installed copy is talking to, so it does not get to
+    // rot just because new installs go elsewhere.
     "wss://watch-together-server-acwi.onrender.com",
   ];
   const SERVER_URL = SERVER_URLS[0];
@@ -77,6 +86,57 @@
       if (typeof code !== "string") return false;
       const c = code.toUpperCase();
       return root.__wtConfig.ROOM_CODE_REGEX.test(c) || root.__wtConfig.CUSTOM_NAME_REGEX.test(c);
+    },
+
+    // ---- Timelines that stop lining up ----
+    //
+    // Some platforms stitch adverts into the stream itself rather than loading them as a
+    // separate video (Hulu, JioHotstar and similar do this on ad-supported tiers). Nothing
+    // local can see those: the duration never changes and no marker appears in the page, so
+    // to this extension they are simply part of the film.
+    //
+    // If everybody is served the SAME stitched stream that is a gift, and the adverts play
+    // in perfect sync with no work from us. But when the pods are personalised, one viewer's
+    // break might run 90 seconds and another's 120, and from then on the same currentTime
+    // means a different frame for each of them. The gap is a STEP, it appears the moment the
+    // break ends, and it never closes on its own. Worse, ordinary drift correction reacts to
+    // it by seeking somebody backwards into the tail of their own adverts.
+    //
+    // A step like that is not drift and must not be treated as it. It is the two people
+    // holding different cuts of the same film, which is exactly what the per-viewer offset
+    // exists to express.
+    TIMELINE_STEP_MIN_SECONDS: 5,
+
+    /**
+     * Does this gap look like two different cuts rather than one player lagging?
+     * Everything that could explain it more simply has to be ruled out first, because
+     * guessing wrong here silently desynchronises somebody.
+     */
+    looksLikeTimelineDivergence(drift, ctx) {
+      if (typeof drift !== "number" || !isFinite(drift)) return false;
+      if (Math.abs(drift) < root.__wtConfig.TIMELINE_STEP_MIN_SECONDS) return false;
+      // Falling behind because the video stalled is lag, and it closes on its own.
+      if (ctx.buffering) return false;
+      // A paused player drifts for the dullest possible reason.
+      if (ctx.paused) return false;
+      // They just moved the playhead themselves. That gap is theirs and it is intended.
+      if (ctx.sinceLocalSeekMs < 5000) return false;
+      // A player that has only just been bound is still settling.
+      if (ctx.sinceAttachMs < 10000) return false;
+      // Mid-redirect to somebody else's video: positions are meaningless until it lands.
+      if (ctx.navigating) return false;
+      // Asked recently. Being wrong occasionally is survivable; nagging is not.
+      if (ctx.sinceAskedMs < 120000) return false;
+      return true;
+    },
+
+    /**
+     * The offset that leaves this viewer exactly where they are, reinterpreting the room's
+     * timeline around them instead of dragging them through their own adverts.
+     * Same arithmetic as the manual "Use current" control, deliberately.
+     */
+    offsetAbsorbing(currentOffset, drift) {
+      return Math.round((currentOffset - drift) * 2) / 2;
     },
 
     // A relay URL we are willing to talk to.

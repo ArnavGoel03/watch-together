@@ -116,8 +116,10 @@ const btnCreate = $("#btnCreate");
 // Backend presets - Render is the original Node server, Cloudflare is the new Worker.
 // Per-backend URL is remembered so flipping the radio swaps the URL field instantly.
 const BACKEND_DEFAULTS = {
-  render: window.__wtConfig.SERVER_URL,
-  cloudflare: "",
+  // Both are real, deployed and interchangeable; the list in config.js decides which one a
+  // fresh install reaches for first.
+  cloudflare: window.__wtConfig.SERVER_URLS[0],
+  render: window.__wtConfig.SERVER_URLS[1] || window.__wtConfig.SERVER_URL,
 };
 const backendUrls = { ...BACKEND_DEFAULTS };
 let activeBackend = "render";
@@ -130,7 +132,7 @@ chrome.storage.local.get(
     if (data.userName) userNameInput.value = data.userName;
     backendUrls.render = data.renderUrl || BACKEND_DEFAULTS.render;
     backendUrls.cloudflare = data.cloudflareUrl || "";
-    activeBackend = data.backend === "cloudflare" ? "cloudflare" : "render";
+    activeBackend = data.backend === "render" ? "render" : "cloudflare";
     if (data.serverUrl) {
       serverUrlInput.value = data.serverUrl;
       backendUrls[activeBackend] = data.serverUrl;

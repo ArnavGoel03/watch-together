@@ -48,6 +48,26 @@ interface WatchTogetherConfig {
   isValidCallUrl(raw: unknown): boolean;
   /** Which platform a pinned link belongs to, so the button can name it. */
   describeCall(raw: unknown): { id: string; name: string };
+
+  /** Below this a gap is drift; at or above it, it may be two different cuts of the film. */
+  TIMELINE_STEP_MIN_SECONDS: number;
+  /**
+   * Does this gap look like two different cuts rather than one player lagging? Everything
+   * that could explain it more simply has to be ruled out first.
+   */
+  looksLikeTimelineDivergence(
+    drift: number,
+    ctx: {
+      buffering: boolean;
+      paused: boolean;
+      sinceLocalSeekMs: number;
+      sinceAttachMs: number;
+      navigating: boolean;
+      sinceAskedMs: number;
+    }
+  ): boolean;
+  /** The offset that leaves this viewer exactly where they are. */
+  offsetAbsorbing(currentOffset: number, drift: number): number;
 }
 
 /** Chooses which relay to talk to, and where to go when one stops answering. */

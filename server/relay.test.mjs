@@ -134,11 +134,32 @@ test("relay: a dead backend is skipped instead of retried forever", () => {
 });
 
 test("relay: with only one candidate it keeps retrying rather than giving up", () => {
+  // Written against a picker with exactly one place to go, rather than against however many
+  // relays happen to be built in today: the behaviour under test is "do not give up when
+  // there is no alternative", and that must not become untested the moment a second relay
+  // is added to the list.
   const relay = new RelayPicker();
-  assert.equal(relay.candidates().length, 1);
-  relay.onFailure();
-  assert.equal(relay.onFailure(), false, "nowhere else to go");
-  assert.equal(relay.current(), config.SERVER_URLS[0]);
+  relay.setOverride("wss://only.example");
+  const single = { ...config, SERVER_URLS: [] };
+  assert.equal(relay.candidates().filter((u) => u === "wss://only.example").length, 1);
+
+  const solo = new RelayPicker();
+  solo.candidates = () => ["wss://only.example"];
+  solo.onFailure();
+  assert.equal(solo.onFailure(), false, "nowhere else to go, so keep trying this one");
+  void single;
+});
+
+test("relay: the built-in list is tried in order, primary first", () => {
+  const relay = new RelayPicker();
+  assert.ok(config.SERVER_URLS.length >= 1);
+  assert.equal(relay.current(), config.SERVER_URLS[0], "a fresh install reaches for the primary");
+  // Enough failures and it walks to the next one rather than hammering a relay that is down.
+  if (config.SERVER_URLS.length > 1) {
+    relay.onFailure();
+    assert.equal(relay.onFailure(), true, "two failures is a verdict, not a blip");
+    assert.equal(relay.current(), config.SERVER_URLS[1], "so try the fallback");
+  }
 });
 
 test("relay: connecting clears the failure count", () => {
@@ -151,8 +172,14 @@ test("relay: connecting clears the failure count", () => {
 
 test("relay: candidates are deduplicated", () => {
   const relay = new RelayPicker();
+  const before = relay.candidates().length;
   relay.setOverride(config.SERVER_URLS[0]);
-  assert.equal(relay.candidates().length, 1, "an override equal to the built-in is not two backends");
+  assert.equal(
+    relay.candidates().length,
+    before,
+    "an override equal to a built-in is the same backend, not an extra one"
+  );
+  assert.equal(new Set(relay.candidates()).size, relay.candidates().length, "no duplicates at all");
 });
 
 test("relay: what we learned last session is restored", () => {
@@ -164,4 +191,78 @@ test("relay: what we learned last session is restored", () => {
   const other = new RelayPicker();
   other.hydrate({ serverUrl: "ws://bad", movedServerUrl: 42 });
   assert.equal(other.current(), config.SERVER_URLS[0]);
+});
+
+
+// ---------- timelines that stop lining up ----------
+// Some platforms stitch adverts into the stream itself, and when the pods are personalised
+// one viewer's break runs longer than another's. From then on the same currentTime means a
+// different frame for each of them. Nothing local can see it: the duration never changes
+// and no marker appears. What it looks like from here is a sudden step in the gap that
+// never closes, and ordinary drift correction reacts to it by seeking somebody backwards
+// into adverts they already sat through.
+
+const CLEAN = {
+  buffering: false,
+  paused: false,
+  sinceLocalSeekMs: 999999,
+  sinceAttachMs: 999999,
+  navigating: false,
+  sinceAskedMs: 999999,
+};
+
+test("divergence: a large unexplained step is treated as a different cut", () => {
+  assert.equal(config.looksLikeTimelineDivergence(30, CLEAN), true);
+  assert.equal(config.looksLikeTimelineDivergence(-30, CLEAN), true, "it works in both directions");
+});
+
+test("divergence: ordinary drift is left to drift correction", () => {
+  assert.equal(config.looksLikeTimelineDivergence(2, CLEAN), false);
+  assert.equal(config.looksLikeTimelineDivergence(0, CLEAN), false);
+});
+
+// Every one of these has a simpler explanation than "different cuts", and acting on the
+// wrong one silently desynchronises somebody, which is worse than the gap itself.
+test("divergence: anything with a simpler explanation is refused", () => {
+  assert.equal(config.looksLikeTimelineDivergence(30, { ...CLEAN, buffering: true }), false,
+    "falling behind on a stall closes on its own");
+  assert.equal(config.looksLikeTimelineDivergence(30, { ...CLEAN, paused: true }), false,
+    "a paused player drifts for the dullest possible reason");
+  assert.equal(config.looksLikeTimelineDivergence(30, { ...CLEAN, sinceLocalSeekMs: 1000 }), false,
+    "they just moved the playhead themselves, and meant to");
+  assert.equal(config.looksLikeTimelineDivergence(30, { ...CLEAN, sinceAttachMs: 2000 }), false,
+    "a freshly bound player is still settling");
+  assert.equal(config.looksLikeTimelineDivergence(30, { ...CLEAN, navigating: true }), false,
+    "positions are meaningless mid-redirect");
+  assert.equal(config.looksLikeTimelineDivergence(30, { ...CLEAN, sinceAskedMs: 5000 }), false,
+    "being wrong occasionally is survivable, nagging is not");
+});
+
+test("divergence: junk in, false out", () => {
+  assert.equal(config.looksLikeTimelineDivergence(Infinity, CLEAN), false);
+  assert.equal(config.looksLikeTimelineDivergence(NaN, CLEAN), false);
+  assert.equal(config.looksLikeTimelineDivergence("30", CLEAN), false);
+});
+
+// The offset has to leave the viewer exactly where they are, reinterpreting the room's
+// timeline around them rather than dragging them through their own adverts.
+test("divergence: absorbing a gap leaves the viewer where they stand", () => {
+  // Behind the room by 30s: our copy is 30s SHORTER, so it runs 30s behind the room's clock.
+  assert.equal(config.offsetAbsorbing(0, 30), -30);
+  assert.equal(config.offsetAbsorbing(0, -30), 30);
+  // It composes, so a second ad break adds to the first rather than replacing it.
+  assert.equal(config.offsetAbsorbing(-30, 30), -60);
+  // Rounded to the half second, matching the manual control, so the two cannot disagree.
+  assert.equal(config.offsetAbsorbing(0, 5.3), -5.5);
+  assert.equal(config.offsetAbsorbing(12, 5.3), 6.5);
+});
+
+test("divergence: absorbing then applying leaves zero gap", () => {
+  // drift = (roomPosition + offset) - myPosition. Absorb it and the next reading is zero.
+  const roomPosition = 1000;
+  const myPosition = 1030; // our cut is 30s longer by here
+  const offsetBefore = 0;
+  const drift = roomPosition + offsetBefore - myPosition;
+  const offsetAfter = config.offsetAbsorbing(offsetBefore, drift);
+  assert.equal(roomPosition + offsetAfter - myPosition, 0, "the viewer is left exactly where they were");
 });

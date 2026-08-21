@@ -61,6 +61,12 @@
   // drifted. The room's timeline stays canonical; this shifts one viewer against it, and
   // only locally.
   let syncOffset = 0;
+  // When the two of you are holding different cuts of the same film, correcting the gap is
+  // the wrong move: it drags somebody backwards through adverts they already sat through.
+  // Ask instead, once, and let them decide whether it was a break or a real desync.
+  let lastLocalSeekAt = 0;
+  let divergenceAskedAt = 0;
+  let divergencePending = false;
   chrome.storage.local.get(["syncOffset"], /** @param {any} d */ (d) => {
     if (typeof d.syncOffset === "number") syncOffset = d.syncOffset;
   });
@@ -565,6 +571,7 @@
 
     lastSyncTime = Date.now();
     quickenHeartbeat();
+    if (action === "seek") lastLocalSeekAt = Date.now();
     lastBroadcastTime = ct;
 
     sendMsg({
@@ -767,6 +774,11 @@
         } else if (isHeartbeat && absDrift < DRIFT_HARD_SEEK) {
           // smooth correction via playbackRate nudge - no audio glitch
           nudgePlaybackRate(video, drift, normalRate);
+        } else if (divergencePending) {
+          // Waiting on an answer about a gap we cannot explain. Leave them where they are
+          // rather than yanking them while the question is still on screen.
+        } else if (isTimelineDivergence(drift, video)) {
+          askAboutDivergence(drift, targetTime);
         } else {
           // user action OR large drift: hard seek
           cancelRateNudge(video);
@@ -790,6 +802,63 @@
       }
     }
 
+  }
+
+  // A gap this big, appearing while the film was playing normally and with nothing local to
+  // explain it, is usually not a sync problem at all. It is the two of you holding different
+  // cuts: most often because the platform stitched adverts into the stream and gave you
+  // different ones, which nothing in the page can see, since the duration never changes and
+  // no marker appears.
+  function isTimelineDivergence(drift, video) {
+    if (!window.__wtConfig) return false;
+    return window.__wtConfig.looksLikeTimelineDivergence(drift, {
+      buffering: isBuffering,
+      paused: video.paused,
+      sinceLocalSeekMs: Date.now() - lastLocalSeekAt,
+      sinceAttachMs: Date.now() - attachedAt,
+      navigating: Date.now() < suppressNextNavigateUntil,
+      sinceAskedMs: Date.now() - divergenceAskedAt,
+    });
+  }
+
+  const DIVERGENCE_DECIDE_MS = 20000;
+
+  function askAboutDivergence(drift, targetTime) {
+    divergencePending = true;
+    divergenceAskedAt = Date.now();
+
+    const seconds = Math.abs(drift).toFixed(1);
+    const ahead = drift < 0; // negative drift means our copy is further along than the room
+    const settle = (absorb) => {
+      divergencePending = false;
+      dismissActionCard(DIVERGENCE_CARD_ID);
+      if (absorb) {
+        syncOffset = window.__wtConfig.offsetAbsorbing(syncOffset, drift);
+        chrome.storage.local.set({ syncOffset });
+        showNotification(`Locked in: your copy runs ${Math.abs(syncOffset)}s ${syncOffset > 0 ? "ahead of" : "behind"} the room`);
+      } else {
+        const video = activeVideo || findVideo();
+        if (video) {
+          cancelRateNudge(video);
+          video.currentTime = targetTime;
+        }
+      }
+    };
+
+    showActionCard(
+      DIVERGENCE_CARD_ID,
+      `You are ${seconds}s ${ahead ? "ahead of" : "behind"} the room`,
+      "If that was an advert break, your copy of the film is simply a different length. Lock it in and you will stay in step from here without being moved. If you think it is a mistake, snap back to the room instead.",
+      "It was an ad break",
+      () => settle(true),
+      { secondaryLabel: "Snap to the room", onSecondary: () => settle(false) }
+    );
+
+    // Do not leave somebody sitting out of sync because they wandered off mid-question.
+    setTimeout(() => {
+      if (!divergencePending) return;
+      settle(false);
+    }, DIVERGENCE_DECIDE_MS);
   }
 
   // Heartbeat - only the leader sends, everyone receives.
@@ -1062,7 +1131,12 @@
   // extension needs a real click and cannot fake one: the browser refusing a remote play
   // without a user gesture, and an invite link asking to put you in a stranger's room.
   // Monochrome, no host-page CSS inherited, above every player chrome.
-  function showActionCard(id, title, detail, actionLabel, onAction) {
+  /**
+   * A small card the viewer can act on, for the moments where the extension needs a real
+   * decision and cannot make one safely on their behalf. Optionally offers a second choice,
+   * because "do the thing" and "dismiss" are not always the only two sensible answers.
+   */
+  function showActionCard(id, title, detail, actionLabel, onAction, opts = {}) {
     dismissActionCard(id);
     const card = document.createElement("div");
     card.id = id;
@@ -1095,10 +1169,13 @@
     go.textContent = actionLabel;
     go.style.cssText = "all:initial;font-family:inherit;cursor:pointer;background:#e8a33d;color:#17130b;font-size:13px;font-weight:600;padding:9px 18px;border-radius:8px;";
     const no = document.createElement("button");
-    no.textContent = "Not now";
-    no.style.cssText = "all:initial;font-family:inherit;cursor:pointer;background:rgba(255,255,255,0.1);color:rgba(235,235,245,0.75);font-size:13px;font-weight:500;padding:9px 14px;border-radius:8px;";
+    no.textContent = opts.secondaryLabel || "Not now";
+    no.style.cssText = "all:initial;display:inline-block;font-family:inherit;cursor:pointer;background:rgba(255,255,255,0.1);color:rgba(244,244,245,0.75);font-size:13px;font-weight:500;padding:9px 14px;border-radius:8px;";
     go.addEventListener("click", () => { dismissActionCard(id); onAction(); });
-    no.addEventListener("click", () => dismissActionCard(id));
+    no.addEventListener("click", () => {
+      dismissActionCard(id);
+      if (opts.onSecondary) opts.onSecondary();
+    });
     row.appendChild(go);
     row.appendChild(no);
     card.appendChild(h);
@@ -1114,6 +1191,7 @@
   }
 
   const GESTURE_CARD_ID = "wt-gesture-prompt";
+  const DIVERGENCE_CARD_ID = "wt-divergence-prompt";
 
   function showGesturePrompt() {
     if (awaitingGesture) return;
