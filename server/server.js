@@ -584,10 +584,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0d0d0f;
 .card{background:#141417;border-radius:16px;padding:44px 36px;max-width:400px;width:90%;text-align:center}
 h1{font-size:20px;font-weight:700;margin-bottom:4px}
 .sub{color:rgba(235,235,245,.5);font-size:14px;margin-bottom:24px}
-.code{font-size:38px;font-weight:800;color:#e8a33d;letter-spacing:8px;margin:12px 0 8px}
-.st{font-size:13px;font-weight:500;margin-bottom:24px;color:${roomExists ? "#3ecf7f" : "rgba(235,235,245,.4)"}}
-.err{color:#ff5f56;font-size:14px;margin-bottom:20px}
-.btn{display:block;padding:14px;background:#e8a33d;color:#fff;text-decoration:none;border-radius:10px;font-size:16px;font-weight:600;cursor:pointer;border:none;width:100%;margin-bottom:10px}
+.code{font-size:38px;font-weight:800;color:#f2f2f4;letter-spacing:8px;margin:12px 0 8px}
+.st{font-size:13px;font-weight:500;margin-bottom:24px;color:${roomExists ? "#4ade80" : "rgba(235,235,245,.4)"}}
+.err{color:#f87171;font-size:14px;margin-bottom:20px}
+.btn{display:block;padding:14px;background:#f2f2f4;color:#0d0d0f;text-decoration:none;border-radius:10px;font-size:16px;font-weight:600;cursor:pointer;border:none;width:100%;margin-bottom:10px}
 .btn:hover{opacity:.9}
 .hint{font-size:12px;color:rgba(235,235,245,.3);margin-top:16px;line-height:1.6}
 </style></head><body>

@@ -57,6 +57,19 @@
       "overlay.js",
     ],
 
+    // Voice chat ships OFF, and the WebRTC mesh behind it is kept rather than deleted.
+    //
+    // Watch parties pair with a separate call (Zoom, Meet, Discord), so a built-in mesh is
+    // not worth what it costs: two microphone consumers on one machine is at best an echo
+    // problem, and a microphone permission sitting next to broad host access is what got an
+    // earlier version rejected from the store.
+    //
+    // It lives here because BOTH surfaces need it. The overlay hid its microphone button,
+    // but the popup went on showing a "Voice quality" setting with a three-line explanation
+    // for a feature that could not run, which is worse than showing nothing: it is a
+    // control that does not control anything.
+    VOICE_ENABLED: false,
+
     // Stamped on everything this client sends. Old extension versions stay installed for
     // weeks after a store release, so the server is permanently talking to clients it
     // cannot upgrade: a version on the wire makes that explicit instead of leaving the

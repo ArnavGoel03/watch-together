@@ -96,39 +96,65 @@
           Settings
         </summary>
         <div class="config-body">
-          <div class="settings-section">
-            <div class="settings-label">Overlay panel</div>
-            <div class="radio-row">
-              <label class="radio-opt"><input type="radio" name="overlayMode" value="click"> Click to toggle</label>
-              <label class="radio-opt"><input type="radio" name="overlayMode" value="hold"> Hold key to show</label>
+
+          <section class="pref-group">
+            <h4 class="pref-title">Overlay panel</h4>
+            <div class="pref-rows">
+              <div class="pref-row">
+                <span class="pref-label">Show the panel</span>
+                <select id="overlayModeSelect" class="pref-select">
+                  <option value="click">On click</option>
+                  <option value="hold">While a key is held</option>
+                </select>
+              </div>
+              <div class="pref-row" id="hotkeyRow" hidden>
+                <span class="pref-label">Hotkey</span>
+                <input type="text" id="overlayHotkey" class="pref-key" maxlength="1" placeholder="\" autocomplete="off" spellcheck="false">
+              </div>
             </div>
-            <div id="hotkeyRow" class="hotkey-row" style="display:none">
-              <label for="overlayHotkey" class="settings-sub">Hotkey</label>
-              <input type="text" id="overlayHotkey" maxlength="1" placeholder="\" autocomplete="off">
-              <span class="settings-hint">Press a single key. Default: <code>\</code></span>
+            <p class="pref-footer">Any single key. Avoid the ones players use themselves, like f, k and m.</p>
+          </section>
+
+          <section class="pref-group" id="voiceQualitySection" hidden>
+            <h4 class="pref-title">Voice</h4>
+            <div class="pref-rows">
+              <div class="pref-row">
+                <span class="pref-label">Quality</span>
+                <select id="voiceQualitySelect" class="pref-select">
+                  <option value="media">Media friendly</option>
+                  <option value="voice">High voice quality</option>
+                </select>
+              </div>
             </div>
-          </div>
-          <div class="settings-section">
-            <div class="settings-label">Voice quality</div>
-            <div class="radio-row">
-              <label class="radio-opt"><input type="radio" name="voiceQuality" value="media"> Media-friendly</label>
-              <label class="radio-opt"><input type="radio" name="voiceQuality" value="voice"> High voice quality</label>
-            </div>
-            <span class="settings-hint">"Media-friendly" keeps the show's audio at full volume. Pick "High voice quality" only if you're on speakers and your friend hears themselves echo.</span>
-          </div>
-          <div class="settings-section">
-            <div class="settings-label">Server backend</div>
-            <div class="radio-row">
-              <label class="radio-opt"><input type="radio" name="backend" value="render"> Render</label>
-              <label class="radio-opt"><input type="radio" name="backend" value="cloudflare"> Cloudflare</label>
-            </div>
-            <div class="input-wrapper small">
-              <input type="text" id="serverUrl" placeholder=" ">
-              <label>WebSocket URL</label>
-            </div>
-            <span class="settings-hint">Both members of a room must use the same backend.</span>
-            <button id="btnSaveServer" class="btn btn-micro">Save</button>
-          </div>
+            <p class="pref-footer">Media friendly keeps the film at full volume. Only pick high voice quality if you are on speakers and your friend hears themselves echo.</p>
+          </section>
+
+          <section class="pref-group">
+            <details class="pref-disclosure">
+              <summary class="pref-disclosure-summary">
+                <span>Connection</span>
+                <svg class="pref-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+              </summary>
+              <div class="pref-rows">
+                <div class="pref-row">
+                  <span class="pref-label">Server</span>
+                  <select id="backendSelect" class="pref-select">
+                    <option value="cloudflare">Cloudflare</option>
+                    <option value="render">Render</option>
+                  </select>
+                </div>
+                <div class="pref-row pref-row-stack">
+                  <span class="pref-label">Address</span>
+                  <input type="text" id="serverUrl" class="pref-input" placeholder="wss://" spellcheck="false">
+                </div>
+                <div class="pref-row pref-row-action">
+                  <button id="btnSaveServer" class="pref-action">Save</button>
+                </div>
+              </div>
+              <p class="pref-footer">Only change this if you are running your own sync server. Everyone in a room has to be on the same one.</p>
+            </details>
+          </section>
+
         </div>
       </details>
     </div>

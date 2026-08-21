@@ -27,14 +27,19 @@
   --label-secondary: rgba(244, 244, 245, 0.6);
   --label-tertiary: rgba(244, 244, 245, 0.36);
   --label-quaternary: rgba(244, 244, 245, 0.16);
-  --accent: #e8a33d;
-  --accent-hover: #f2b455;
-  --accent-soft: rgba(232, 163, 61, 0.13);
-  --on-accent: #17130b;
-  --green: #3ecf7f;
-  --red: #ff5f56;
-  --orange: #e8a33d;
-  --blue: #5aa9ff;
+  /* Near-white primary on near-black, and colour spent only on status. See the long note
+     in overlay.js: a saturated accent floating over YouTube reads as a caution banner, and
+     every streaming site has already committed to red or blue, so a third hue always
+     competes with something. Monochrome competes with nothing, and it makes the one green
+     status dot impossible to miss. */
+  --accent: #f2f2f4;
+  --accent-hover: #ffffff;
+  --accent-soft: rgba(255, 255, 255, 0.1);
+  --on-accent: #0d0d0f;
+  --green: #4ade80;
+  --red: #f87171;
+  --orange: #fbbf24;
+  --blue: #60a5fa;
   --radius: 12px;
   --radius-sm: 10px;
   --radius-xs: 8px;
@@ -155,15 +160,23 @@ header {
 .input-wrapper input {
   width: 100%;
   padding: 11px 14px;
-  border: none;
+  border: 1px solid rgba(255, 255, 255, 0.07);
   border-radius: var(--radius-xs);
-  background: var(--fill);
+  /* Recessed: darker than the panel, with the shadow inside along the top edge, which is
+     what a hole in a surface actually looks like. */
+  background: #0a0a0c;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.55);
   color: var(--label);
   font-family: inherit;
   font-size: 15px;
   font-weight: 400;
   outline: none;
-  transition: background 0.15s;
+  transition: border-color 160ms ease-out, box-shadow 160ms ease-out;
+}
+
+.input-wrapper input:focus {
+  border-color: rgba(255, 255, 255, 0.22);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.55), 0 0 0 3px rgba(255, 255, 255, 0.05);
 }
 
 .input-wrapper input::placeholder {
@@ -253,20 +266,67 @@ header {
   height: 15px;
 }
 
+/* Light comes from above.
+ *
+ * Everything here used to be a flat rectangle with `border: none`, which is why it read as
+ * grey boxes rather than as objects you could press. A raised surface gets a hairline
+ * highlight along its top edge and a soft shadow beneath; a recessed one (inputs) is darker
+ * than the panel with the shadow inside at the top. That single rule is most of the
+ * difference between an interface that feels built and one that feels defaulted.
+ *
+ * No gradients and no gloss: the highlight is one pixel of slightly lighter edge, which is
+ * how real materials catch light, rather than a shine painted across the face. */
 .btn-glow {
-  background: var(--accent);
-  color: var(--on-accent);
-  box-shadow: 0 2px 16px rgba(124, 58, 237, 0.2);
+  background: linear-gradient(180deg, #26262b 0%, #1d1d21 100%);
+  color: var(--label);
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.07),
+    0 1px 2px rgba(0, 0, 0, 0.5),
+    0 4px 12px rgba(0, 0, 0, 0.3);
 }
 
 .btn-glow:hover {
-  box-shadow: 0 4px 24px rgba(124, 58, 237, 0.3);
-  transform: none;
+  background: linear-gradient(180deg, #2e2e34 0%, #232328 100%);
+  border-color: rgba(255, 255, 255, 0.18);
 }
 
 .btn-glass {
-  background: var(--fill);
+  background: rgba(255, 255, 255, 0.045);
   color: var(--label);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.btn-glass:hover {
+  background: rgba(255, 255, 255, 0.075);
+  border-color: rgba(255, 255, 255, 0.13);
+}
+
+/* Pressing something should feel like pressing something.
+ *
+ * Deliberately restrained: 1.5% over 90ms, easing out, with no overshoot and no bounce.
+ * A big scale change with a springy curve is what makes an interface feel plasticky and
+ * cheap; this is closer to a key travelling a fraction of a millimetre. The shadow
+ * collapses at the same time, so the surface reads as being pushed towards its background
+ * rather than merely shrinking. */
+.btn:active,
+.btn-micro:active,
+.action-btn:active,
+.mode-btn:active {
+  transform: scale(0.985);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.5);
+  transition-duration: 90ms;
+}
+
+.btn, .btn-micro, .action-btn, .mode-btn {
+  transition: background 160ms ease-out, border-color 160ms ease-out,
+              transform 160ms cubic-bezier(0.2, 0, 0, 1), box-shadow 160ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn, .btn-micro, .action-btn, .mode-btn { transition: none; }
+  .btn:active, .btn-micro:active, .action-btn:active, .mode-btn:active { transform: none; }
 }
 
 .btn-glass:hover {
@@ -321,17 +381,22 @@ header {
 
 .mode-toggle {
   display: flex;
-  gap: 0;
-  margin-bottom: 12px;
+  gap: 3px;
+  padding: 3px;
+  margin-bottom: 10px;
   border-radius: var(--radius-xs);
-  overflow: hidden;
-  border: 1px solid rgba(120,120,128,0.24);
+  /* A recessed track, so the selected half can sit in it as a raised object. Without this
+     the "selected" state has nothing to be raised ABOVE and just reads as a coloured box. */
+  background: #0a0a0c;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.05);
 }
 
 .mode-btn {
   flex: 1;
   padding: 8px;
-  border: none;
+  border: 1px solid transparent;
+  border-radius: calc(var(--radius-xs) - 3px);
   background: transparent;
   color: var(--label-tertiary);
   font-family: inherit;
@@ -342,8 +407,13 @@ header {
 }
 
 .mode-btn.mode-active {
-  background: var(--accent);
-  color: var(--on-accent);
+  /* Raised, not filled. A flat white pill was the version that read as unstyled default. */
+  background: linear-gradient(180deg, #2e2e34 0%, #232328 100%);
+  color: var(--label);
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.07),
+    0 1px 2px rgba(0, 0, 0, 0.45);
 }
 
 .room-mode {
@@ -817,4 +887,169 @@ header {
   color: var(--accent);
   font-weight: 600;
   word-break: break-all;
+}
+
+/* ---------------------------------------------------------------------------
+   Settings, as grouped rows.
+
+   The pattern is the inset grouped list: a small caps title outside the group, a
+   single rounded container holding the rows, one hairline BETWEEN rows inset from
+   the left so it reads as a divider rather than a box, the control on the trailing
+   edge of its row, and the explanation as a footer under the group instead of
+   crowding the control.
+
+   What was here before was a stacked web form: a label, then a row of radios, then a
+   paragraph, repeated. It works, but it reads as a settings page somebody assembled
+   rather than one somebody designed, and it is why this looked fiddly.
+   --------------------------------------------------------------------------- */
+
+.config-body {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  padding-top: 14px;
+}
+
+.pref-group { display: block; }
+
+.pref-title {
+  margin: 0 0 7px 2px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--label-tertiary);
+}
+
+.pref-rows {
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+
+.pref-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 40px;
+  padding: 8px 12px;
+}
+
+/* Inset from the left, so the divider separates the rows without drawing a box. */
+.pref-row + .pref-row {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.055);
+}
+.pref-row[hidden] { display: none; }
+
+.pref-label {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--label);
+  letter-spacing: -0.1px;
+}
+
+.pref-footer {
+  margin: 7px 2px 0;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--label-tertiary);
+}
+
+/* Controls sit on the trailing edge and stay quiet until touched. */
+.pref-select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding: 5px 26px 5px 10px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  background-color: rgba(255, 255, 255, 0.05);
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23a0a0a6' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  background-size: 11px;
+  color: var(--label);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background-color 160ms ease-out, border-color 160ms ease-out;
+}
+.pref-select:hover { background-color: rgba(255, 255, 255, 0.085); border-color: rgba(255, 255, 255, 0.15); }
+.pref-select option { background: #17171a; color: var(--label); }
+
+.pref-key,
+.pref-input {
+  padding: 6px 10px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  background: #0a0a0c;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5);
+  color: var(--label);
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+  transition: border-color 160ms ease-out, box-shadow 160ms ease-out;
+}
+.pref-key { width: 46px; text-align: center; }
+.pref-input { flex: 1; min-width: 0; font-size: 12px; }
+.pref-key:focus,
+.pref-input:focus {
+  border-color: rgba(255, 255, 255, 0.22);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5), 0 0 0 3px rgba(255, 255, 255, 0.05);
+}
+
+/* A row whose control needs the full width puts its label above rather than squeezing. */
+.pref-row-stack { flex-direction: column; align-items: stretch; gap: 6px; }
+.pref-row-action { justify-content: flex-end; }
+
+.pref-action {
+  padding: 6px 14px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  background: linear-gradient(180deg, #26262b 0%, #1d1d21 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 1px 2px rgba(0, 0, 0, 0.4);
+  color: var(--label);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 160ms ease-out, transform 160ms cubic-bezier(0.2, 0, 0, 1);
+}
+.pref-action:hover { background: linear-gradient(180deg, #2e2e34 0%, #232328 100%); }
+.pref-action:active { transform: scale(0.985); box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.5); transition-duration: 90ms; }
+
+/* A nested disclosure inside a group: the plumbing, folded away, still looking like part
+   of the same surface rather than a different component bolted on. */
+.pref-disclosure { display: block; }
+.pref-disclosure-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  list-style: none;
+  margin: 0 0 7px 2px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--label-tertiary);
+  user-select: none;
+  transition: color 160ms ease-out;
+}
+.pref-disclosure-summary::-webkit-details-marker { display: none; }
+.pref-disclosure-summary:hover { color: var(--label-secondary); }
+.pref-chevron { transition: transform 200ms cubic-bezier(0.2, 0, 0, 1); flex-shrink: 0; }
+.pref-disclosure[open] .pref-chevron { transform: rotate(90deg); }
+
+:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.45);
+  outline-offset: 2px;
+  border-radius: 5px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pref-select, .pref-key, .pref-input, .pref-action, .pref-chevron,
+  .pref-disclosure-summary { transition: none; }
+  .pref-action:active { transform: none; }
 }

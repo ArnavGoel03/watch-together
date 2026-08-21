@@ -25,6 +25,12 @@ interface WatchTogetherConfig {
    * in one list and not the other loads an extension that silently does nothing.
    */
   INJECT_FILES: string[];
+  /**
+   * Voice chat ships off, with the WebRTC mesh kept behind it. Read by BOTH surfaces: the
+   * overlay hides its microphone button, and the popup hides the voice-quality setting
+   * outright, because a control for a feature that cannot run is worse than no control.
+   */
+  VOICE_ENABLED: boolean;
   PROTOCOL_VERSION: 1;
   /** Relays in priority order. SERVER_URL is the head of this list, not a second copy. */
   SERVER_URLS: string[];

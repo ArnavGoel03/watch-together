@@ -147,61 +147,73 @@ chrome.storage.local.get(
   }
 );
 
+// Radio grids became settings rows: a label on the left and one control on the right. The
+// storage keys are unchanged throughout, so nothing anybody already chose is lost.
+
 function applyVoiceQuality(q) {
-  document.querySelectorAll('input[name="voiceQuality"]').forEach(/** @param {any} r */ (r) => {
-    r.checked = r.value === q;
-  });
+  const sel = $("#voiceQualitySelect");
+  if (sel) sel.value = q;
 }
 
-document.querySelectorAll('input[name="voiceQuality"]').forEach(/** @param {any} r */ (r) => {
-  r.addEventListener("change", () => {
-    if (!r.checked) return;
-    const q = r.value === "voice" ? "voice" : "media";
-    chrome.storage.local.set({ voiceQuality: q });
-    showToast(q === "voice" ? "High voice quality (may duck media)" : "Media-friendly voice");
-  });
-});
+// A control for a feature that cannot run is worse than no control: it invites somebody to
+// change something and then does nothing. Hide it outright while voice ships disabled.
+{
+  const voiceSection = $("#voiceQualitySection");
+  if (voiceSection) voiceSection.hidden = !window.__wtConfig.VOICE_ENABLED;
+
+  const sel = $("#voiceQualitySelect");
+  if (sel) {
+    sel.addEventListener("change", () => {
+      const q = sel.value === "voice" ? "voice" : "media";
+      chrome.storage.local.set({ voiceQuality: q });
+      showToast(q === "voice" ? "High voice quality, may duck the film" : "Media friendly voice");
+    });
+  }
+}
 
 function applyBackendRadios(backend) {
-  document.querySelectorAll('input[name="backend"]').forEach(/** @param {any} r */ (r) => {
-    r.checked = r.value === backend;
-  });
+  const sel = $("#backendSelect");
+  if (sel) sel.value = backend;
 }
 
-// Backend radio - switching repopulates the URL field with that backend's saved URL,
-// then the user clicks Save to actually apply (avoids accidental disconnects).
-document.querySelectorAll('input[name="backend"]').forEach(/** @param {any} r */ (r) => {
-  r.addEventListener("change", () => {
-    if (!r.checked) return;
-    activeBackend = r.value;
-    serverUrlInput.value = backendUrls[activeBackend] || "";
-    if (activeBackend === "cloudflare" && !backendUrls.cloudflare) {
-      showToast("Paste your Cloudflare worker URL, then Save");
-      serverUrlInput.focus();
-    }
-  });
-});
+// Switching the server repopulates the address with that backend's saved value; Save is
+// what actually applies it, so nobody disconnects a live room by brushing a control.
+{
+  const sel = $("#backendSelect");
+  if (sel) {
+    sel.addEventListener("change", () => {
+      activeBackend = sel.value === "render" ? "render" : "cloudflare";
+      serverUrlInput.value = backendUrls[activeBackend] || "";
+      if (!backendUrls[activeBackend]) {
+        showToast("Paste that server's address, then Save");
+        serverUrlInput.focus();
+      }
+    });
+  }
+}
 
 function applyOverlaySettings(mode, hotkey) {
-  document.querySelectorAll('input[name="overlayMode"]').forEach(/** @param {any} r */ (r) => {
-    r.checked = r.value === mode;
-  });
+  const sel = $("#overlayModeSelect");
+  if (sel) sel.value = mode;
   const hotkeyInput = $("#overlayHotkey");
   const hotkeyRow = $("#hotkeyRow");
   if (hotkeyInput) hotkeyInput.value = hotkey;
-  if (hotkeyRow) hotkeyRow.style.display = mode === "hold" ? "flex" : "none";
+  // The hotkey row only means anything in hold mode, so it appears with it rather than
+  // sitting there greyed out.
+  if (hotkeyRow) hotkeyRow.hidden = mode !== "hold";
 }
 
-// Mode radios - save on change, no separate Save button
-document.querySelectorAll('input[name="overlayMode"]').forEach(/** @param {any} r */ (r) => {
-  r.addEventListener("change", () => {
-    if (!r.checked) return;
-    const mode = r.value;
-    chrome.storage.local.set({ overlayMode: mode });
-    const row = $("#hotkeyRow");
-    if (row) row.style.display = mode === "hold" ? "flex" : "none";
-  });
-});
+{
+  const sel = $("#overlayModeSelect");
+  if (sel) {
+    sel.addEventListener("change", () => {
+      const mode = sel.value === "hold" ? "hold" : "click";
+      chrome.storage.local.set({ overlayMode: mode });
+      const row = $("#hotkeyRow");
+      if (row) row.hidden = mode !== "hold";
+    });
+  }
+}
 
 // Hotkey input - captures one keypress, persists immediately
 {

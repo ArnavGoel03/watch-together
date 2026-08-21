@@ -41,7 +41,7 @@
   // put an <all_urls> extension in front of a manual store review for a feature nobody
   // asked for. The implementation is kept intact and unreferenced-but-live behind this
   // flag. Flip to true to bring it back; the UI, signaling, and server relays all remain.
-  const VOICE_ENABLED = false;
+  const VOICE_ENABLED = window.__wtConfig.VOICE_ENABLED;
 
   const ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
   // Voice quality modes:
@@ -1808,16 +1808,34 @@
         --wt-text-dim: rgba(244, 244, 245, 0.6);
         --wt-text-faint: rgba(244, 244, 245, 0.36);
 
-        /* The lamp. */
-        --wt-accent: #e8a33d;
-        --wt-accent-hover: #f2b455;
-        --wt-accent-soft: rgba(232, 163, 61, 0.13);
-        --wt-on-accent: #17130b;
+        /* Nothing on this panel is filled with a bright colour. The primary action is a
+           dark surface with a hairline edge and white text, and the ONLY colour anywhere
+           is the status dot. That is what makes the status readable: when one green dot is
+           the single coloured thing in view, it cannot be missed.
 
-        --wt-good: #3ecf7f;
-        --wt-warn: #e8a33d;
-        --wt-bad: #ff5f56;
-        --wt-info: #5aa9ff;
+           This went through a warm amber and a white fill before landing here. The amber
+           read as a caution banner sitting on YouTube's chrome, and any saturated hue has
+           that problem: the panel floats over sites already committed to red (YouTube,
+           Netflix) or blue (Prime, Disney+), so a third colour always competes with
+           something. A big white fill had the opposite problem, shouting for attention
+           over a film somebody is trying to watch. Dark surfaces with hairline edges do
+           neither: they read as part of a considered tool rather than as a banner. */
+        --wt-accent: #f2f2f4;          /* text, never a fill */
+        --wt-accent-hover: #ffffff;
+        --wt-accent-soft: rgba(255, 255, 255, 0.09);
+        --wt-on-accent: #f2f2f4;
+
+        /* The primary action. A surface, not a colour. */
+        --wt-primary: #232327;
+        --wt-primary-hover: #2c2c31;
+        --wt-primary-edge: rgba(255, 255, 255, 0.15);
+
+        /* Status, and nothing else, gets colour. Muted on purpose: these sit against pure
+           black, where a fully saturated tone glows. */
+        --wt-good: #4ade80;
+        --wt-warn: #fbbf24;
+        --wt-bad: #f87171;
+        --wt-info: #60a5fa;
 
         --wt-radius: 9px;
         --wt-radius-lg: 13px;
@@ -1929,15 +1947,16 @@
       .wt-input {
         width: 100%;
         padding: 10px 12px;
-        border: none;
+        border: 1px solid rgba(255, 255, 255, 0.07);
         border-radius: 8px;
-        background: var(--wt-bg-raised);
+        background: #0a0a0c;
         color: #fff;
         font-family: inherit;
         font-size: 14px;
         outline: none;
         margin-bottom: 8px;
         box-sizing: border-box;
+              box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5);
       }
       .wt-input::placeholder { color: var(--wt-text-faint); }
       .wt-input:focus { background: var(--wt-bg-raised-hover); }
@@ -1956,8 +1975,19 @@
       .wt-btn:hover { opacity: 0.85; }
       .wt-btn:active { transform: scale(0.98); }
       .wt-btn-primary {
-        background: var(--wt-accent);
-        color: #fff;
+        /* Light from above: a hairline highlight along the top edge and a shadow beneath,
+           so it reads as an object rather than a coloured rectangle. */
+        background: linear-gradient(180deg, #26262b 0%, #1d1d21 100%);
+        border: 1px solid var(--wt-primary-edge);
+        color: var(--wt-accent);
+        box-shadow:
+          inset 0 1px 0 rgba(255, 255, 255, 0.07),
+          0 1px 2px rgba(0, 0, 0, 0.5),
+          0 4px 12px rgba(0, 0, 0, 0.28);
+      }
+      .wt-btn-primary:hover {
+        background: linear-gradient(180deg, #2e2e34 0%, #232328 100%);
+        border-color: rgba(255, 255, 255, 0.2);
       }
       .wt-btn-secondary {
         background: var(--wt-bg-raised);
@@ -2142,7 +2172,11 @@
         font-weight: 600;
         cursor: pointer;
       }
-      .wt-seg-btn.wt-seg-on { background: var(--wt-accent); color: #fff; }
+      .wt-seg-btn.wt-seg-on {
+        background: var(--wt-primary-hover);
+        color: var(--wt-accent);
+        box-shadow: inset 0 0 0 1px var(--wt-primary-edge);
+      }
       .wt-seg-btn:disabled { cursor: default; opacity: 0.55; }
 
       
@@ -2226,8 +2260,35 @@
         border-radius: 4px;
       }
 
+      /* Pressing something should feel like pressing something. Deliberately small: 1.5%
+         over 90ms, easing out, no overshoot. A big scale change on a springy curve is what
+         makes an interface feel plasticky; this is closer to a key travelling a fraction of
+         a millimetre, with the shadow collapsing so it reads as going down rather than
+         merely shrinking. */
+      #wt-overlay-panel .wt-btn,
+      #wt-overlay-panel .wt-btn-small,
+      #wt-overlay-panel .wt-seg-btn,
+      #wt-overlay-panel .wt-step,
+      #wt-overlay-panel .wt-send,
+      #wt-overlay-panel .wt-btn-leave {
+        transition: background 160ms ease-out, border-color 160ms ease-out,
+                    color 160ms ease-out, transform 160ms cubic-bezier(0.2, 0, 0, 1),
+                    box-shadow 160ms ease-out;
+      }
+      #wt-overlay-panel .wt-btn:active,
+      #wt-overlay-panel .wt-btn-small:active,
+      #wt-overlay-panel .wt-seg-btn:active:not(:disabled),
+      #wt-overlay-panel .wt-step:active,
+      #wt-overlay-panel .wt-send:active,
+      #wt-overlay-panel .wt-btn-leave:active {
+        transform: scale(0.985);
+        box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.5);
+        transition-duration: 90ms;
+      }
+
       @media (prefers-reduced-motion: reduce) {
         #wt-overlay-panel, #wt-overlay-panel * { animation: none !important; transition: none !important; }
+        #wt-overlay-panel *:active { transform: none !important; }
       }
 
       .wt-check {

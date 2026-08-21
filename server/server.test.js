@@ -93,8 +93,16 @@ describe("Static checks", () => {
   // next to <all_urls> is what got an earlier version rejected from the Chrome Web Store.
   // The WebRTC code is deliberately kept, so this asserts the gate rather than its absence.
   it("never asks for the microphone: voice is gated, not merely unused", () => {
+    // The flag lives in config.js because BOTH surfaces need it: the overlay hides its
+    // microphone button, and the popup hides the voice-quality setting outright, since a
+    // control for a feature that cannot run is worse than no control at all.
+    const config = readFileSync(join(extDir, "config.js"), "utf8");
+    expect(config).toMatch(/VOICE_ENABLED:\s*false/);
+
     const overlay = readFileSync(join(extDir, "overlay.js"), "utf8");
-    expect(overlay).toMatch(/const VOICE_ENABLED = false/);
+    // And the overlay must READ that flag rather than keeping a second copy that could
+    // drift away from it.
+    expect(overlay).toMatch(/const VOICE_ENABLED = window\.__wtConfig\.VOICE_ENABLED/);
 
     // Every getUserMedia call must sit behind that flag.
     const lines = overlay.split("\n");
