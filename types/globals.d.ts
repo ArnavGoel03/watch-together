@@ -32,6 +32,13 @@ interface WatchTogetherConfig {
    */
   VOICE_ENABLED: boolean;
   PROTOCOL_VERSION: 1;
+
+  /** The visual languages the interface can wear. See the note in config.js. */
+  UI_STYLES: ReadonlyArray<{ value: string; label: string; hint: string }>;
+  UI_STYLE_DEFAULT: string;
+  UI_STYLE_STORAGE_KEY: string;
+  /** Falls back to the default rather than trusting whatever was in storage. */
+  normalizeUiStyle(value: unknown): string;
   /** Relays in priority order. SERVER_URL is the head of this list, not a second copy. */
   SERVER_URLS: string[];
   SERVER_URL: string;

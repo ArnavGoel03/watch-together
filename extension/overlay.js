@@ -51,6 +51,7 @@
   //   "voice"  - Echo cancellation ON. Better voice quality on speakers. Chrome ducks the
   //              video audio, sometimes permanently until the tab is closed (known bug).
   let voiceQuality = "media";
+  let uiStyle = window.__wtConfig.UI_STYLE_DEFAULT;
   // Default playback volume for peer voices. Lower than 1.0 so voice doesn't drown out video.
   const PEER_VOLUME = 0.85;
   const voice = {
@@ -375,7 +376,10 @@
   // ============================================================
 
   function loadHotkeyConfig() {
-    chrome.storage.local.get(["overlayMode", "overlayHotkey", "voiceQuality"], (data) => {
+    chrome.storage.local.get(
+      ["overlayMode", "overlayHotkey", "voiceQuality", window.__wtConfig.UI_STYLE_STORAGE_KEY],
+      (data) => {
+      applyUiStyle(data[window.__wtConfig.UI_STYLE_STORAGE_KEY]);
       if (data.overlayMode === "click" || data.overlayMode === "hold") {
         overlayMode = data.overlayMode;
       }
@@ -386,6 +390,19 @@
         voiceQuality = data.voiceQuality;
       }
     });
+  }
+
+  /* Appearance, kept in step with the popup.
+   *
+   * Stored rather than derived, and applied to every element this script owns, because
+   * the panel is reparented into the fullscreen element when the viewer goes fullscreen.
+   * An attribute set once on a shared ancestor would be left behind by that move and the
+   * panel would silently revert to the other look mid-film. */
+  function applyUiStyle(value) {
+    uiStyle = window.__wtConfig.normalizeUiStyle(value);
+    for (const el of [overlayBtn, overlayPanel]) {
+      if (el) el.setAttribute("data-ui", uiStyle);
+    }
   }
 
   // Match `key` representations the way they're stored in settings (a single
@@ -771,6 +788,9 @@
     chrome.storage.onChanged.addListener(/** @param {any} changes */ (changes) => {
       if (changes.overlayMode) overlayMode = changes.overlayMode.newValue || "click";
       if (changes.overlayHotkey) overlayHotkey = changes.overlayHotkey.newValue || HOTKEY_DEFAULT;
+      if (changes[window.__wtConfig.UI_STYLE_STORAGE_KEY]) {
+        applyUiStyle(changes[window.__wtConfig.UI_STYLE_STORAGE_KEY].newValue);
+      }
       if (changes.voiceQuality) {
         voiceQuality = changes.voiceQuality.newValue === "voice" ? "voice" : "media";
         // If voice is currently active, the new constraint applies on next start.
@@ -844,6 +864,9 @@
 
     overlayBtn = document.createElement("button");
     overlayBtn.id = "wt-overlay-btn";
+    // The settings read happens before either of these exists, so the attribute is
+    // applied again here rather than only on change.
+    overlayBtn.setAttribute("data-ui", uiStyle);
     overlayBtn.title = "Watch Together";
     overlayBtn.innerHTML = `
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -868,6 +891,7 @@
 
     overlayPanel = document.createElement("div");
     overlayPanel.id = "wt-overlay-panel";
+    overlayPanel.setAttribute("data-ui", uiStyle);
     overlayPanel.innerHTML = `
       <div class="wt-panel-header">
         <span class="wt-panel-title">Watch Together</span>
@@ -2467,6 +2491,79 @@
         cursor: pointer;
       }
       .wt-btn-leave:hover { background: rgba(255,69,58,0.1); }
+
+      /* ------------------------------------------------------------------
+      Material appearance.
+
+      The same panel, wearing the other visual language. Everything here is a value
+      rather than a branch: no code above asks which look is in force, and no element
+      exists in one and not the other.
+
+      The attribute is set on the panel and the launcher THEMSELVES rather than on a
+      shared ancestor, because going fullscreen reparents the panel into the fullscreen
+      element. An attribute on an ancestor would be left behind by that move and the
+      panel would revert to the other look part way through a film.
+      ------------------------------------------------------------------ */
+      #wt-overlay-panel[data-ui="material"] {
+        background: #1d1b20;
+        border: none;
+        border-radius: 16px;
+        box-shadow: 0 8px 24px rgba(0,0,0,0.55);
+        font-family: Roboto, "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+        backdrop-filter: none;
+      }
+      #wt-overlay-btn[data-ui="material"] {
+        background: #d0bcff;
+        color: #381e72;
+        border: none;
+        border-radius: 100px;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.45);
+      }
+      [data-ui="material"] .wt-btn,
+      [data-ui="material"] .wt-btn-small,
+      [data-ui="material"] .wt-send {
+        border-radius: 100px;
+        border: none;
+        box-shadow: none;
+        font-weight: 500;
+        letter-spacing: 0.1px;
+      }
+      [data-ui="material"] .wt-btn-primary {
+        background: #d0bcff;
+        color: #381e72;
+      }
+      [data-ui="material"] .wt-btn:not(.wt-btn-primary):not(.wt-btn-leave),
+      [data-ui="material"] .wt-btn-small,
+      [data-ui="material"] .wt-send {
+        background: #2b2930;
+        color: #e6e0e9;
+      }
+      [data-ui="material"] .wt-input {
+        background: #211f26;
+        border: none;
+        border-bottom: 1px solid #938f99;
+        border-radius: 8px 8px 0 0;
+        box-shadow: none;
+        color: #e6e0e9;
+      }
+      [data-ui="material"] .wt-input:focus {
+        background: #2b2930;
+        border-bottom: 2px solid #d0bcff;
+      }
+      [data-ui="material"] .wt-seg-btn {
+        border-radius: 100px;
+        border: none;
+        box-shadow: none;
+      }
+      /* No modelled light source, so nothing carries a lit top edge. */
+      [data-ui="material"] .wt-group,
+      [data-ui="material"] .wt-advanced,
+      [data-ui="material"] .wt-chat-messages,
+      [data-ui="material"] .wt-sync-row,
+      [data-ui="material"] .wt-call {
+        box-shadow: none;
+        border-color: rgba(255,255,255,0.12);
+      }
     `;
     document.head.appendChild(style);
   }

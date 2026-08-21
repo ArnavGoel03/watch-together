@@ -73,10 +73,35 @@ export default [
     rules: { ...sharedRules, "no-unused-vars": ["warn", { args: "none" }] },
   },
 
-  // Config files that really are ES modules.
+  // Config files and build scripts that really are ES modules.
   {
     files: ["**/vitest.config.js", "eslint.config.js", "scripts/*.mjs"],
     languageOptions: { ecmaVersion: 2023, sourceType: "module", globals: { ...globals.node } },
+    rules: sharedRules,
+  },
+
+  // Scripts that DRIVE a browser. These run in Node, but the bodies passed to
+  // page.evaluate() really do run in a page and really do see document, getComputedStyle
+  // and, where an extension is loaded, chrome. Without both sets, every one of those
+  // callbacks lints as a wall of undefined globals and the real defects hide among them.
+  {
+    files: ["scripts/check-site.mjs", "server/store-screenshots.mjs"],
+    languageOptions: {
+      ecmaVersion: 2023,
+      sourceType: "module",
+      globals: { ...globals.node, ...globals.browser, chrome: "readonly" },
+    },
+    rules: sharedRules,
+  },
+
+  // The marketing site: plain browser modules, no build step, no framework.
+  {
+    files: ["site/**/*.js"],
+    languageOptions: {
+      ecmaVersion: 2023,
+      sourceType: "module",
+      globals: { ...globals.browser },
+    },
     rules: sharedRules,
   },
 

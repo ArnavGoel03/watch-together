@@ -2,6 +2,52 @@
 
 All notable changes to Watch Together are documented here.
 
+## [1.2.1] - 2026-08-22
+
+The popup header was showing a blank white square where the logo should be, and the
+interface it sat on top of had no hierarchy. Both are fixed, and there is now a second
+appearance for people to whom the default reads as somebody else's operating system.
+
+### Fixed
+
+- **The logo is back in the popup header.** It was an inline SVG play triangle sitting on
+  a tile painted with `var(--accent)`, with its own path forced to `#fff`. That worked
+  while the accent was purple. When the redesign made the accent near-white, the tile went
+  white too and the triangle disappeared into it, leaving a blank square as the first
+  thing anybody saw on opening the extension. The header now points at the shipped icon
+  asset, so the popup, the toolbar, the store listing and the website all derive from one
+  piece of artwork and cannot drift apart again.
+- **A disabled button now looks disabled.** There was no rule for `:disabled` anywhere, so
+  Create Room rendered fully raised, with its lit top edge and its shadow, directly above
+  a line reading "open a video page to create a room". The control contradicted its own
+  caption. Disabled controls now lose their elevation and sink into the page.
+
+### Changed
+
+- **The popup has a visual hierarchy.** Every control was the same object: 8px radius,
+  41 to 44 pixels tall, the same hairline edge. The only thing separating the primary
+  action from a text field was four percent of background alpha, which is below what
+  anyone can see, so the panel read as six identical rectangles with nothing to land on.
+  Join Room now carries the same raised treatment Create Room already had, fields sit
+  further back with a fainter edge, and radii nest concentrically instead of every element
+  sharing one value.
+
+### Added
+
+- **A second appearance, selectable in Settings.** The default look is built on near-black
+  surfaces, hairline edges and light falling from above. That is a deliberate house style
+  and it is not what somebody who lives in Chrome on Windows is used to. Material is the
+  alternative: flat surfaces, filled pill buttons, tinted fields, and no modelled light
+  source. It applies to the popup and the in-page panel together, and switching it in one
+  place updates the other immediately.
+
+  It is a token swap on a single attribute, not a second interface. Nothing in the code
+  branches on which look is active and no element exists in one and not the other, because
+  a look with its own code path drifts from the other the moment either changes. The
+  attribute is set on the panel and the launcher themselves rather than on a shared
+  ancestor, since going fullscreen reparents the panel and an ancestor's attribute would
+  be left behind mid-film.
+
 ## [1.2.0] - 2026-08-21
 
 A hardening release. Eight independent adversarial reviews were run against the whole

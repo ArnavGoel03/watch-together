@@ -82,18 +82,20 @@ header {
   gap: 10px;
 }
 
+/* The real logo, not a play triangle redrawn in code.
+ *
+ * This used to be an inline SVG on a tile painted with var(--accent). That worked while
+ * the accent was purple. When the redesign made the accent near-white, the tile went
+ * white, the triangle was already forced to #fff, and the whole mark disappeared into a
+ * blank square in the popup header. Pointing at the shipped icon means the popup, the
+ * toolbar, the store listing and the website cannot drift apart again, because there is
+ * one piece of artwork and everything derives from it. */
 .logo-icon {
   width: 30px; height: 30px;
-  background: var(--accent);
   border-radius: 7px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  display: block;
+  flex: 0 0 auto;
 }
-
-.logo-icon svg { width: 16px; height: 16px; }
-.logo-icon svg path { fill: #fff !important; }
-.logo-icon svg stop { stop-color: #fff !important; }
 
 .logo-text {
   font-size: 16px;
@@ -165,8 +167,11 @@ header {
 .input-wrapper input {
   width: 100%;
   padding: 11px 14px;
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  border-radius: var(--radius-xs);
+  /* Deliberately fainter than a button's edge. A field is a hole; its edge is the lip of
+     the hole, not a frame around a raised object. When both carried the same hairline the
+     column read as six identical rectangles with nothing to land on. */
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: var(--radius-sm);
   /* Recessed: darker than the panel, with the shadow inside along the top edge, which is
      what a hole in a surface actually looks like. */
   background: #0a0a0c;
@@ -238,7 +243,7 @@ header {
   width: 100%;
   padding: 12px;
   border: none;
-  border-radius: var(--radius-xs);
+  border-radius: var(--radius-sm);
   font-family: inherit;
   font-size: 15px;
   font-weight: 600;
@@ -256,6 +261,34 @@ header {
 .btn:active {
   transform: scale(0.98);
   opacity: 0.8;
+}
+
+/* Disabled means SUNK, not faded.
+ *
+ * There was no rule here, so Create Room sat fully raised, with its lit top edge and its
+ * shadow, while the line underneath said "open a video page to create a room". The
+ * control contradicted its own caption. Taking the elevation away is what communicates
+ * unavailable: the surface stops standing off the page and becomes part of it. */
+.btn:disabled,
+.btn[disabled] {
+  background: rgba(255, 255, 255, 0.02);
+  border-color: rgba(255, 255, 255, 0.05);
+  box-shadow: none;
+  color: var(--label-tertiary);
+  cursor: default;
+  transform: none;
+}
+
+.btn:disabled:hover,
+.btn[disabled]:hover {
+  background: rgba(255, 255, 255, 0.02);
+  border-color: rgba(255, 255, 255, 0.05);
+}
+
+.btn:disabled:active,
+.btn[disabled]:active {
+  transform: none;
+  opacity: 1;
 }
 
 .btn-content {
@@ -1057,4 +1090,146 @@ header {
   .pref-select, .pref-key, .pref-input, .pref-action, .pref-chevron,
   .pref-disclosure-summary { transition: none; }
   .pref-action:active { transform: none; }
+}
+
+/* =========================================================================
+   Material appearance.
+   =========================================================================
+   The alternative to the house style, for people who live in Chrome on Windows and to
+   whom the default reads as somebody else's operating system.
+
+   This is a token swap plus a short list of shape rules, deliberately. Every difference
+   below is a value, not a branch: no JavaScript anywhere asks which look is active, and
+   no element exists in one look and not the other. A second interface would have drifted
+   from the first the moment either changed.
+
+   What actually differs, and why each one matters more than it looks:
+     Light        The default lights every raised surface from above, with a lit top edge
+                  and a shadow beneath. Material does not model a light source at all, so
+                  every inset highlight goes and elevation is carried by a plain shadow.
+     Edges        Hairline borders are how the default separates surfaces. Material
+                  separates them by tinting the surface itself, so the borders go and the
+                  fills come up.
+     Shape        The default keeps one modest radius family. Material's buttons are full
+                  pills, which is the single most recognisable thing about it.
+     Type         Roboto first, which is what the rest of the platform is already using. */
+
+:root[data-ui="material"] {
+  --bg: #141218;
+  --bg-elevated: #211f26;
+  --bg-secondary: #1d1b20;
+  --bg-tertiary: #2b2930;
+  --fill: rgba(255, 255, 255, 0.08);
+  --fill-hover: rgba(255, 255, 255, 0.12);
+  --separator: rgba(255, 255, 255, 0.12);
+  --label: #e6e0e9;
+  --label-secondary: #cac4d0;
+  --label-tertiary: #938f99;
+  --radius: 16px;
+  --radius-sm: 12px;
+  --radius-xs: 8px;
+}
+
+:root[data-ui="material"] body {
+  font-family: Roboto, "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+}
+
+/* Buttons are pills, filled by tone rather than outlined. The primary carries the
+   brightest tone, the secondary a dimmer one, and neither has an edge. */
+:root[data-ui="material"] .btn {
+  border-radius: 100px;
+  border: none;
+  padding: 14px;
+  letter-spacing: 0.1px;
+  font-weight: 500;
+}
+
+:root[data-ui="material"] .btn-glow {
+  background: #d0bcff;
+  color: #381e72;
+  box-shadow: none;
+}
+
+:root[data-ui="material"] .btn-glow:hover {
+  background: #dcc7ff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+
+:root[data-ui="material"] .btn-glass,
+:root[data-ui="material"] .btn-secondary {
+  background: var(--bg-tertiary);
+  color: var(--label);
+  border: none;
+  box-shadow: none;
+}
+
+:root[data-ui="material"] .btn-glass:hover,
+:root[data-ui="material"] .btn-secondary:hover {
+  background: #36343b;
+}
+
+/* Material's disabled state is the same shape at low emphasis, not a sunk surface. */
+:root[data-ui="material"] .btn:disabled,
+:root[data-ui="material"] .btn[disabled] {
+  background: rgba(230, 224, 233, 0.12);
+  color: rgba(230, 224, 233, 0.38);
+  box-shadow: none;
+}
+
+/* Filled text fields: tinted surface, no hole, no inset shadow. */
+:root[data-ui="material"] .input-wrapper input {
+  background: var(--bg-elevated);
+  border: none;
+  border-bottom: 1px solid var(--label-tertiary);
+  border-radius: var(--radius-xs) var(--radius-xs) 0 0;
+  box-shadow: none;
+}
+
+:root[data-ui="material"] .input-wrapper input:focus {
+  background: var(--bg-tertiary);
+  border-bottom: 2px solid #d0bcff;
+  box-shadow: none;
+}
+
+:root[data-ui="material"] .mode-toggle,
+:root[data-ui="material"] .segmented {
+  background: transparent;
+  border: 1px solid var(--separator);
+  border-radius: 100px;
+  box-shadow: none;
+}
+
+/* The selected segment has to take the track's shape. Left alone it stayed a rounded
+   rectangle sitting inside a pill, which is the kind of mismatch that reads as broken
+   rather than as a style. Material's selected segment is also flat: no lit edge, no
+   shadow, just a tonal fill. */
+:root[data-ui="material"] .mode-btn {
+  border-radius: 100px;
+  box-shadow: none;
+  border: none;
+  font-weight: 500;
+}
+
+:root[data-ui="material"] .mode-btn.mode-active {
+  background: #4a4458;
+  color: #e6e0e9;
+  box-shadow: none;
+}
+
+:root[data-ui="material"] .pref-select,
+:root[data-ui="material"] .pref-key {
+  background: var(--bg-elevated);
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-xs);
+  box-shadow: none;
+}
+
+/* No light source, so nothing gets a lit top edge. This catches every surface that
+   painted one, rather than listing them and missing one later. */
+:root[data-ui="material"] .card,
+:root[data-ui="material"] .pref-rows,
+:root[data-ui="material"] .chat-card,
+:root[data-ui="material"] .room-card {
+  box-shadow: none;
+  border-color: var(--separator);
 }

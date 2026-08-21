@@ -110,7 +110,9 @@ async function main() {
   };
 
   const hostPage = await openVideo(host);
-  const guestPage = await openVideo(guest);
+  // Opened for its side effect: the guest needs the video page loaded for the room to
+  // have someone in it. The handle itself is never needed, the popup drives the guest.
+  await openVideo(guest);
 
   // Create and join a real room, through the real popup, against the live relay.
   //

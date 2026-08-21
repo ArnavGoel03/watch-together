@@ -14,12 +14,7 @@
   <div class="container">
     <header>
       <div class="logo">
-        <div class="logo-icon">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-            <path d="M8 5.14v14l11-7-11-7z" fill="url(#grad)"/>
-            <defs><linearGradient id="grad" x1="8" y1="5" x2="19" y2="12"><stop stop-color="var(--accent)"/><stop offset="1" stop-color="#6c63ff"/></linearGradient></defs>
-          </svg>
-        </div>
+        <img class="logo-icon" src="../icons/icon48.png" alt="" width="30" height="30">
         <span class="logo-text">Watch Together</span>
       </div>
       <div id="status" class="status-pill disconnected">
@@ -83,7 +78,7 @@
         </div>
       </div>
 
-      <button id="btnJoin" class="btn btn-glass">
+      <button id="btnJoin" class="btn btn-glow">
         <span class="btn-content">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h4a2 2 0 012 2v14a2 2 0 01-2 2h-4m-5-4l5-5-5-5m5 5H3"/></svg>
           Join Room
@@ -100,6 +95,11 @@
           <section class="pref-group">
             <h4 class="pref-title">Overlay panel</h4>
             <div class="pref-rows">
+              <div class="pref-row">
+                <span class="pref-label">Appearance</span>
+                <!-- Options are built from config.js so the list lives in one place. -->
+                <select id="uiStyleSelect" class="pref-select"></select>
+              </div>
               <div class="pref-row">
                 <span class="pref-label">Show the panel</span>
                 <select id="overlayModeSelect" class="pref-select">

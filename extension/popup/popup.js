@@ -192,6 +192,45 @@ function applyBackendRadios(backend) {
   }
 }
 
+/* Appearance.
+ *
+ * The attribute goes on the document root rather than on a wrapper, because the popup's
+ * own background is painted on body and a wrapper would leave the surround in the other
+ * look. Applied before anything is measured, so there is no flash of the wrong one. */
+function applyUiStyle(value) {
+  const config = self.__wtConfig;
+  const style = config.normalizeUiStyle(value);
+  document.documentElement.setAttribute("data-ui", style);
+  const sel = $("#uiStyleSelect");
+  if (sel) sel.value = style;
+  return style;
+}
+
+{
+  const config = self.__wtConfig;
+  const sel = $("#uiStyleSelect");
+  if (sel && !sel.options.length) {
+    for (const style of config.UI_STYLES) {
+      const opt = document.createElement("option");
+      opt.value = style.value;
+      opt.textContent = style.label;
+      opt.title = style.hint;
+      sel.appendChild(opt);
+    }
+  }
+
+  chrome.storage.local.get(config.UI_STYLE_STORAGE_KEY, (stored) => {
+    applyUiStyle(stored?.[config.UI_STYLE_STORAGE_KEY]);
+  });
+
+  sel?.addEventListener("change", () => {
+    const style = applyUiStyle(sel.value);
+    // The overlay reads the same key and repaints itself, so the panel on the page and
+    // this popup never disagree about which look is in force.
+    chrome.storage.local.set({ [config.UI_STYLE_STORAGE_KEY]: style });
+  });
+}
+
 function applyOverlaySettings(mode, hotkey) {
   const sel = $("#overlayModeSelect");
   if (sel) sel.value = mode;

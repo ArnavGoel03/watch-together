@@ -70,6 +70,32 @@
     // control that does not control anything.
     VOICE_ENABLED: false,
 
+    // Which visual language the interface speaks.
+    //
+    // The default look is built on near-black surfaces, hairline edges and light falling
+    // from above: a raised control has a lit top edge and a shadow beneath, a field is a
+    // hole with the shadow inside it. That is a deliberate house style, and it is not what
+    // somebody who lives in Chrome on Windows is used to seeing.
+    //
+    // So the whole thing is a token swap on one attribute rather than a second interface.
+    // Every surface reads data-ui off its own root, the stylesheet redefines the tokens
+    // under that attribute, and no logic anywhere branches on which one is active. A look
+    // that needed its own code path would drift the moment either side changed.
+    UI_STYLES: [
+      { value: "apple", label: "Depth", hint: "Hairline edges, light from above" },
+      { value: "material", label: "Material", hint: "Flat surfaces, filled buttons" },
+    ],
+    UI_STYLE_DEFAULT: "apple",
+    UI_STYLE_STORAGE_KEY: "uiStyle",
+
+    /** Falls back to the default rather than trusting whatever was in storage. */
+    normalizeUiStyle(value) {
+      const known = this.UI_STYLES.some((s) => s.value === value);
+      // String() rather than returning `value` straight through: the argument is whatever
+      // came out of storage, so narrowing it here is what makes the return type honest.
+      return known ? String(value) : this.UI_STYLE_DEFAULT;
+    },
+
     // Stamped on everything this client sends. Old extension versions stay installed for
     // weeks after a store release, so the server is permanently talking to clients it
     // cannot upgrade: a version on the wire makes that explicit instead of leaving the
