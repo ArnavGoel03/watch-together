@@ -7,7 +7,23 @@
   const DRIFT_IGNORE = 0.5;       // < this: do nothing
   const DRIFT_HARD_SEEK = 1.5;    // > this: hard seek
   const DRIFT_MAX_RATE_DELTA = 0.10; // up to ±10% playbackRate nudge
-  const HEARTBEAT_INTERVAL = 5000; // 5 seconds
+  // The heartbeat is essentially the entire running cost of this product. Every other
+  // message is user-driven and rare; this one fires forever, per room, whether or not
+  // anything is happening. Cloudflare bills incoming WebSocket messages (at 20:1), so the
+  // lever that matters is how MANY messages are sent, not how big they are: shrinking the
+  // JSON saves nothing, sending fewer beats saves everything.
+  //
+  // Three things follow from that, and all three also make the product better rather than
+  // merely cheaper: a paused room has no position to correct, a room of one has nobody to
+  // correct against, and a room that has been in sync for a while does not need to be told
+  // every five seconds. So the interval backs off while things are calm and snaps straight
+  // back to 5s the moment drift shows up or anyone touches the video.
+  const HEARTBEAT_INTERVAL = 5000;  // the floor: while drift is live or a seek just landed
+  // The ceiling deliberately sits under the server's LEADER_STALE_MS (15s). Back off past
+  // that and the stale-leader watchdog starts demoting a leader who is perfectly healthy
+  // and merely quiet, and the room churns leaders instead of watching a film.
+  const HEARTBEAT_MAX_INTERVAL = 12000;
+  const HEARTBEAT_CALM_TICKS = 3;   // consecutive in-sync beats before we start easing off
   const HEARTBEAT_COOLDOWN = 2000; // skip heartbeat for 2s after receiving/sending a sync
   const FULLSCREEN_GUARD_MS = 1500; // ignore video events for this long after fullscreenchange
   const NAV_POLL_MS = 1000;        // detect SPA URL changes
@@ -16,16 +32,17 @@
   let port = null;
   let activeVideo = null;
   let adapter = null;
-  let isSyncing = false; // flag to prevent echo loops
   let lastApplied = null; // the state the last remote sync wrote, so echoes can be told from real actions
   let heartbeatTimer = null;
+  let heartbeatInterval = 5000;   // current gap, widened while the room stays in sync
+  let calmTicks = 0;              // consecutive beats with no drift worth correcting
+  let roomMemberCount = 1;        // no point heartbeating to an empty room
   let inRoom = false;
   let currentRoom = null;
-  let isHeartbeatLeader = false;
   let pendingPlaybackState = null; // for applying sync after video loads
+  let metadataWaiter = null; // at most one loadedmetadata listener in flight
   let lastSyncTime = 0; // timestamp of last sync event (sent or received)
   let lastBroadcastTime = 0; // last currentTime we sent - used to detect suspect jumps
-  let lastBroadcastAt = 0;
   let serverClockOffset = 0; // (server epoch ms) - (local epoch ms), EWMA-smoothed
   let serverClockSamples = 0;
   let fullscreenGuardUntil = 0;
@@ -34,6 +51,9 @@
   let pendingNavigateTimer = null; // one in-flight remote redirect; a newer navigate replaces it
   let lastDrift = 0;    // seconds behind (+) or ahead (-) the room, from the last correction
   let lastDriftAt = 0;  // when we last measured it; drift older than a few seconds is stale
+  let lastAttachedElement = null; // identity, so re-binding the same node is not a "remount"
+  let attachedAt = 0;   // when we last bound a genuinely NEW video element
+  let awaitingGesture = false; // autoplay policy blocked a remote play; the viewer must click
 
   function isLiveStream(video) {
     if (!video) return false;
@@ -41,15 +61,22 @@
     return d === Infinity || d === Number.POSITIVE_INFINITY || (typeof d === "number" && d > 1e6);
   }
 
+  // A sample this far from the running estimate is not drift, it is the local clock
+  // having moved: a laptop waking from sleep, or an NTP correction landing mid-party.
+  // Easing towards it at 15% a message would leave every seek target wrong for a minute.
+  const CLOCK_RESET_THRESHOLD_MS = 30000;
+
   function updateClockOffset(serverTime) {
-    if (typeof serverTime !== "number") return;
+    if (typeof serverTime !== "number" || !isFinite(serverTime)) return;
     const sample = serverTime - Date.now();
-    if (serverClockSamples === 0) {
+    if (!isFinite(sample)) return;
+    if (serverClockSamples === 0 || Math.abs(sample - serverClockOffset) > CLOCK_RESET_THRESHOLD_MS) {
       serverClockOffset = sample;
-    } else {
-      // EWMA: weight new sample at 15%, fast enough to converge after a few messages
-      serverClockOffset = serverClockOffset * 0.85 + sample * 0.15;
+      serverClockSamples = 1;
+      return;
     }
+    // EWMA: weight new sample at 15%, fast enough to converge after a few messages
+    serverClockOffset = serverClockOffset * 0.85 + sample * 0.15;
     serverClockSamples++;
   }
 
@@ -58,43 +85,64 @@
   }
 
   // Pick the right adapter for this site
+  // Anchored to the registrable domain, not a substring. `host.includes("netflix")`
+  // also matched netflix-fanhub.example.com, which would then be driven by Netflix's
+  // player selectors and synthetic clicks instead of the generic adapter that would
+  // actually have worked.
+  function hostMatches(host, domains) {
+    return domains.some((d) => host === d || host.endsWith("." + d));
+  }
+
   function getAdapter() {
-    const host = window.location.hostname;
-    if (host.includes("jiohotstar") || host.includes("hotstar")) {
-      return window.__watchTogetherAdapters?.jiohotstar;
-    }
-    if (host.includes("netflix")) {
-      return window.__watchTogetherAdapters?.netflix;
-    }
-    if (host.includes("youtube")) {
-      return window.__watchTogetherAdapters?.youtube;
-    }
-    return window.__watchTogetherAdapters?.generic;
+    const host = window.location.hostname.toLowerCase();
+    const all = window.__watchTogetherAdapters || {};
+    if (hostMatches(host, ["hotstar.com", "jiohotstar.com"])) return all.jiohotstar;
+    if (hostMatches(host, ["netflix.com"])) return all.netflix;
+    if (hostMatches(host, ["youtube.com", "youtu.be", "youtube-nocookie.com"])) return all.youtube;
+    return all.generic;
   }
 
   // Find the main video element on the page
+  // A muted autoplay background video is decoration, not the show. It is often laid out
+  // before the real player is, so a pure largest-area contest can hand the party a
+  // looping hero banner and never recover.
+  function isDecorative(v) {
+    if (!v) return true;
+    if (v.offsetParent === null && v.clientHeight === 0) return true; // not laid out
+    return v.muted && (v.autoplay || v.loop) && !v.controls;
+  }
+
+  function pickLargest(videos) {
+    return videos.reduce((best, v) =>
+      v.clientWidth * v.clientHeight > best.clientWidth * best.clientHeight ? v : best
+    );
+  }
+
   function findVideo() {
     if (adapter && adapter.findVideo) {
-      return adapter.findVideo();
+      const fromAdapter = adapter.findVideo();
+      if (fromAdapter) return fromAdapter;
     }
     const videos = Array.from(document.querySelectorAll("video"));
     if (videos.length === 0) return null;
     if (videos.length === 1) return videos[0];
-    return videos.reduce((best, v) => {
-      const area = v.clientWidth * v.clientHeight;
-      const bestArea = best.clientWidth * best.clientHeight;
-      return area > bestArea ? v : best;
-    });
+    const real = videos.filter((v) => !isDecorative(v));
+    return pickLargest(real.length ? real : videos);
   }
 
   // Attach event listeners to the video
   function attachVideoListeners(video) {
     if (!video || video === activeVideo) return;
     if (activeVideo) detachVideoListeners(activeVideo);
+    const isNewElement = video !== lastAttachedElement;
     activeVideo = video;
+    lastAttachedElement = video;
+    // Only a genuinely different element is a remount. Re-binding the same node after an
+    // SPA navigation must not re-arm the jump guard, or a real rewind right afterwards
+    // gets eaten.
+    if (isNewElement) attachedAt = Date.now();
     // Reset the suspect-jump guard so a fresh element doesn't trip it before any real time accumulates
     lastBroadcastTime = 0;
-    lastBroadcastAt = 0;
 
     const events = ["play", "pause", "seeked", "ratechange"];
     events.forEach((event) => {
@@ -132,9 +180,15 @@
   // see a "Yash turned captions ON" presence toast.
   let lastCCState = null;
   let ccObserver = null;
+  let ccButtonPoll = null;
 
   function setupCCDetection(video) {
     if (!video) return;
+    // Every re-attach used to add another 5s poller, and a URL change nulls activeVideo
+    // even when the player reuses the same element, so a night of autoplay-next left one
+    // live interval per video watched, all polling forever.
+    if (ccButtonPoll) { clearInterval(ccButtonPoll); ccButtonPoll = null; }
+    if (ccObserver) { ccObserver.disconnect(); ccObserver = null; }
     // HTML5 textTracks (works on YouTube, generic <video>, etc.)
     if (video.textTracks) {
       const onTrackChange = () => checkCCState();
@@ -160,7 +214,7 @@
       };
       watchBtn();
       // Re-find the button if YouTube remounts it (theater mode, etc.)
-      setInterval(watchBtn, 5000);
+      ccButtonPoll = setInterval(watchBtn, 5000);
     }
     // Initial state
     setTimeout(checkCCState, 500);
@@ -190,6 +244,7 @@
   // ---------- Sync labels ----------
   // Show a small transient toast in the corner when a remote sync event
   // comes in: "Yash paused" / "Anshul seeked". 1.5s lifespan.
+  let syncLabelTimer = null;
   function showSyncLabel(userName, action) {
     if (!userName || !action) return;
     const verb =
@@ -223,8 +278,10 @@
     }
     el.textContent = `${userName} ${verb}`;
     el.style.opacity = "1";
-    clearTimeout(el._wtTimer);
-    el._wtTimer = setTimeout(() => { el.style.opacity = "0"; }, 1500);
+    // Held here rather than bolted onto the DOM node: an expando on an element the host
+    // page also owns is somebody else's property to trip over.
+    clearTimeout(syncLabelTimer);
+    syncLabelTimer = setTimeout(() => { el.style.opacity = "0"; }, 1500);
   }
 
   // Ad markers used by the common web players. Cheap to test and covers most of the web
@@ -255,7 +312,10 @@
     if (!video) return;
     const d = video.duration;
     if (!isFinite(d) || d <= AD_MAX_DURATION) return;
-    if (d > contentDuration) contentDuration = d;
+    if (d > contentDuration) {
+      contentDuration = d;
+      durationLearnedAt = Date.now();
+    }
   }
 
   function adMarkerPresent() {
@@ -296,9 +356,16 @@
   // own ads and snaps back to the room's true position when theirs ends.
   let adActive = false;
   let adSince = 0;
+  // After a navigation we have not yet learned the new video's length, so the
+  // duration-collapse test compares the new content against the OLD show and calls a
+  // short clip an ad. Give the page a moment to tell us how long it actually is; until
+  // then only a real ad marker counts.
+  let durationLearnedAt = 0;
+  const AD_HEURISTIC_WARMUP_MS = 5000;
+
   function updateAdState() {
     noteContentDuration(activeVideo);
-    let nowAd = isAdPlaying();
+    let nowAd = adMarkerPresent() || (Date.now() - durationLearnedAt > AD_HEURISTIC_WARMUP_MS && isAdPlaying());
 
     // Safety valve. The duration heuristic can be wrong: a genuinely short video that
     // follows a long one on the same page looks exactly like an ad, and being wrong here
@@ -322,7 +389,10 @@
       requestResync();
     }
   }
-  setInterval(updateAdState, 500);
+  // <all_urls> means this file runs in every tab the user has open. Ten querySelector
+  // calls twice a second in each of them, forever, is a battery cost paid by people who
+  // are not even in a party. Only look while it can matter.
+  setInterval(() => { if (inRoom) updateAdState(); }, 500);
 
   // Applying a remote sync makes the video fire the very same events a viewer would, so for
   // a short window afterwards we ignore them. Ignore only the ones that match what we just
@@ -333,12 +403,17 @@
   const ECHO_SEEK_EPSILON = 1.0; // a seek we performed lands within a frame or two of its target
 
   function isSyncEcho(action, video) {
-    // Drift correction retunes playbackRate constantly, so a rate change mid-sync is ours.
-    if (action === "ratechange") return true;
     if (!lastApplied || Date.now() - lastApplied.at > ECHO_WINDOW_MS) return false;
     if (action === "play") return lastApplied.playing === true;
     if (action === "pause") return lastApplied.playing === false;
     if (action === "seek") return Math.abs(video.currentTime - lastApplied.currentTime) < ECHO_SEEK_EPSILON;
+    if (action === "ratechange") {
+      // Drift correction retunes the rate constantly, so most rate changes are ours. But
+      // "always ours" also swallowed a viewer reaching for 1.25x in the same instant, and
+      // their choice then silently never reached the room. Ours is the rate we last wrote.
+      const wrote = lastApplied.rate;
+      return typeof wrote === "number" && Math.abs(video.playbackRate - wrote) < 0.01;
+    }
     return false;
   }
 
@@ -359,21 +434,28 @@
             ? "seek"
             : "ratechange";
 
-    if (isSyncing && isSyncEcho(action, video)) return;
+    // There used to be a second, coarser guard in front of this: a boolean set while a
+    // remote sync was being applied and cleared 200-300ms later. It cleared faster than the
+    // 1s window this function implements, so a seek that took longer than that (a big file,
+    // a slow CDN) escaped it entirely and came back to the room as a fresh "someone seeked".
+    // isSyncEcho stands alone: it matches what we actually wrote, and when.
+    if (isSyncEcho(action, video)) return;
 
-    // Suspect-jump guard: a fresh seek to ~0 right after we knew the video was much further in
-    // is almost always a player remount, not a real user seek. Drop it.
+    // Suspect-jump guard: a seek to ~0 in the first moments after a NEW video element was
+    // bound is a player remount, not a viewer. Keyed to the remount itself, because the
+    // old timing-only version could not tell a remount from someone pausing at t=500 and
+    // deliberately dragging back to the start a second later, and silently ate the rewind.
     const ct = video.currentTime;
     if ((action === "seek" || action === "play") && ct < 1.5) {
-      const sinceLast = Date.now() - lastBroadcastAt;
-      if (lastBroadcastTime > 5 && sinceLast < SUSPECT_JUMP_GRACE_MS) return;
+      const sinceAttach = Date.now() - attachedAt;
+      if (lastBroadcastTime > 5 && sinceAttach < SUSPECT_JUMP_GRACE_MS) return;
     }
 
     const live = isLiveStream(video);
 
     lastSyncTime = Date.now();
+    quickenHeartbeat();
     lastBroadcastTime = ct;
-    lastBroadcastAt = Date.now();
 
     sendMsg({
       type: "sync",
@@ -393,8 +475,9 @@
       } catch {
         // Re-store pending join so it retries after reconnect
         if (msg.type === "join-room" && msg.roomCode) {
+          // consented: the user already asked to join this one, we are only retrying.
           chrome.storage.local.set({
-            pendingJoin: { roomCode: msg.roomCode, timestamp: Date.now() },
+            pendingJoin: { roomCode: msg.roomCode, timestamp: Date.now(), consented: true },
           });
         }
         connectToBackground();
@@ -407,9 +490,7 @@
     if (!activeRateNudge) return;
     if (activeRateNudge.restoreTimer) clearTimeout(activeRateNudge.restoreTimer);
     if (video && Math.abs(video.playbackRate - activeRateNudge.normalRate) > 0.01) {
-      isSyncing = true;
       try { video.playbackRate = activeRateNudge.normalRate; } catch {}
-      setTimeout(() => { isSyncing = false; }, 200);
     }
     activeRateNudge = null;
   }
@@ -427,15 +508,11 @@
     }
     activeRateNudge = { normalRate, restoreTimer: null };
 
-    isSyncing = true;
     try { video.playbackRate = targetRate; } catch {}
-    setTimeout(() => { isSyncing = false; }, 200);
 
     activeRateNudge.restoreTimer = setTimeout(() => {
       if (video && Math.abs(video.playbackRate - targetRate) < 0.05) {
-        isSyncing = true;
         try { video.playbackRate = normalRate; } catch {}
-        setTimeout(() => { isSyncing = false; }, 200);
       }
       activeRateNudge = null;
     }, closeMs);
@@ -478,13 +555,21 @@
     }
     if (!activeVideo) attachVideoListeners(video);
 
-    // Wait for video to have metadata before seeking
+    // Wait for video to have metadata before seeking. One listener, ever: each call used
+    // to add its own, so three messages arriving during a slow load meant three seeks
+    // firing back to back the moment metadata landed, which reads as a stutter.
     if (!video.duration || video.readyState < 1) {
       pendingPlaybackState = msg;
-      video.addEventListener("loadedmetadata", function onMeta() {
-        video.removeEventListener("loadedmetadata", onMeta);
-        applySync(msg);
-      });
+      if (!metadataWaiter) {
+        metadataWaiter = function onMeta() {
+          video.removeEventListener("loadedmetadata", onMeta);
+          metadataWaiter = null;
+          const latest = pendingPlaybackState;
+          pendingPlaybackState = null;
+          if (latest) applySync(latest);
+        };
+        video.addEventListener("loadedmetadata", metadataWaiter);
+      }
       return;
     }
 
@@ -492,7 +577,6 @@
     const isHeartbeat = msg.type === "heartbeat";
     const normalRate = msg.playbackRate || 1;
 
-    isSyncing = true;
     lastSyncTime = Date.now();
 
     // Compensate for network/server delay using clock offset (corrects for skewed system clocks)
@@ -507,7 +591,7 @@
 
     // Remember what we are about to write so the events it provokes can be told apart from
     // a viewer doing something of their own in the same moment.
-    lastApplied = { currentTime: targetTime, playing: !!msg.playing, at: Date.now() };
+    lastApplied = { currentTime: targetTime, playing: !!msg.playing, rate: normalRate, at: Date.now() };
 
     if (adapter && adapter.applyState) {
       // Adapter handles its own seeking; pass adjusted state
@@ -516,6 +600,14 @@
       if (live) {
         // Live: never seek. Just sync play/pause/rate.
         if (normalRate && Math.abs(video.playbackRate - normalRate) > 0.01) {
+          video.playbackRate = normalRate;
+        }
+      } else if (msg.action === "ratechange") {
+        // Somebody chose 1.25x. That says nothing about position, and treating it as a
+        // position update meant any drift the room happened to be carrying at that moment
+        // turned into a jump cut for everyone.
+        if (normalRate && Math.abs(video.playbackRate - normalRate) > 0.01) {
+          cancelRateNudge(video);
           video.playbackRate = normalRate;
         }
       } else {
@@ -538,44 +630,97 @@
         }
       }
       if (msg.playing && video.paused) {
-        video.play().catch(() => {});
+        video.play().then(clearGesturePrompt).catch((err) => {
+          // Autoplay policy: a remote play() carries no user gesture, so on a tab the
+          // viewer has never interacted with the browser simply refuses. This used to be
+          // swallowed whole: everyone else was watching, this person's video sat there,
+          // and nothing on screen said why. Ask for the one click that unblocks it.
+          if (err && err.name === "NotAllowedError") showGesturePrompt();
+        });
       } else if (!msg.playing && !video.paused) {
         video.pause();
+        clearGesturePrompt();
       }
     }
 
-    setTimeout(() => {
-      isSyncing = false;
-    }, 300);
   }
 
-  // Heartbeat - only the leader sends, everyone receives
+  // Heartbeat - only the leader sends, everyone receives.
+  // Self-rescheduling rather than a fixed interval, so the gap can widen while nothing is
+  // happening and collapse back to the floor the instant it matters.
   function startHeartbeat() {
     stopHeartbeat();
-    heartbeatTimer = setInterval(() => {
-      const video = activeVideo || findVideo();
-      if (!video || !inRoom) return;
+    calmTicks = 0;
+    heartbeatInterval = HEARTBEAT_INTERVAL;
+    scheduleHeartbeat();
+  }
 
-      // Skip heartbeat if a sync event happened recently - prevents overriding other users' actions
-      if (Date.now() - lastSyncTime < HEARTBEAT_COOLDOWN) return;
+  function scheduleHeartbeat() {
+    heartbeatTimer = setTimeout(() => {
+      heartbeatTimer = null;
+      sendHeartbeat();
+      if (inRoom) scheduleHeartbeat();
+    }, heartbeatInterval);
+  }
 
-      // An ad is a different video on the same element. Broadcasting its currentTime
-      // would drag the whole room back to the ad's timeline (near 0), so stay quiet
-      // until the show is back. updateAdState catches us up when it ends.
-      if (isAdPlaying()) return;
+  // Something changed, or someone did something. Whatever we thought about this room being
+  // calm is no longer true.
+  function quickenHeartbeat() {
+    calmTicks = 0;
+    if (heartbeatInterval === HEARTBEAT_INTERVAL) return;
+    heartbeatInterval = HEARTBEAT_INTERVAL;
+    if (heartbeatTimer) {
+      clearTimeout(heartbeatTimer);
+      heartbeatTimer = null;
+      scheduleHeartbeat();
+    }
+  }
 
-      sendMsg({
-        type: "heartbeat",
-        playing: !video.paused,
-        currentTime: video.currentTime,
-        playbackRate: video.playbackRate,
-      });
-    }, HEARTBEAT_INTERVAL);
+  function sendHeartbeat() {
+    const video = activeVideo || findVideo();
+    if (!video || !inRoom) return;
+
+    // Nobody to stay in sync WITH. A room of one still exists (people come back to it),
+    // it just has no reason to be talking to itself every five seconds.
+    if (roomMemberCount < 2) return;
+
+    // A paused room's position is not moving, so there is nothing to correct. The pause
+    // itself was already broadcast as a sync, and pressing play broadcasts again. The
+    // server knows to leave a paused room's leader alone rather than treating the silence
+    // as a frozen tab.
+    if (video.paused) return;
+
+    // Skip heartbeat if a sync event happened recently - prevents overriding other users' actions
+    if (Date.now() - lastSyncTime < HEARTBEAT_COOLDOWN) return;
+
+    // An ad is a different video on the same element. Broadcasting its currentTime
+    // would drag the whole room back to the ad's timeline (near 0), so stay quiet
+    // until the show is back. updateAdState catches us up when it ends.
+    if (isAdPlaying()) return;
+
+    sendMsg({
+      type: "heartbeat",
+      playing: !video.paused,
+      currentTime: video.currentTime,
+      playbackRate: video.playbackRate,
+    });
+
+    // Ease off only while the room is demonstrably in sync. Any real drift resets this.
+    const driftIsStale = Date.now() - lastDriftAt > 30000;
+    const inSync = driftIsStale || Math.abs(lastDrift) < DRIFT_IGNORE;
+    if (!inSync) {
+      quickenHeartbeat();
+      return;
+    }
+    calmTicks++;
+    if (calmTicks >= HEARTBEAT_CALM_TICKS) {
+      heartbeatInterval = Math.min(HEARTBEAT_MAX_INTERVAL, Math.round(heartbeatInterval * 1.5));
+    }
   }
 
   function stopHeartbeat() {
     if (heartbeatTimer) {
-      clearInterval(heartbeatTimer);
+      clearTimeout(heartbeatTimer);
       heartbeatTimer = null;
     }
   }
@@ -610,23 +755,21 @@
           applySync(msg);
           break;
 
+        // The background gates heartbeat sending, so there is nothing for the page to do
+        // with this beyond not treating it as an unknown message.
         case "heartbeat-role":
-          isHeartbeatLeader = msg.isLeader;
           break;
 
         case "room-created":
         case "room-joined":
           inRoom = true;
           currentRoom = msg.roomCode;
+          if (Array.isArray(msg.members)) roomMemberCount = Math.max(1, msg.members.length);
           if (typeof msg.serverTime === "number") updateClockOffset(msg.serverTime);
           adapter = getAdapter();
-          console.log(`[WatchTogether] ${msg.type}: ${msg.roomCode}, inRoom=true`);
-          const v = findVideo();
-          if (v) {
-            attachVideoListeners(v);
-            console.log("[WatchTogether] Video element found and attached");
-          } else {
-            console.log("[WatchTogether] No video element found yet");
+          {
+            const v = findVideo();
+            if (v) attachVideoListeners(v);
           }
           startHeartbeat();
 
@@ -654,10 +797,13 @@
           break;
 
         case "member-joined":
+          if (typeof msg.memberCount === "number") roomMemberCount = msg.memberCount;
+          quickenHeartbeat(); // someone new has to be caught up promptly
           showNotification(`${msg.userName} joined (${msg.memberCount} watching)`);
           break;
 
         case "member-left":
+          if (typeof msg.memberCount === "number") roomMemberCount = msg.memberCount;
           showNotification(`${msg.userName} left (${msg.memberCount} watching)`);
           break;
 
@@ -671,7 +817,6 @@
         case "room-ended":
           inRoom = false;
           currentRoom = null;
-          isHeartbeatLeader = false;
           stopHeartbeat();
           showNotification(msg.reason === "moved" ? "The party moved to another tab" : "Left the room");
           break;
@@ -690,13 +835,96 @@
 
     port.onDisconnect.addListener(() => {
       // Suppress bfcache error
-      if (chrome.runtime.lastError) {}
+      // Reading lastError is what clears it. A back/forward-cache teardown sets it, and an
+      // unread lastError prints a console error for something the user did not do.
+      void chrome.runtime.lastError;
       port = null;
       setTimeout(connectToBackground, 1000);
     });
   }
 
+  // A small centred card the viewer can act on. Used for the two moments where the
+  // extension needs a real click and cannot fake one: the browser refusing a remote play
+  // without a user gesture, and an invite link asking to put you in a stranger's room.
+  // Monochrome, no host-page CSS inherited, above every player chrome.
+  function showActionCard(id, title, detail, actionLabel, onAction) {
+    dismissActionCard(id);
+    const card = document.createElement("div");
+    card.id = id;
+    card.style.cssText = `
+      all: initial;
+      position: fixed;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 2147483647;
+      background: rgba(20,20,22,0.96);
+      color: #fff;
+      padding: 20px 22px;
+      border-radius: 14px;
+      border: 1px solid rgba(255,255,255,0.14);
+      box-shadow: 0 18px 60px rgba(0,0,0,0.55);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      text-align: center;
+      max-width: 330px;
+    `;
+    const h = document.createElement("div");
+    h.textContent = title;
+    h.style.cssText = "all:initial;display:block;font-family:inherit;color:#fff;font-size:15px;font-weight:600;margin-bottom:6px;";
+    const p2 = document.createElement("div");
+    p2.textContent = detail;
+    p2.style.cssText = "all:initial;display:block;font-family:inherit;color:rgba(235,235,245,0.6);font-size:13px;line-height:1.45;margin-bottom:14px;";
+    const row = document.createElement("div");
+    row.style.cssText = "all:initial;display:flex;gap:8px;justify-content:center;";
+    const go = document.createElement("button");
+    go.textContent = actionLabel;
+    go.style.cssText = "all:initial;font-family:inherit;cursor:pointer;background:#7c3aed;color:#fff;font-size:13px;font-weight:600;padding:9px 18px;border-radius:8px;";
+    const no = document.createElement("button");
+    no.textContent = "Not now";
+    no.style.cssText = "all:initial;font-family:inherit;cursor:pointer;background:rgba(255,255,255,0.1);color:rgba(235,235,245,0.75);font-size:13px;font-weight:500;padding:9px 14px;border-radius:8px;";
+    go.addEventListener("click", () => { dismissActionCard(id); onAction(); });
+    no.addEventListener("click", () => dismissActionCard(id));
+    row.appendChild(go);
+    row.appendChild(no);
+    card.appendChild(h);
+    card.appendChild(p2);
+    card.appendChild(row);
+    (document.body || document.documentElement).appendChild(card);
+    return card;
+  }
+
+  function dismissActionCard(id) {
+    const existing = document.getElementById(id);
+    if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+  }
+
+  const GESTURE_CARD_ID = "wt-gesture-prompt";
+
+  function showGesturePrompt() {
+    if (awaitingGesture) return;
+    awaitingGesture = true;
+    showActionCard(
+      GESTURE_CARD_ID,
+      "Click to start watching",
+      "Your browser blocks playback that you did not start yourself. One click and you are back in sync with the room.",
+      "Play",
+      () => {
+        awaitingGesture = false;
+        const v = activeVideo || findVideo();
+        if (v) v.play().catch(() => {});
+        requestResync();
+      }
+    );
+  }
+
+  function clearGesturePrompt() {
+    if (!awaitingGesture) return;
+    awaitingGesture = false;
+    dismissActionCard(GESTURE_CARD_ID);
+  }
+
   // On-page notification overlay
+  let notificationTimer = null;
   function showNotification(text) {
     let container = document.getElementById("wt-notification");
     if (!container) {
@@ -722,7 +950,10 @@
     }
     container.textContent = text;
     container.style.opacity = "1";
-    setTimeout(() => {
+    // One timer, restarted. Two notifications a second apart used to leave the first
+    // one's timer running, so the second vanished after two seconds instead of three.
+    clearTimeout(notificationTimer);
+    notificationTimer = setTimeout(() => {
       container.style.opacity = "0";
     }, 3000);
   }
@@ -734,7 +965,13 @@
   function checkUrlChange() {
     if (location.href === lastKnownUrl) return;
     const oldUrl = lastKnownUrl;
+    const wasSameVideo = normalizeUrl(oldUrl) === normalizeUrl(location.href);
     lastKnownUrl = location.href;
+    // Clicking a chapter marker, or "copy link at current time", rewrites the URL through
+    // the History API without changing the video at all. The receiving side normalises
+    // before comparing; the sending side did not, so that rewrite broadcast a navigate
+    // and hard-reloaded every peer's tab off a video nobody had left.
+    if (wasSameVideo) return;
     // New video, new content length. Carrying the old one over would make a short clip
     // that follows a long film look like a permanent ad. Relearn it from scratch.
     contentDuration = 0;
@@ -743,7 +980,6 @@
     if (Date.now() < suppressNextNavigateUntil) return;
     // Reset state - fresh video, fresh broadcast guard
     lastBroadcastTime = 0;
-    lastBroadcastAt = 0;
     cancelRateNudge(activeVideo);
     activeVideo = null;
     pendingPlaybackState = null;
@@ -757,6 +993,18 @@
   // membership across page loads, and the new page's content script will resume sync.
   function applyRemoteNavigate(msg) {
     if (!msg || !msg.url) return;
+
+    // This is a remote tab-redirect primitive: whoever is in the room decides where this
+    // browser goes next. `javascript:` and `data:` both parse cleanly through new URL(),
+    // and a javascript: URL assigned to location.href runs in whatever origin the viewer
+    // currently has open, not ours. The relay filters schemes too, but Settings lets
+    // anyone repoint the extension at any relay, so the server is not a control we own.
+    // Refuse anything that is not an ordinary web page, here, on the client.
+    if (!window.__wtConfig || !window.__wtConfig.isSafeNavigateUrl(msg.url)) {
+      console.warn("[WatchTogether] Refused a navigate to a non-web URL");
+      return;
+    }
+
     let target;
     try {
       const u = new URL(msg.url);
@@ -764,7 +1012,7 @@
       if (currentRoom) u.searchParams.set("wt_room", currentRoom);
       target = u.toString();
     } catch {
-      target = msg.url;
+      return;
     }
 
     // Already where the room wants us: cancel any redirect still pending. This is the
@@ -783,8 +1031,9 @@
     showNotification(`${msg.fromUser || "Someone"} switched videos - joining…`);
     // Persist a join hint so auto-join picks up if the new page lacks the param
     if (currentRoom) {
+      // consented: we are already in this room, this is the room moving, not an invite.
       chrome.storage.local.set({
-        pendingJoin: { roomCode: currentRoom, timestamp: Date.now() },
+        pendingJoin: { roomCode: currentRoom, timestamp: Date.now(), consented: true },
       });
     }
     // A newer navigate supersedes an older one, so only ever hold one pending redirect.
@@ -798,14 +1047,29 @@
     if (mutationTimer) return;
     mutationTimer = setTimeout(() => {
       mutationTimer = null;
-      if (!activeVideo || !document.contains(activeVideo)) {
-        const v = findVideo();
-        if (v && v !== activeVideo) {
-          attachVideoListeners(v);
-        }
-      }
+      rebindIfVideoChanged();
     }, 500);
   });
+
+  // Players do not always remove the element they are replacing. Netflix and YouTube both
+  // leave the old <video> attached but inert while a new one takes over, and the old
+  // "only look if activeVideo left the DOM" test never fired, so the party kept listening
+  // to a dead element and nothing worked again until the next full navigation.
+  function rebindIfVideoChanged() {
+    if (!activeVideo || !document.contains(activeVideo)) {
+      const v = findVideo();
+      if (v && v !== activeVideo) attachVideoListeners(v);
+      return;
+    }
+    if (document.querySelectorAll("video").length < 2) return;
+    const best = findVideo();
+    if (!best || best === activeVideo) return;
+    // Only defect to a clearly better candidate: the one on screen, while ours is not.
+    const oursDead = isDecorative(activeVideo) || activeVideo.readyState === 0;
+    if (oursDead) attachVideoListeners(best);
+  }
+  // Cheap backstop for players that swap the element without touching the DOM around it.
+  setInterval(() => { if (inRoom) rebindIfVideoChanged(); }, 3000);
 
   observer.observe(document.body, { childList: true, subtree: true });
 
@@ -814,7 +1078,7 @@
   // We read it here, join the room, then clear it.
 
   function checkPendingJoin() {
-    chrome.storage.local.get(["pendingJoin", "userName"], (data) => {
+    chrome.storage.local.get(["pendingJoin", "userName"], /** @param {any} data */ (data) => {
       if (!data.pendingJoin) return;
 
       const { roomCode, timestamp } = data.pendingJoin;
@@ -827,20 +1091,38 @@
 
       if (inRoom) return;
       if (Date.now() - timestamp > 120000) return; // stale, older than 2 minutes
-
-      console.log("[WatchTogether] Found pending join:", roomCode);
+      if (!window.__wtConfig || !window.__wtConfig.isJoinableCode(roomCode)) return;
 
       const name = data.userName || "User";
-      showNotification(`Joining room ${roomCode}...`);
-      sendMsg({ type: "join-room", roomCode, userName: name });
-      console.log("[WatchTogether] Sent join-room as:", name);
 
-      // Timeout fallback
-      setTimeout(() => {
-        if (!inRoom) {
-          showNotification("Join timed out. Enter the code in the extension.");
-        }
-      }, 20000);
+      const join = () => {
+        showNotification(`Joining room ${roomCode}...`);
+        sendMsg({ type: "join-room", roomCode, userName: name });
+        // Timeout fallback
+        setTimeout(() => {
+          if (!inRoom) {
+            showNotification("Join timed out. Enter the code in the extension.");
+          }
+        }, 20000);
+      };
+
+      // A hint we wrote ourselves, because the room moved and we are following it, needs
+      // no permission: the user is already in that room. A hint that came off a page's
+      // ?wt_room= parameter is different. This content script runs on <all_urls>, so ANY
+      // page could hand out a code, and joining silently makes whoever sent the link a
+      // peer, with a peer's power to move this tab. That is one click's worth of consent.
+      if (data.pendingJoin.consented === true) {
+        join();
+        return;
+      }
+
+      showActionCard(
+        "wt-join-consent",
+        `Join room ${roomCode}?`,
+        "This link is inviting you into a watch party. Whoever is in the room can play, pause and change what this tab is showing.",
+        "Join room",
+        join
+      );
     });
   }
 

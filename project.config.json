@@ -11,7 +11,7 @@
   "packageName": "watch-together",
 
   "urls": {
-    "production": "https://web-eta-two-84.vercel.app",
+    "production": "https://watch-together-server-acwi.onrender.com",
     "aliases": []
   },
 
@@ -40,7 +40,7 @@
   "keepReferencesIn": [],
 
   "notes": [
-    "Vercel project is awkwardly named `web` — queue a `proj rename` from web → watch-together when convenient.",
+    "Vercel project is awkwardly named `web`: queue a `proj rename` from web → watch-together when convenient.",
     "Chrome extension ID: kilmggcpfkcfpkaapillgloabbgmeeoa (lives on Chrome Web Store, not Vercel).",
     "Production URL is the sync-server backend; the user-facing surface is the Chrome extension."
   ]

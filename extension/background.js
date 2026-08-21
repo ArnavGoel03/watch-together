@@ -1,21 +1,28 @@
 // Background service worker - manages WebSocket connection and relays messages
 
-// PRODUCTION: Change this to your deployed server URL (wss:// for secure)
-// e.g. "wss://watch-together-server.onrender.com"
-const DEFAULT_SERVER_URL = "wss://watch-together-server-acwi.onrender.com";
+// The relay URL, the safe-scheme list and the room-code shapes all live in config.js so
+// that the worker, the content script, the overlay and the popup cannot disagree about
+// them. Changing the server means editing exactly one line, in that file.
+importScripts("config.js", "relay.js");
 
 let ws = null;
-let serverUrl = DEFAULT_SERVER_URL;
+// Which relay to talk to, and where to go when one stops answering. Shared with the
+// Firefox twin so the two cannot drift apart on something this important.
+const relay = new self.__wtRelay.RelayPicker();
 let currentRoom = null;
 let userId = null;
 let isHeartbeatLeader = false;
 let reconnectTimer = null;
 let reconnectAttempts = 0;
-let connectedPorts = new Map(); // "tabId:portName" -> port
-let pendingJoin = false;
+const connectedPorts = new Map(); // "tabId:portName" -> port
 let cachedMembers = []; // Latest known room members for serving popup re-opens
 let cachedMode = "everyone";
 let cachedIsHost = false;
+// Proof that we are the same person who made this room. The server hands it out once, at
+// creation, and takes it back on a rejoin to restore host. Without it, reloading the party
+// tab quietly cost the host their room: every reconnect is a brand new server-side user id,
+// so the host came back as an ordinary guest of their own party.
+let hostToken = null;
 
 // The one tab the watch party is bound to. Playback traffic (sync, heartbeat,
 // navigate, cc-state) is routed ONLY to and from this tab. Without this, every
@@ -33,6 +40,10 @@ let cachedVideoUrl = "";
 // must not announce a move of its own. It outlives the page load, and the MV3 worker, on
 // purpose: the whole point is to still be true once the new content script wakes up.
 let navSuppressUntil = 0;
+
+// True once the CURRENT socket has actually opened. A close before that means the relay
+// itself is not answering, which is a different problem from a network blip.
+let everConnected = false;
 
 let lastPlaybackPersist = 0;
 function notePlayback(msg) {
@@ -53,12 +64,17 @@ function notePlayback(msg) {
 
 // Restore state from storage (survives MV3 service worker restarts)
 chrome.storage.local.get(
-  ["serverUrl", "currentRoom", "userId", "partyTabId", "cachedPlayback", "cachedVideoUrl", "navSuppressUntil"],
+  ["serverUrl", "movedServerUrl", "currentRoom", "userId", "partyTabId", "cachedPlayback", "cachedVideoUrl", "navSuppressUntil", "cachedMode", "cachedIsHost", "cachedMembers", "hostToken"],
+  /** @param {any} data */
   (data) => {
-    if (data.serverUrl) serverUrl = data.serverUrl;
+    relay.hydrate(data);
     if (data.cachedPlayback) cachedPlayback = data.cachedPlayback;
     if (data.cachedVideoUrl) cachedVideoUrl = data.cachedVideoUrl;
     if (typeof data.navSuppressUntil === "number") navSuppressUntil = data.navSuppressUntil;
+    if (typeof data.cachedMode === "string") cachedMode = data.cachedMode;
+    if (typeof data.cachedIsHost === "boolean") cachedIsHost = data.cachedIsHost;
+    if (Array.isArray(data.cachedMembers)) cachedMembers = data.cachedMembers;
+    if (typeof data.hostToken === "string") hostToken = data.hostToken;
     if (data.currentRoom) {
       currentRoom = data.currentRoom;
       userId = data.userId;
@@ -71,24 +87,37 @@ chrome.storage.local.get(
 function connect() {
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
 
+  const target = relay.current();
+  let socket;
   try {
-    ws = new WebSocket(serverUrl);
+    socket = new WebSocket(target);
+    ws = socket;
   } catch (err) {
     console.error("[WatchTogether] Failed to create WebSocket:", err);
     scheduleReconnect();
     return;
   }
 
+  // Every handler below belongs to THIS socket. Without that identity check, a socket we
+  // deliberately replaced (changing the server URL closes one and opens another) fires its
+  // belated close event, sets the shared `ws` to null even though a newer socket is live
+  // and healthy, reports the party offline, and reconnects a THIRD socket. Two sockets
+  // then relay the same room, so every chat line and every join notice arrives twice.
+  const isCurrent = () => ws === socket;
+
   ws.onopen = () => {
+    if (!isCurrent()) return;
     console.log("[WatchTogether] Connected to server");
     reconnectAttempts = 0;
+    relay.onConnected();
+    everConnected = true;
     sendToParty({ type: "connection-status", connected: true });
 
     // Auto-rejoin room after reconnect. recreateIfMissing covers the case where the
     // server restarted and dropped the room: we rebuild it from where we last were,
     // rather than stranding a live watch party on "Room not found".
     if (currentRoom) {
-      chrome.storage.local.get(["userName"], (data) => {
+      chrome.storage.local.get(["userName"], /** @param {any} data */ (data) => {
         sendToServer({
           type: "join-room",
           roomCode: currentRoom,
@@ -96,6 +125,8 @@ function connect() {
           recreateIfMissing: true,
           resumeState: cachedPlayback,
           videoUrl: cachedVideoUrl,
+          // Reclaims host if we were the host. The server only honours a token it issued.
+          hostToken: hostToken || undefined,
           // Carry the control mode across a rebuild. Without it a "host only" room comes
           // back as a free-for-all and everyone can suddenly scrub the video.
           mode: cachedMode,
@@ -105,6 +136,7 @@ function connect() {
   };
 
   ws.onmessage = (event) => {
+    if (!isCurrent()) return;
     let msg;
     try {
       msg = JSON.parse(event.data);
@@ -119,6 +151,7 @@ function connect() {
         cachedMembers = [{ id: msg.userId, userName: "" }];
         cachedMode = msg.mode || "everyone";
         cachedIsHost = true;
+        if (typeof msg.hostToken === "string") hostToken = msg.hostToken;
         saveState();
         sendToParty(msg);
         break;
@@ -129,6 +162,7 @@ function connect() {
         cachedMembers = Array.isArray(msg.members) ? msg.members.slice() : [];
         cachedMode = msg.mode || "everyone";
         cachedIsHost = !!msg.isHost;
+        if (typeof msg.hostToken === "string") hostToken = msg.hostToken;
         if (msg.videoUrl) cachedVideoUrl = msg.videoUrl;
         if (msg.playbackState) notePlayback(msg.playbackState);
         saveState();
@@ -175,7 +209,25 @@ function connect() {
         }
         break;
 
+      // The migration path. The server we are talking to is telling us it has moved, so
+      // stand up the new backend, point the old one at it with SERVER_MOVED_URL, and every
+      // installed copy walks itself over. No store release, no stranded users. Remembered,
+      // so it survives a restart, and a user's explicit choice in Settings still outranks it.
+      case "server-moved":
+        if (relay.acceptMove(msg.url)) {
+          chrome.storage.local.set({ movedServerUrl: msg.url });
+          console.log(`[WatchTogether] Server moved to ${msg.url}, reconnecting`);
+          sendToParty({ type: "server-moved", url: msg.url });
+          if (ws) ws.close();
+          connect();
+        }
+        break;
+
       case "navigate":
+        // A relay we do not control could send anything. The content script refuses a
+        // non-web URL too; this is the same rule, one layer earlier, so a hostile server
+        // cannot even get the message onto the page.
+        if (!self.__wtConfig.isSafeNavigateUrl(msg.url)) break;
         // We are about to redirect the party tab to someone else's video. That tears down
         // the content script, and the one that loads in its place will notice it is not
         // where the room was and try to announce a move of its own. Muzzle it: this is us
@@ -198,9 +250,17 @@ function connect() {
   };
 
   ws.onclose = (event) => {
+    if (!isCurrent()) return; // a socket we already replaced, finally finishing
     console.log(`[WatchTogether] Disconnected (code: ${event.code})`);
     ws = null;
     sendToParty({ type: "connection-status", connected: false });
+    // A socket that never opened means this relay is not answering, not that the network
+    // dropped. Count it against this candidate; enough of them and we try the next one.
+    if (!everConnected && relay.onFailure()) {
+      console.log(`[WatchTogether] Relay not answering, trying ${relay.current()}`);
+      reconnectAttempts = 0;
+    }
+    everConnected = false;
     // Don't reconnect if server explicitly closed us (room expired, etc.)
     if (event.code !== 4001) {
       scheduleReconnect();
@@ -226,7 +286,8 @@ function scheduleReconnect() {
 
 function sendToServer(msg) {
   if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(msg));
+    // One place stamps the protocol version, so no call site can forget to.
+    ws.send(JSON.stringify({ v: self.__wtConfig.PROTOCOL_VERSION, ...msg }));
     return true;
   }
   return false;
@@ -311,13 +372,28 @@ function resolvePartyTab(port, msg, cb) {
 }
 
 function saveState() {
-  chrome.storage.local.set({ currentRoom, userId, partyTabId, navSuppressUntil });
+  // The MV3 worker is killed whenever Chrome feels like it, mid-party, routinely. Anything
+  // held only in module scope comes back as its default, so the fields that decide what
+  // the room IS have to be here too. Leaving cachedMode out meant a host-only room, once
+  // rebuilt after a worker restart, silently came back as a free-for-all: exactly the
+  // failure the rebuild path was written to prevent.
+  chrome.storage.local.set({
+    currentRoom,
+    userId,
+    partyTabId,
+    navSuppressUntil,
+    cachedMode,
+    cachedIsHost,
+    cachedMembers,
+    hostToken,
+  });
 }
 
 function clearRoomState() {
   currentRoom = null;
   userId = null;
   partyTabId = null;
+  hostToken = null;
   isHeartbeatLeader = false;
   cachedMembers = [];
   cachedMode = "everyone";
@@ -412,7 +488,6 @@ chrome.runtime.onConnect.addListener((port) => {
           break;
         }
 
-        pendingJoin = true;
         resolvePartyTab(port, msg, (resolved) => {
           partyTabId = resolved;
           saveState();
@@ -423,7 +498,6 @@ chrome.runtime.onConnect.addListener((port) => {
               roomCode,
               userName: msg.userName || "User",
             });
-            pendingJoin = false;
           });
         });
         break;
@@ -458,7 +532,11 @@ chrome.runtime.onConnect.addListener((port) => {
         break;
 
       case "chat":
-        sendToServer(msg);
+        // Dropping this silently is what makes the product feel broken: you type, you hit
+        // enter, your line appears in your own log, and nobody ever sees it. Say so.
+        if (!sendToServer(msg)) {
+          sendToParty({ type: "send-failed", of: "chat", message: "Not sent, still reconnecting." });
+        }
         break;
 
       case "navigate":
@@ -485,14 +563,23 @@ chrome.runtime.onConnect.addListener((port) => {
         sendToServer(msg);
         break;
 
-      case "set-server-url":
+      case "set-server-url": {
         // Only allow from popup (not content scripts)
         if (port.name !== "popup") break;
-        serverUrl = msg.url;
-        chrome.storage.local.set({ serverUrl: msg.url });
+        // An empty value means "go back to the default", which is the only way out if
+        // someone pastes a relay that does not work.
+        const wanted = typeof msg.url === "string" ? msg.url.trim() : "";
+        if (wanted && !self.__wtConfig.isValidServerUrl(wanted)) {
+          // Room codes, chat and the address of everything you watch cross this socket.
+          postTo("popup", { type: "error", message: "Server URL must start with wss://" });
+          break;
+        }
+        relay.setOverride(wanted || null);
+        chrome.storage.local.set({ serverUrl: wanted || null });
         if (ws) ws.close();
         connect();
         break;
+      }
 
       // The party tab was closed but the room is still alive. Bind the party to the
       // tab the user is on now and pull the current playback state into it.
@@ -539,7 +626,7 @@ chrome.runtime.onConnect.addListener((port) => {
           userId,
           connected: ws && ws.readyState === WebSocket.OPEN,
           isHeartbeatLeader,
-          serverUrl,
+          serverUrl: relay.current(),
           members: cachedMembers,
           mode: cachedMode,
           isHost: cachedIsHost,
@@ -568,7 +655,6 @@ function waitForConnection(callback, retries = 60) {
     }
     setTimeout(() => waitForConnection(callback, retries - 1), 1000);
   } else {
-    pendingJoin = false;
     sendToParty({ type: "error", message: "Could not connect to server. Try again." });
   }
 }

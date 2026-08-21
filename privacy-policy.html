@@ -12,7 +12,7 @@
     </style>
 </head>
 <body>
-    <h1>Watch Together — Privacy Policy</h1>
+    <h1>Watch Together: Privacy Policy</h1>
     <p class="updated">Last updated: April 2026</p>
 
     <h2>Overview</h2>
@@ -22,19 +22,22 @@
     <p><strong>We do not collect, store, or sell any personal data.</strong></p>
     <ul>
         <li><strong>Display name:</strong> The name you enter is stored locally on your device and shared only with other users in your room during an active session. It is never stored on our servers.</li>
-        <li><strong>Playback state:</strong> Play/pause/seek timestamps are transmitted in real-time between room members to enable synchronization. This data is never stored — it exists only during the active session.</li>
+        <li><strong>Playback state:</strong> Play/pause/seek timestamps are transmitted in real-time between room members to enable synchronization. This data is never stored: it exists only during the active session.</li>
         <li><strong>Chat messages:</strong> Messages are relayed between room members in real-time. They are never stored on our servers and are lost when the room closes.</li>
         <li><strong>Room codes:</strong> Randomly generated codes are held in server memory only while the room is active. They are deleted when all members leave or after 12 hours of inactivity.</li>
+        <li><strong>The address of the page you are watching:</strong> When you start or move a watch party, the URL of the video page is sent to the sync server and to the other people in your room. This is what lets everyone follow along when you switch videos, and it is what the shareable join link points at. It is held in server memory for the life of the room and is never written to a database. It is only ever sent for the one tab the party is attached to, never for other tabs you have open.</li>
+        <li><strong>Your display name:</strong> The name you choose is shown to the other members of your room.</li>
+        <li><strong>Your IP address, transiently:</strong> Like any internet service, the sync server sees the address your connection comes from, and uses it to limit how many connections and rooms one address can open. It is not stored in a database and is not written to our logs in a readable form; log lines carry a short one-way hash instead, which cannot be turned back into an address.</li>
     </ul>
 
     <h2>Data We Do NOT Collect</h2>
     <ul>
-        <li>Email addresses</li>
-        <li>Browsing history</li>
-        <li>Video content or URLs you watch</li>
-        <li>IP addresses (not logged)</li>
+        <li>Email addresses, accounts or passwords. There is no sign-up.</li>
+        <li>Your browsing history. The extension only ever reports the address of the single tab you have attached a watch party to, and only while that party is running. Every other tab, and every moment you are not in a room, is never reported anywhere.</li>
+        <li>Video content itself. Nothing is recorded, captured or re-streamed; only the position of the playhead is exchanged.</li>
         <li>Cookies or tracking data</li>
         <li>Analytics or telemetry</li>
+        <li>Microphone or camera. Voice chat is disabled in this version and the extension requests no microphone permission.</li>
     </ul>
 
     <h2>Third-Party Services</h2>

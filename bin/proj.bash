@@ -3,7 +3,7 @@
 # Install (bash):
 #   source ~/Documents/Projects/serenity/bin/proj.bash
 #
-# Install (zsh — requires bashcompinit):
+# Install (zsh: requires bashcompinit):
 #   autoload -U +X bashcompinit && bashcompinit
 #   source ~/Documents/Projects/serenity/bin/proj.bash
 #

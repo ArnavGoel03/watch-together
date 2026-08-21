@@ -3,7 +3,7 @@ main = "src/worker.js"
 compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
 
-# Single Durable Object class — the "hub" instance holds all rooms.
+# Single Durable Object class: the "hub" instance holds all rooms.
 # Cloudflare places it near whichever Worker first accesses it.
 [[durable_objects.bindings]]
 name = "ROOMS"

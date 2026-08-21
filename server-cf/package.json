@@ -7,7 +7,8 @@
     "dev": "wrangler dev --port 8787",
     "deploy": "wrangler deploy",
     "tail": "wrangler tail",
-    "test": "node --test ../server/server.e2e.test.mjs ../server/client-logic.test.mjs"
+    "test": "node --test worker.test.mjs",
+    "test:integration": "echo 'Run: npm run dev (in one shell), then point the extension at ws://localhost:8787' && exit 0"
   },
   "devDependencies": {
     "wrangler": "^3.99.0"

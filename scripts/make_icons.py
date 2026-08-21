@@ -57,7 +57,7 @@ def make_icon(size):
 
     draw = ImageDraw.Draw(canvas)
 
-    # Echo triangle (subtle, behind) — communicates "sync / two viewers"
+    # Echo triangle (subtle, behind): communicates "sync / two viewers"
     cx, cy = s / 2, s / 2
     r_front = s * 0.28
     r_back = s * 0.28
@@ -74,7 +74,7 @@ def make_icon(size):
 
 
 def make_icon_16():
-    # At 16px, skip the echo/gradient tricks — pixel-snap for clarity.
+    # At 16px, skip the echo/gradient tricks: pixel-snap for clarity.
     s = 16
     img = Image.new("RGBA", (s, s), (0, 0, 0, 0))
     mask = rounded_mask(s, 3)

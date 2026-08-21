@@ -1,24 +1,101 @@
 name: CI
 
+# Everything that can be checked without a human, checked on every push.
+#
+# This exists because the test suite was good and nothing ran it. The Firefox background
+# script had silently dropped three inbound message types and two create-room fields, and
+# the browser harness could not even start on a fresh machine because Chrome was missing.
+# Both would have been caught the day they landed by a job like this one.
+
 on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  # A newer push makes an in-flight run pointless. Cancel it rather than paying for both.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  server-tests:
-    name: Server tests (vitest)
+  static:
+    name: Lint, types, and house rules
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: server
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: server/package-lock.json
+          node-version: "22"
+          cache: npm
       - run: npm ci
-      - run: npm test
+      - name: Lint
+        run: npm run lint
+      - name: Typecheck every surface
+        run: npm run typecheck
+      - name: No em dashes anywhere
+        # A house rule, mechanically enforced. A rule nothing checks is a suggestion.
+        run: npm run check:dashes
+      - name: Manifests agree on the version
+        run: node scripts/check-version.mjs
+
+  server:
+    name: Server tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm ci --prefix server
+      - name: Node protocol and logic tests
+        run: npm --prefix server run test:node
+      - name: Vitest suite
+        run: npm --prefix server run test:vitest
+
+  worker:
+    name: Cloudflare worker tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci --prefix server-cf
+      - run: npm --prefix server-cf test
+
+  browser:
+    name: Two-browser sync harness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci --prefix server
+      - name: Install Chrome for Puppeteer
+        # Not implied by the install. Without this the harness reports 5 tests "skipped"
+        # and exits non-zero in a way that reads like a pass at a glance.
+        run: npx --prefix server puppeteer browsers install chrome
+      - name: Real two-profile sync test
+        run: npm --prefix server run test:browser
+
+  package:
+    name: Store package builds and is clean
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      - name: Build both store packages
+        run: node scripts/package.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: extension-packages
+          path: dist/*.zip
+          if-no-files-found: error

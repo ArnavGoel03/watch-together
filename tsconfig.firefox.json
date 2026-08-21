@@ -1,0 +1,7 @@
+{
+  // The Firefox MV2 twin. An ALTERNATIVE to background.js, never loaded alongside it, so
+  // it needs its own scope. Every divergence found between these two files has been a
+  // feature that silently did nothing on Firefox, so it gets the same scrutiny.
+  "extends": "./tsconfig.base.json",
+  "include": ["extension/config.js", "extension/background-firefox.js", "types/**/*.d.ts"]
+}

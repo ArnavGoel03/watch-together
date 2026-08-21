@@ -5,6 +5,7 @@
   window.__watchTogetherAdapters.jiohotstar = {
     name: "jiohotstar",
 
+    /** @returns {HTMLVideoElement|null} */
     findVideo() {
       // JioHotstar uses a standard HTML5 video element inside their player container
       // Try specific selectors first, then fall back to generic
@@ -17,7 +18,7 @@
       ];
 
       for (const sel of selectors) {
-        const video = document.querySelector(sel);
+        const video = /** @type {HTMLVideoElement|null} */ (document.querySelector(sel));
         if (video) return video;
       }
       return null;
@@ -43,9 +44,9 @@
         // Also try clicking the play button if programmatic play fails
         setTimeout(() => {
           if (video.paused) {
-            const playBtn = document.querySelector(
+            const playBtn = /** @type {HTMLElement|null} */ (document.querySelector(
               '[class*="play-btn"], [aria-label*="Play"], [data-testid*="play"]'
-            );
+            ));
             if (playBtn) playBtn.click();
           }
         }, 200);

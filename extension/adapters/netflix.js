@@ -8,8 +8,8 @@
     findVideo() {
       // Netflix uses a single video element inside their player
       return (
-        document.querySelector('.watch-video--player-view video') ||
-        document.querySelector('video')
+        /** @type {HTMLVideoElement|null} */ (document.querySelector('.watch-video--player-view video')) ||
+        /** @type {HTMLVideoElement|null} */ (document.querySelector('video'))
       );
     },
 
@@ -29,9 +29,9 @@
         // Netflix sometimes needs a click on their custom button
         setTimeout(() => {
           if (video.paused) {
-            const playBtn = document.querySelector(
+            const playBtn = /** @type {HTMLElement|null} */ (document.querySelector(
               '[data-uia="control-play-pause-play"], .button-nfplayerPlay, [aria-label="Play"]'
-            );
+            ));
             if (playBtn) playBtn.click();
           }
         }, 200);
@@ -39,9 +39,9 @@
         video.pause();
         setTimeout(() => {
           if (!video.paused) {
-            const pauseBtn = document.querySelector(
+            const pauseBtn = /** @type {HTMLElement|null} */ (document.querySelector(
               '[data-uia="control-play-pause-pause"], .button-nfplayerPause, [aria-label="Pause"]'
-            );
+            ));
             if (pauseBtn) pauseBtn.click();
           }
         }, 200);

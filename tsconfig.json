@@ -1,0 +1,14 @@
+{
+  // The content-script world: config, the sync core, the in-player overlay, the adapters.
+  // These all run in one shared isolated world in the page, which is why they can hand
+  // things to each other on `window` without the host page ever seeing them.
+  "extends": "./tsconfig.base.json",
+  "include": [
+    "extension/config.js",
+    "extension/content.js",
+    "extension/overlay.js",
+    "extension/auto-join-extract.js",
+    "extension/adapters/*.js",
+    "types/**/*.d.ts"
+  ]
+}

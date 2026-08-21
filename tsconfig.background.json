@@ -1,0 +1,5 @@
+{
+  // The Chrome MV3 service worker, on its own.
+  "extends": "./tsconfig.base.json",
+  "include": ["extension/config.js", "extension/background.js", "types/**/*.d.ts"]
+}

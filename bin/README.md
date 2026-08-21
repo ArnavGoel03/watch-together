@@ -1,4 +1,4 @@
-# `bin/` — Serenity project tooling
+# `bin/`: Serenity project tooling
 
 This directory contains `proj`, the CLI that manages project naming and
 renames across local folder, GitHub, Vercel, native bundle IDs, and the
@@ -7,7 +7,7 @@ in sync.
 
 ```
 bin/
-├── proj                              # main CLI — run `proj help`
+├── proj                              # main CLI: run `proj help`
 ├── proj.bash                         # bash/zsh completion (source from your shell rc)
 ├── proj-tests.sh                     # self-tests, run `proj-tests.sh`
 ├── project.config.schema.json        # JSON Schema for ../project.config.json
@@ -15,7 +15,7 @@ bin/
 ├── RENAME-WORKFLOW.md                # detailed step-by-step doc
 ├── RENAME-HISTORY.md                 # schema doc for the history log
 │
-└── (back-compat shims — call proj internally:)
+└── (back-compat shims: call proj internally:)
     ├── validate.sh                   # → proj validate
     ├── check-name-drift.sh           # → proj drift
     └── log-rename.sh                 # → proj log
@@ -77,7 +77,7 @@ source ~/Documents/Projects/serenity/bin/proj.bash
 
 ## Pre-push safety net
 
-Optional but recommended — a Husky pre-push hook that runs `proj validate`
+Optional but recommended: a Husky pre-push hook that runs `proj validate`
 so a rename can never silently leave drift on push:
 
 ```sh
@@ -99,5 +99,5 @@ cp ~/Documents/Projects/serenity/justfile ./
 ./bin/proj validate
 ```
 
-Or wait — only adopt this when you're about to rename. Lazy rollout beats
+Or wait: only adopt this when you're about to rename. Lazy rollout beats
 preemptive scaffolding.

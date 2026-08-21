@@ -9,7 +9,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 // ============================================================
-// Re-implemented pure logic — must match content.js / popup.js
+// Re-implemented pure logic: must match content.js / popup.js
 // ============================================================
 
 function isLiveStream(video) {
@@ -208,7 +208,7 @@ test("suspect-jump: no prior broadcast (lastBroadcastTime = 0) → not suspect",
 });
 
 // ============================================================
-// Hotkey matcher — mirrors overlay.js matchesHotkey()
+// Hotkey matcher: mirrors overlay.js matchesHotkey()
 // ============================================================
 
 function matchesHotkey(event, configuredKey) {

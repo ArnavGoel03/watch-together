@@ -1,0 +1,9 @@
+{
+  // The Cloudflare Durable Object port. Workers runtime globals, not Node and not DOM.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022"],
+    "types": ["@cloudflare/workers-types"]
+  },
+  "include": ["server-cf/src/*.js", "types/**/*.d.ts"]
+}

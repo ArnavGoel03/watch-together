@@ -17,6 +17,7 @@
 //      VP9 file (VP9 because Chromium always has it), served with range support.
 import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import puppeteer from "puppeteer";
+import { existsSync } from "node:fs";
 import { fork } from "child_process";
 import path from "path";
 import fs from "fs";
@@ -51,8 +52,30 @@ async function waitUntil(fn, { timeout = 10000, interval = 100 } = {}) {
   return last;
 }
 
+// Which Chrome to drive.
+//
+// It has to be Chrome for Testing, which is what puppeteer downloads. Stable-channel
+// Chrome no longer honours --load-extension from the command line, and the way it refuses
+// is silent: the browser starts, the page loads, the video plays, and no content script is
+// ever injected. Every assertion here then fails on a timeout that looks like a sync bug
+// rather than a browser that never loaded the extension. Hours went into that once.
+//
+// So: no falling back to the Chrome in /Applications. If puppeteer's download is missing or
+// broken, install it rather than substituting a browser that cannot run this test:
+//   npx --prefix server puppeteer browsers install chrome
+// On macOS an unzip that mishandles the app bundle's symlinks leaves the binary present but
+// its Frameworks directory absent, and launching dies in dlopen. Re-extracting the official
+// zip with `ditto -x -k` fixes it.
+function resolveChromePath() {
+  // Honoured only when set deliberately, and only if it exists.
+  const explicit = process.env.PUPPETEER_EXECUTABLE_PATH;
+  if (explicit && existsSync(explicit)) return explicit;
+  return undefined; // puppeteer's own Chrome for Testing
+}
+
 function launchBrowser() {
   return puppeteer.launch({
+    executablePath: resolveChromePath(),
     headless: "new",
     args: [
       `--disable-extensions-except=${EXT_PATH}`,
@@ -352,4 +375,54 @@ describe("Browser integration", () => {
     const resumed = await waitUntil(async () => (await videoTime(guestPage)) > 60, { timeout: 15000 });
     expect(resumed, `the tab came back at ${await videoTime(guestPage)}s instead of near 90s`).toBe(true);
   }, 120000);
+});
+
+// The panel used to be appended to document.body and left there. A fullscreen video is
+// painted in the browser's top layer and only elements INSIDE the fullscreen element are
+// painted with it, so from the moment anyone went fullscreen (which is how people actually
+// watch) the entire panel was invisible: chat, member count, sync health, the Leave button.
+// The button kept working, because it is injected into the player's own controls, which
+// made it look like clicking it did nothing.
+describe("Overlay panel", () => {
+  it("opens, and follows the video into fullscreen", async () => {
+    const page = await openVideoPage(hostBrowser, "fs");
+
+    await page.waitForSelector("#wt-overlay-btn", { timeout: 15000 });
+    await page.evaluate(() => document.getElementById("wt-overlay-btn").click());
+    await page.waitForSelector("#wt-overlay-panel", { timeout: 10000 });
+
+    const before = await page.evaluate(() => ({
+      exists: !!document.getElementById("wt-overlay-panel"),
+      parent: document.getElementById("wt-overlay-panel").parentElement.tagName,
+    }));
+    expect(before.exists).toBe(true);
+    expect(before.parent).toBe("BODY");
+
+    const after = await page.evaluate(async () => {
+      const host = document.querySelector("#player") || document.body.firstElementChild || document.body;
+      await host.requestFullscreen();
+      // Headless Chrome sets document.fullscreenElement for a programmatic request but does
+      // not always emit the event a real user interaction would, so fire it explicitly. The
+      // point of the assertion is that the extension REACTS to it correctly; whether Chrome
+      // emits it in headless is Chrome's business, not this extension's.
+      document.dispatchEvent(new Event("fullscreenchange", { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 300));
+      const panel = document.getElementById("wt-overlay-panel");
+      return {
+        wentFullscreen: !!document.fullscreenElement,
+        insideFullscreenElement: !!(document.fullscreenElement && document.fullscreenElement.contains(panel)),
+      };
+    });
+    expect(after.wentFullscreen).toBe(true);
+    expect(after.insideFullscreenElement).toBe(true);
+
+    // And back out again, so leaving fullscreen does not strand it inside a hidden element.
+    const restored = await page.evaluate(async () => {
+      await document.exitFullscreen();
+      document.dispatchEvent(new Event("fullscreenchange", { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 300));
+      return document.getElementById("wt-overlay-panel").parentElement.tagName;
+    });
+    expect(restored).toBe("BODY");
+  });
 });

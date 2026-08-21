@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proj — project naming & rename tooling for Serenity (and any project that
+# proj: project naming & rename tooling for Serenity (and any project that
 # adopts the same `project.config.json` + `.rename-history.jsonl` convention).
 #
 # Usage:
@@ -21,7 +21,7 @@
 #
 # Global options:
 #   --json      Machine-readable output (where supported: validate, history, config)
-#   --quiet     Suppress info logging — only show warnings, errors, results
+#   --quiet     Suppress info logging: only show warnings, errors, results
 #   --no-color  Disable ANSI colors (auto-detected for non-TTY stdout)
 #   -h, --help  Show this help
 #
@@ -161,7 +161,7 @@ cmd_help() {
 
 # ─── VALIDATE ─────────────────────────────────────────────────────────────
 cmd_validate() {
-  # validate — smoke-test that project.config.json matches reality.
+  # validate: smoke-test that project.config.json matches reality.
   #
   # Checks: tooling availability, config schema, folder name vs slug,
   # package.json vs slug, git remote vs github.url, GitHub repo reachable,
@@ -190,7 +190,7 @@ cmd_validate() {
     else
       case "$t" in
         jq|git|curl) record tools "$t" fail "$t missing" ;;
-        gh)          record tools "$t" warn "gh missing — GitHub checks will be skipped" ;;
+        gh)          record tools "$t" warn "gh missing: GitHub checks will be skipped" ;;
       esac
     fi
   done
@@ -233,7 +233,7 @@ cmd_validate() {
       fi
     fi
   else
-    record github remote warn "no .git or no git binary — skipped"
+    record github remote warn "no .git or no git binary: skipped"
   fi
 
   # network
@@ -267,7 +267,7 @@ cmd_validate() {
   if "$0" drift --quiet >/dev/null 2>&1; then
     record drift scan pass "no name drift"
   else
-    record drift scan fail "drift checker reported leftovers — run \`proj drift\`"
+    record drift scan fail "drift checker reported leftovers: run \`proj drift\`"
   fi
 
   # bin scripts executable
@@ -296,7 +296,7 @@ cmd_validate() {
 
 # ─── DRIFT ────────────────────────────────────────────────────────────────
 cmd_drift() {
-  # drift — find every line that still references a previous name.
+  # drift: find every line that still references a previous name.
   #
   # Scans the project repo AND the portfolio site (~/Documents/Projects/portfolio
   # by default) using `git grep -nF` (tracked files only, fast, line-numbered).
@@ -326,7 +326,7 @@ cmd_drift() {
   info "  timeout:   ${timeout}s per grep"
   hr
 
-  # tokens — longest-first
+  # tokens: longest-first
   local tokens=()
   while IFS= read -r line; do
     [[ -n "$line" ]] && tokens+=("$line")
@@ -338,7 +338,7 @@ cmd_drift() {
 
   if [[ ${#tokens[@]} -eq 0 ]]; then
     info ""
-    ok "no previous names declared — nothing to scan"; return 0
+    ok "no previous names declared: nothing to scan"; return 0
   fi
 
   # allowlist
@@ -399,7 +399,7 @@ cmd_drift() {
 
 # ─── LOG ──────────────────────────────────────────────────────────────────
 cmd_log() {
-  # log — append a rename event to .rename-history.jsonl.
+  # log: append a rename event to .rename-history.jsonl.
   #
   # Required:
   #   --old <slug>       Previous slug (kebab-case)
@@ -463,7 +463,7 @@ cmd_log() {
 
 # ─── HISTORY ──────────────────────────────────────────────────────────────
 cmd_history() {
-  # history — show past rename events.
+  # history: show past rename events.
   #
   # Options:
   #   --json    Print raw JSONL pipe-friendly (one event per line)
@@ -490,7 +490,7 @@ cmd_history() {
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────
 cmd_config() {
-  # config — print resolved project config + key paths.
+  # config: print resolved project config + key paths.
   #
   # Options:
   #   --json   Emit the raw project.config.json (pretty-printed)
@@ -524,7 +524,7 @@ cmd_config() {
 
 # ─── DOCTOR ───────────────────────────────────────────────────────────────
 cmd_doctor() {
-  # doctor — verbose validate with suggested fixes for any failures.
+  # doctor: verbose validate with suggested fixes for any failures.
   # Currently aliases `proj validate`; future versions will print remediation
   # snippets for each failure.
   cmd_validate "$@"
@@ -532,7 +532,7 @@ cmd_doctor() {
 
 # ─── RENAME (orchestrator) ────────────────────────────────────────────────
 cmd_rename() {
-  # rename — end-to-end project rename.
+  # rename: end-to-end project rename.
   #
   # Required:
   #   --to <new-slug>   New canonical slug (kebab-case lowercase)
@@ -547,7 +547,7 @@ cmd_rename() {
   #
   # What it does (in order):
   #   1. Pre-flight: `proj validate` must pass (or --yes to override)
-  #   2. Update project.config.json — move slug into previousSlugs, set new
+  #   2. Update project.config.json: move slug into previousSlugs, set new
   #   3. Sed-replace stale references in repo + portfolio
   #   4. Log the event to .rename-history.jsonl
   #   5. `mv` the local folder
@@ -556,7 +556,7 @@ cmd_rename() {
   #   8. Re-run `proj validate` from new folder
   #
   # NOTE: After this command the script's path is no longer
-  # ~/Documents/Projects/<old>/bin/proj — it's ~/Documents/Projects/<new>/bin/proj.
+  # ~/Documents/Projects/<old>/bin/proj: it's ~/Documents/Projects/<new>/bin/proj.
   # Adjust any open editor / terminal accordingly.
   local new_slug="" new_display="" dry=0 yes=0 skip_gh=0 skip_vercel=0 notes=""
   while [[ $# -gt 0 ]]; do
@@ -587,7 +587,7 @@ cmd_rename() {
   info "  folder:      $REPO_ROOT → $(dirname "$REPO_ROOT")/$new_slug"
   [[ "$skip_gh"     -eq 0 ]] && info "  github:      $GH_OWNER/$GH_REPO → $GH_OWNER/$new_slug" || info "  github:      (skipped)"
   [[ "$skip_vercel" -eq 0 ]] && info "  vercel:      $VERCEL_PROJECT → $new_slug"            || info "  vercel:      (skipped)"
-  [[ "$dry" -eq 1 ]] && { warn "dry-run — no changes made"; return 0; }
+  [[ "$dry" -eq 1 ]] && { warn "dry-run: no changes made"; return 0; }
 
   if [[ "$yes" -ne 1 ]]; then
     printf "%sProceed? [y/N] %s" "${C_YELLOW}" "${C_RESET}"
@@ -621,7 +621,7 @@ cmd_rename() {
        --surfaces "folder,github,vercel,site,docs" \
        --notes "${notes:-Renamed via proj rename}" || true
 
-  # 4. mv the folder — AFTER this, this script's path is invalid
+  # 4. mv the folder: AFTER this, this script's path is invalid
   local new_root; new_root="$(dirname "$REPO_ROOT")/$new_slug"
   info "→ mv folder → $new_root"
   [[ -e "$new_root" ]] && die "rename: target folder $new_root already exists" 1
@@ -633,7 +633,7 @@ cmd_rename() {
     info "→ gh repo rename $new_slug"
     gh -R "$GH_OWNER/$GH_REPO" repo rename "$new_slug" --yes >/dev/null \
       && ok "GitHub repo renamed" \
-      || warn "gh repo rename failed — run manually"
+      || warn "gh repo rename failed: run manually"
   fi
 
   # 6. vercel rename
@@ -649,16 +649,16 @@ cmd_rename() {
           -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
           -d "{\"name\":\"$new_slug\"}" | jq -e .name >/dev/null \
           && ok "Vercel project renamed" \
-          || warn "Vercel rename failed — check $auth_file or rename manually"
+          || warn "Vercel rename failed: check $auth_file or rename manually"
       else
-        warn "couldn't resolve Vercel token/team — skip Vercel step"
+        warn "couldn't resolve Vercel token/team: skip Vercel step"
       fi
     fi
   fi
 
   echo
   head "re-validate"; hr
-  "$new_root/bin/proj" validate || warn "validate reported issues — run \`proj doctor\` for details"
+  "$new_root/bin/proj" validate || warn "validate reported issues: run \`proj doctor\` for details"
   echo
   ok "rename complete: $old_slug → $new_slug"
   info "  new folder:  $new_root"

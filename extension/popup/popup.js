@@ -1,8 +1,15 @@
 // Popup - Room management, chat, and server config
 
+/**
+ * Element lookup. Typed loosely on purpose: this returns inputs, buttons, spans and
+ * containers alike, and pinning it to Element would mean casting at every single call
+ * site for `.value` and `.checked`, which is noise rather than safety.
+ * @param {string} sel
+ * @returns {any}
+ */
 const $ = (sel) => document.querySelector(sel);
 let port = null;
-let inFlight = new Set();
+const inFlight = new Set();
 
 function connectPort() {
   port = chrome.runtime.connect({ name: "popup" });
@@ -109,15 +116,16 @@ const btnCreate = $("#btnCreate");
 // Backend presets - Render is the original Node server, Cloudflare is the new Worker.
 // Per-backend URL is remembered so flipping the radio swaps the URL field instantly.
 const BACKEND_DEFAULTS = {
-  render: "wss://watch-together-server-acwi.onrender.com",
+  render: window.__wtConfig.SERVER_URL,
   cloudflare: "",
 };
-let backendUrls = { ...BACKEND_DEFAULTS };
+const backendUrls = { ...BACKEND_DEFAULTS };
 let activeBackend = "render";
 
 // Load saved state & trigger connection
 chrome.storage.local.get(
   ["userName", "serverUrl", "overlayMode", "overlayHotkey", "backend", "renderUrl", "cloudflareUrl", "voiceQuality"],
+  /** @param {any} data */
   (data) => {
     if (data.userName) userNameInput.value = data.userName;
     backendUrls.render = data.renderUrl || BACKEND_DEFAULTS.render;
@@ -138,12 +146,12 @@ chrome.storage.local.get(
 );
 
 function applyVoiceQuality(q) {
-  document.querySelectorAll('input[name="voiceQuality"]').forEach((r) => {
+  document.querySelectorAll('input[name="voiceQuality"]').forEach(/** @param {any} r */ (r) => {
     r.checked = r.value === q;
   });
 }
 
-document.querySelectorAll('input[name="voiceQuality"]').forEach((r) => {
+document.querySelectorAll('input[name="voiceQuality"]').forEach(/** @param {any} r */ (r) => {
   r.addEventListener("change", () => {
     if (!r.checked) return;
     const q = r.value === "voice" ? "voice" : "media";
@@ -153,14 +161,14 @@ document.querySelectorAll('input[name="voiceQuality"]').forEach((r) => {
 });
 
 function applyBackendRadios(backend) {
-  document.querySelectorAll('input[name="backend"]').forEach((r) => {
+  document.querySelectorAll('input[name="backend"]').forEach(/** @param {any} r */ (r) => {
     r.checked = r.value === backend;
   });
 }
 
 // Backend radio - switching repopulates the URL field with that backend's saved URL,
 // then the user clicks Save to actually apply (avoids accidental disconnects).
-document.querySelectorAll('input[name="backend"]').forEach((r) => {
+document.querySelectorAll('input[name="backend"]').forEach(/** @param {any} r */ (r) => {
   r.addEventListener("change", () => {
     if (!r.checked) return;
     activeBackend = r.value;
@@ -173,7 +181,7 @@ document.querySelectorAll('input[name="backend"]').forEach((r) => {
 });
 
 function applyOverlaySettings(mode, hotkey) {
-  document.querySelectorAll('input[name="overlayMode"]').forEach((r) => {
+  document.querySelectorAll('input[name="overlayMode"]').forEach(/** @param {any} r */ (r) => {
     r.checked = r.value === mode;
   });
   const hotkeyInput = $("#overlayHotkey");
@@ -183,7 +191,7 @@ function applyOverlaySettings(mode, hotkey) {
 }
 
 // Mode radios - save on change, no separate Save button
-document.querySelectorAll('input[name="overlayMode"]').forEach((r) => {
+document.querySelectorAll('input[name="overlayMode"]').forEach(/** @param {any} r */ (r) => {
   r.addEventListener("change", () => {
     if (!r.checked) return;
     const mode = r.value;
@@ -283,7 +291,7 @@ btnCreate.addEventListener("click", () => {
 });
 
 // Mode selection buttons
-document.querySelectorAll(".mode-btn").forEach((btn) => {
+document.querySelectorAll(".mode-btn").forEach(/** @param {any} btn */ (btn) => {
   btn.addEventListener("click", () => {
     document.querySelectorAll(".mode-btn").forEach((b) => b.classList.remove("mode-active"));
     btn.classList.add("mode-active");
@@ -367,7 +375,7 @@ function buildShareLink() {
       return `${tabUrl}${tabUrl.includes("?") ? "&" : "?"}wt_room=${currentRoom}`;
     }
   }
-  return `https://watch-together-server-acwi.onrender.com/join/${currentRoom}`;
+  return `${window.__wtConfig.HTTP_ORIGIN}/join/${currentRoom}`;
 }
 
 $("#btnCopyLink").addEventListener("click", async () => {
@@ -390,8 +398,10 @@ $("#btnSaveServer").addEventListener("click", () => {
     showToast("Enter a server URL");
     return;
   }
-  if (!/^wss?:\/\//i.test(url)) {
-    showToast("Server URL must start with ws:// or wss://");
+  // wss:// only. Room codes, chat and the URL of everything you watch cross this socket,
+  // and ws:// puts all of it in clear text on whatever network the user happens to be on.
+  if (!/^wss:\/\//i.test(url)) {
+    showToast("Server URL must start with wss://");
     return;
   }
   // Persist per-backend slot + the active backend choice
@@ -519,7 +529,6 @@ function noteLocalTyping(hasContent) {
 }
 
 function handleRemoteTyping(msg) {
-  const myUserId = currentRoom; // popup doesn't track userId yet - use userName fallback
   if (!msg.userId || msg.userName === getUserName()) return;
   const existing = popupTyping.activePeers.get(msg.userId);
   if (existing && existing.timer) clearTimeout(existing.timer);

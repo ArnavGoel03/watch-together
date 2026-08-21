@@ -5,7 +5,7 @@ workflow is preserved at the bottom for situations where you want manual control
 
 ---
 
-## Recommended path — one command
+## Recommended path: one command
 
 ```sh
 bin/proj rename --to <new-slug> --display "<New Display Name>"
@@ -27,7 +27,7 @@ Flags:
 
 | Flag             | Purpose                                                   |
 |------------------|-----------------------------------------------------------|
-| `--to <slug>`     | New canonical slug (kebab-case lowercase) — **required**  |
+| `--to <slug>`     | New canonical slug (kebab-case lowercase): **required**  |
 | `--display "..."` | New display name (default: keep current)                  |
 | `--dry-run`       | Print the plan, change nothing                            |
 | `--yes`           | Skip confirmation prompts                                 |
@@ -35,14 +35,14 @@ Flags:
 | `--skip-vercel`   | Don't touch Vercel project / domains                      |
 | `--notes "..."`   | Recorded in the history log entry                         |
 
-After the rename, `cd` into the new folder — the script's path is now under
+After the rename, `cd` into the new folder: the script's path is now under
 `~/Documents/Projects/<new>/bin/proj`.
 
 ---
 
 ## Manual path (legacy reference)
 
-For full transparency about what `proj rename` does under the hood — or for
+For full transparency about what `proj rename` does under the hood: or for
 breaking the operation into pieces when something goes wrong mid-flight.
 
 ### 0. Pre-flight
@@ -88,7 +88,7 @@ grep -rln --exclude-dir=node_modules --exclude-dir=.next --exclude-dir=.git \
   "<old>" . ~/Documents/Projects/portfolio \
   | xargs sed -i '' "s/<old>/<new>/g"
 ```
-Run a second pass for display names — `sed "s/Old Name/New Name/g"`.
+Run a second pass for display names: `sed "s/Old Name/New Name/g"`.
 
 ### 6. Add a Next.js redirect
 ```ts

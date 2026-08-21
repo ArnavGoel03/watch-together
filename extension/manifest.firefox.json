@@ -1,11 +1,11 @@
 {
   "manifest_version": 2,
   "name": "Watch Together",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Sync video playback across devices - watch anything together in real time",
-  "permissions": ["storage", "activeTab", "tabs", "<all_urls>"],
+  "permissions": ["storage", "tabs", "<all_urls>"],
   "background": {
-    "scripts": ["background-firefox.js"],
+    "scripts": ["config.js", "relay.js", "background-firefox.js"],
     "persistent": false
   },
   "content_scripts": [
@@ -16,7 +16,7 @@
     },
     {
       "matches": ["<all_urls>"],
-      "js": ["adapters/generic.js", "adapters/jiohotstar.js", "adapters/netflix.js", "adapters/youtube.js", "content.js", "overlay.js"],
+      "js": ["config.js", "relay.js", "adapters/generic.js", "adapters/jiohotstar.js", "adapters/netflix.js", "adapters/youtube.js", "content.js", "overlay.js"],
       "run_at": "document_idle"
     }
   ],

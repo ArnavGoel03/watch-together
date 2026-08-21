@@ -4,7 +4,7 @@ title: "Watch Together: Real-Time Cross-Site Video Playback Synchronization"
 abstract: >-
   A browser-extension-based system for synchronizing HTML5 video playback
   across multiple devices in real time. Works on any website with an HTML5
-  video player — including Netflix, YouTube, JioHotstar, and others — by
+  video player: including Netflix, YouTube, JioHotstar, and others: by
   proxying play, pause, and seek events through a relay server with
   heartbeat-based drift correction. Includes a synchronized chat channel
   between participants. The sync server runs on Render and exposes a

@@ -1,19 +1,28 @@
 // Firefox background script - same logic as background.js, Manifest V2 compatible
+//
+// "Same logic" is a claim this file has to keep earning. Every divergence found here has
+// been a feature that silently did nothing on Firefox while working on Chrome, so when
+// background.js changes, change this too. config.js is loaded first by the manifest.
 
-const DEFAULT_SERVER_URL = "wss://watch-together-server-acwi.onrender.com";
+// Relay selection and failover live in relay.js, loaded alongside this file by the
+// manifest, and shared with the Chrome twin. Duplicating it here is exactly how these two
+// files drifted apart in the first place.
+const relay = new self.__wtRelay.RelayPicker();
 
 let ws = null;
-let serverUrl = DEFAULT_SERVER_URL;
 let currentRoom = null;
 let userId = null;
 let isHeartbeatLeader = false;
 let reconnectTimer = null;
 let reconnectAttempts = 0;
-let connectedPorts = new Map();
-let pendingJoin = false;
+// True once the CURRENT socket actually opened.
+let everConnected = false;
+const connectedPorts = new Map();
 let cachedMembers = []; // Latest known room members for serving popup re-opens
 let cachedMode = "everyone";
 let cachedIsHost = false;
+// Proof of being this room's creator, so a reload does not cost the host their own room.
+let hostToken = null;
 
 // The one tab the watch party is bound to. Playback traffic (sync, heartbeat,
 // navigate, cc-state) is routed only to and from this tab. Without this, every
@@ -52,12 +61,17 @@ function notePlayback(msg) {
 
 // Restore state from storage (survives background page restarts).
 chrome.storage.local.get(
-  ["serverUrl", "currentRoom", "userId", "partyTabId", "cachedPlayback", "cachedVideoUrl", "navSuppressUntil"],
+  ["serverUrl", "movedServerUrl", "currentRoom", "userId", "partyTabId", "cachedPlayback", "cachedVideoUrl", "navSuppressUntil", "cachedMode", "cachedIsHost", "cachedMembers", "hostToken"],
+  /** @param {any} data */
   (data) => {
-    if (data.serverUrl) serverUrl = data.serverUrl;
+    relay.hydrate(data);
     if (data.cachedPlayback) cachedPlayback = data.cachedPlayback;
     if (data.cachedVideoUrl) cachedVideoUrl = data.cachedVideoUrl;
     if (typeof data.navSuppressUntil === "number") navSuppressUntil = data.navSuppressUntil;
+    if (typeof data.cachedMode === "string") cachedMode = data.cachedMode;
+    if (typeof data.cachedIsHost === "boolean") cachedIsHost = data.cachedIsHost;
+    if (Array.isArray(data.cachedMembers)) cachedMembers = data.cachedMembers;
+    if (typeof data.hostToken === "string") hostToken = data.hostToken;
     if (data.currentRoom) {
       currentRoom = data.currentRoom;
       userId = data.userId;
@@ -70,8 +84,10 @@ chrome.storage.local.get(
 function connect() {
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
 
+  let socket;
   try {
-    ws = new WebSocket(serverUrl);
+    socket = new WebSocket(relay.current());
+    ws = socket;
   } catch {
     scheduleReconnect();
     return;
@@ -79,13 +95,15 @@ function connect() {
 
   ws.onopen = () => {
     reconnectAttempts = 0;
+    relay.onConnected();
+    everConnected = true;
     sendToParty({ type: "connection-status", connected: true });
 
     // Auto-rejoin room after reconnect. recreateIfMissing covers the case where the
     // server restarted and dropped the room: we rebuild it from where we last were,
     // rather than stranding a live watch party on "Room not found".
     if (currentRoom) {
-      chrome.storage.local.get(["userName"], (data) => {
+      chrome.storage.local.get(["userName"], /** @param {any} data */ (data) => {
         sendToServer({
           type: "join-room",
           roomCode: currentRoom,
@@ -95,7 +113,9 @@ function connect() {
           videoUrl: cachedVideoUrl,
           // Carry the control mode across a rebuild. Without it a "host only" room comes
           // back as a free-for-all and everyone can suddenly scrub the video.
+          // hostToken: reclaims host if we are the one who made it.
           mode: cachedMode,
+          hostToken: hostToken || undefined,
         });
       });
     }
@@ -116,6 +136,7 @@ function connect() {
         cachedMembers = [{ id: msg.userId, userName: "" }];
         cachedMode = msg.mode || "everyone";
         cachedIsHost = true;
+        if (typeof msg.hostToken === "string") hostToken = msg.hostToken;
         saveState();
         sendToParty(msg);
         break;
@@ -126,6 +147,7 @@ function connect() {
         cachedMembers = Array.isArray(msg.members) ? msg.members.slice() : [];
         cachedMode = msg.mode || "everyone";
         cachedIsHost = !!msg.isHost;
+        if (typeof msg.hostToken === "string") hostToken = msg.hostToken;
         if (msg.videoUrl) cachedVideoUrl = msg.videoUrl;
         if (msg.playbackState) notePlayback(msg.playbackState);
         saveState();
@@ -173,24 +195,52 @@ function connect() {
       // the content script, and the one that loads in its place will notice it is not
       // where the room was and try to announce a move of its own. Muzzle it: this is us
       // following, not us leading. Without this the room ping-pongs between two videos.
+      // The migration path: the server tells clients it has moved and they walk over on
+      // their own, with no store release. See relay.js.
+      case "server-moved":
+        if (relay.acceptMove(msg.url)) {
+          chrome.storage.local.set({ movedServerUrl: msg.url });
+          sendToParty({ type: "server-moved", url: msg.url });
+          if (ws) ws.close();
+          connect();
+        }
+        break;
+
       case "navigate":
+        if (!self.__wtConfig.isSafeNavigateUrl(msg.url)) break;
         if (msg.url) cachedVideoUrl = msg.url;
         navSuppressUntil = Date.now() + 30000;
         saveState();
         sendToParty(msg);
         break;
 
+      // chat-typing, voice-state and voice-signal were absent here, so Firefox relayed
+      // them OUT but dropped every one coming back IN. Voice negotiation could therefore
+      // never complete (the SDP answer and every ICE candidate arrive as voice-signal) and
+      // the typing indicator never appeared.
       case "chat":
       case "cc-state":
       case "error":
+      case "chat-typing":
+      case "voice-state":
+      case "voice-signal":
         sendToParty(msg);
         break;
     }
   };
 
   ws.onclose = (event) => {
+    // A socket we already replaced must not null out the live one, report the party
+    // offline and start a third connection. See the same guard in background.js.
+    if (ws !== socket) return;
     ws = null;
     sendToParty({ type: "connection-status", connected: false });
+    // Never opened means this relay is not answering, which is a different problem from
+    // the network dropping. Enough of those and we walk to the next candidate.
+    if (!everConnected && relay.onFailure()) {
+      reconnectAttempts = 0;
+    }
+    everConnected = false;
     if (event.code !== 4001) scheduleReconnect();
   };
 
@@ -209,8 +259,13 @@ function scheduleReconnect() {
 
 function sendToServer(msg) {
   if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(msg));
+    // One place stamps the protocol version, so no call site can forget to.
+    ws.send(JSON.stringify({ v: self.__wtConfig.PROTOCOL_VERSION, ...msg }));
+    // Returning the outcome is what lets a caller tell the user their chat line did not
+    // go anywhere. The Chrome twin already did; this one silently returned undefined.
+    return true;
   }
+  return false;
 }
 
 function postTo(key, msg) {
@@ -292,7 +347,16 @@ function resolvePartyTab(port, msg, cb) {
 }
 
 function saveState() {
-  chrome.storage.local.set({ currentRoom, userId, partyTabId, navSuppressUntil });
+  chrome.storage.local.set({
+    currentRoom,
+    userId,
+    partyTabId,
+    navSuppressUntil,
+    cachedMode,
+    cachedIsHost,
+    cachedMembers,
+    hostToken,
+  });
 }
 
 function clearRoomState() {
@@ -303,6 +367,7 @@ function clearRoomState() {
   cachedMembers = [];
   cachedMode = "everyone";
   cachedIsHost = false;
+  hostToken = null;
   saveState();
 }
 
@@ -368,7 +433,16 @@ chrome.runtime.onConnect.addListener((port) => {
           saveState();
           connect();
           waitForConnection(() => {
-            sendToServer({ type: "create-room", userName: msg.userName, videoUrl: msg.videoUrl || "" });
+            // mode and customName were missing here: picking "Host only" or naming a room
+            // in the popup did nothing at all on Firefox, and the room came back as a
+            // free-for-all with a random code while the UI said otherwise.
+            sendToServer({
+              type: "create-room",
+              userName: msg.userName,
+              videoUrl: msg.videoUrl || "",
+              mode: msg.mode || "everyone",
+              customName: msg.customName || "",
+            });
           });
         });
         break;
@@ -386,14 +460,12 @@ chrome.runtime.onConnect.addListener((port) => {
           break;
         }
 
-        pendingJoin = true;
         resolvePartyTab(port, msg, (resolved) => {
           partyTabId = resolved;
           saveState();
           connect();
           waitForConnection(() => {
             sendToServer({ type: "join-room", roomCode, userName: msg.userName || "User" });
-            pendingJoin = false;
           });
         });
         break;
@@ -440,6 +512,12 @@ chrome.runtime.onConnect.addListener((port) => {
         break;
 
       case "chat":
+        // A dropped chat line must not look like a sent one.
+        if (!sendToServer(msg)) {
+          sendToParty({ type: "send-failed", of: "chat", message: "Not sent, still reconnecting." });
+        }
+        break;
+
       case "chat-typing":
       case "cc-state":
       case "voice-state":
@@ -453,7 +531,11 @@ chrome.runtime.onConnect.addListener((port) => {
 
       case "set-server-url":
         if (port.name !== "popup") break;
-        serverUrl = msg.url;
+        if (typeof msg.url !== "string" || !/^wss:\/\//i.test(msg.url)) {
+          postTo("popup", { type: "error", message: "Server URL must start with wss://" });
+          break;
+        }
+        relay.setOverride(msg.url);
         chrome.storage.local.set({ serverUrl: msg.url });
         if (ws) ws.close();
         connect();
@@ -504,7 +586,7 @@ chrome.runtime.onConnect.addListener((port) => {
           userId,
           connected: ws && ws.readyState === WebSocket.OPEN,
           isHeartbeatLeader,
-          serverUrl,
+          serverUrl: relay.current(),
           members: cachedMembers,
           mode: cachedMode,
           isHost: cachedIsHost,
@@ -532,7 +614,6 @@ function waitForConnection(callback, retries = 60) {
     }
     setTimeout(() => waitForConnection(callback, retries - 1), 1000);
   } else {
-    pendingJoin = false;
     sendToParty({ type: "error", message: "Could not connect to server. Try again." });
   }
 }

@@ -8,9 +8,9 @@
     findVideo() {
       // YouTube main player video
       return (
-        document.querySelector('#movie_player video') ||
-        document.querySelector('video.html5-main-video') ||
-        document.querySelector('video')
+        /** @type {HTMLVideoElement|null} */ (document.querySelector('#movie_player video')) ||
+        /** @type {HTMLVideoElement|null} */ (document.querySelector('video.html5-main-video')) ||
+        /** @type {HTMLVideoElement|null} */ (document.querySelector('video'))
       );
     },
 

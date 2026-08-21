@@ -1,0 +1,23 @@
+{
+  // Shared compiler settings. The extension ships as plain JavaScript that the browser
+  // loads directly: no bundler, no build step, nothing that can go wrong at review time.
+  // So this project is typechecked, never compiled, and tsc emits nothing at all.
+  "compilerOptions": {
+    "noEmit": true,
+    "allowJs": true,
+    "checkJs": true,
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["chrome"],
+    // Deliberately not `strict`. The value here is catching wire-protocol drift across the
+    // surfaces that used to disagree silently; strict null checks over 7k lines of existing
+    // DOM code would bury that signal under noise nobody would read.
+    "strict": false,
+    "noImplicitAny": false,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "allowSyntheticDefaultImports": true
+  }
+}

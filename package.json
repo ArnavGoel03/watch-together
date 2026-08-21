@@ -1,0 +1,29 @@
+{
+  "name": "watch-together",
+  "version": "1.2.0",
+  "private": true,
+  "description": "Real-time video sync browser extension and its sync server",
+  "type": "module",
+  "scripts": {
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.background.json && tsc --noEmit -p tsconfig.firefox.json && tsc --noEmit -p tsconfig.popup.json && tsc --noEmit -p tsconfig.server.json && tsc --noEmit -p tsconfig.worker.json",
+    "test:server": "npm --prefix server run test:node && npm --prefix server run test:vitest",
+    "test:cf": "npm --prefix server-cf test",
+    "test:browser": "npm --prefix server run test:browser",
+    "test": "npm run lint && npm run typecheck && npm run check:dashes && node scripts/check-version.mjs && npm run test:server && npm run test:cf",
+    "check:dashes": "node scripts/check-dashes.mjs",
+    "package": "node scripts/package.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260821.1",
+    "@types/chrome": "^0.2.6",
+    "@types/node": "^26.2.0",
+    "eslint": "^10.9.0",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "@eslint/js": "^10.0.1",
+    "globals": "^17.11.0"
+  }
+}

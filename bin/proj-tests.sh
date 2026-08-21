@@ -70,7 +70,7 @@ assert            "config --json exits 0"      0 "$PROJ" --json config
 assert            "history exits 0"            0 "$PROJ" history
 assert            "history --json exits 0"     0 "$PROJ" --json history
 
-# validate (allow either pass or fail — network may be down)
+# validate (allow either pass or fail: network may be down)
 TESTS=$((TESTS+1))
 if "$PROJ" validate --skip-network >/dev/null 2>&1; then
   printf "%s✓%s validate --skip-network passes\n" "$GREEN" "$RESET"; PASS=$((PASS+1))
@@ -87,7 +87,7 @@ else
   printf "%s✗%s drift crashed (exit %d)\n" "$RED" "$RESET" "$rc"; FAIL=$((FAIL+1))
 fi
 
-# config schema validation — temp bad config
+# config schema validation: temp bad config
 TMP=$(mktemp -d)
 trap "rm -rf $TMP" EXIT
 cp "$REPO_ROOT/project.config.json" "$TMP/backup.json"

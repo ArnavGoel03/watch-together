@@ -11,7 +11,6 @@
   let currentRoom = null;
   let myUserId = null;
   let userName = "";
-  let isConnected = false;
   let memberCount = 1;
   let pendingEnterSend = false; // true if user pressed Enter during IME composition
   const inFlight = new Set();
@@ -92,14 +91,32 @@
     }
   }
 
+  // Anything waiting on the server is released by the server's answer, with the timer
+  // kept only as a backstop. Releasing on the timer alone meant a rejection that arrived
+  // in 40ms still left Create greyed out for the remaining four seconds, so the user read
+  // the error, clicked again, and nothing happened.
+  const inFlightResolvers = new Map();
+
   function withInFlight(key, btn, fn) {
     if (inFlight.has(key)) return;
     inFlight.add(key);
     if (btn) btn.disabled = true;
-    Promise.resolve(fn()).finally(() => {
+    const release = () => {
+      if (!inFlight.has(key)) return;
       inFlight.delete(key);
+      inFlightResolvers.delete(key);
       if (btn) btn.disabled = false;
-    });
+    };
+    inFlightResolvers.set(key, release);
+    Promise.resolve(fn()).finally(release);
+  }
+
+  // Called when the server has actually answered.
+  function settleInFlight(...keys) {
+    for (const key of keys) {
+      const release = inFlightResolvers.get(key);
+      if (release) release();
+    }
   }
 
   function safePost(msg) {
@@ -338,7 +355,9 @@
     const badge = overlayPanel.querySelector("#wt-voice-active");
     if (!badge) return;
     const total = voice.activePeerIds.size + (voice.active ? 1 : 0);
-    badge.textContent = total > 0 ? `🎤 ${total} on voice` : "";
+    // A monochrome glyph, not an emoji: the rest of the panel is inline SVG and a colour
+    // emoji next to it looks like it wandered in from another product.
+    badge.textContent = total > 0 ? `${total} on voice` : "";
   }
 
   // ============================================================
@@ -373,11 +392,44 @@
     return pressed === want;
   }
 
+  // A fullscreen video is painted in the browser's top layer, and only elements INSIDE
+  // the fullscreen element are painted with it. The panel lived on document.body, so it
+  // was there, toggling, posting messages, and completely invisible from the moment
+  // anyone went fullscreen: which is exactly when people actually watch. The toolbar
+  // button never had this problem because it is injected into the player's own controls.
+  // Follow the fullscreen element in and back out again.
+  function currentFullscreenHost() {
+    const doc = /** @type {any} */ (document);
+    // Safari and older WebKit builds still only expose the prefixed property.
+    return doc.fullscreenElement || doc.webkitFullscreenElement || null;
+  }
+
+  function reparentPanel() {
+    if (!overlayPanel) return;
+    const host = currentFullscreenHost() || document.body;
+    if (overlayPanel.parentNode === host) return;
+    host.appendChild(overlayPanel);
+  }
+
+  let fullscreenTrackingBound = false;
+  function trackFullscreenHost() {
+    reparentPanel();
+    if (fullscreenTrackingBound) return;
+    fullscreenTrackingBound = true;
+    document.addEventListener("fullscreenchange", reparentPanel, true);
+    document.addEventListener("webkitfullscreenchange", reparentPanel, true);
+  }
+
   function setupHotkeyListeners() {
     document.addEventListener("keydown", (e) => {
       if (!matchesHotkey(e)) return;
       if (e.repeat) return; // ignore key-repeat firing
       e.preventDefault();
+      // preventDefault stops the BROWSER default. It does nothing about the page's own
+      // key handler, so holding the overlay key on YouTube also toggled play/pause (space)
+      // or native fullscreen (f) underneath the panel. Stop the event here.
+      e.stopPropagation();
+      e.stopImmediatePropagation();
       if (overlayMode === "hold") {
         hotkeyHeld = true;
         showPanel();
@@ -394,7 +446,7 @@
       }
     }, true);
     // React to settings changes from the popup live
-    chrome.storage.onChanged.addListener((changes) => {
+    chrome.storage.onChanged.addListener(/** @param {any} changes */ (changes) => {
       if (changes.overlayMode) overlayMode = changes.overlayMode.newValue || "click";
       if (changes.overlayHotkey) overlayHotkey = changes.overlayHotkey.newValue || HOTKEY_DEFAULT;
       if (changes.voiceQuality) {
@@ -407,6 +459,12 @@
 
   function showPanel() {
     createPanel();
+    // Also reparent here, not only on the fullscreenchange event. The event is the normal
+    // path, but if a browser fires it late, inconsistently, or not at all for a given kind
+    // of fullscreen, the failure is total: the panel opens somewhere the viewer cannot see
+    // and they conclude the button is broken. Checking again at the moment we open costs
+    // nothing and makes that impossible.
+    reparentPanel();
     overlayPanel.classList.add("wt-visible");
     safePost({ type: "get-state" });
     syncMemberCountDom();
@@ -535,6 +593,7 @@
     `;
 
     document.body.appendChild(overlayPanel);
+    trackFullscreenHost();
 
     // Wire up events
     overlayPanel.querySelector("#wt-close").addEventListener("click", (e) => {
@@ -707,6 +766,16 @@
     });
   }
 
+  // One place that writes the connection pill, so every path that learns the truth can
+  // say it without duplicating the DOM work.
+  function setStatusDom(connected) {
+    if (!overlayPanel) return;
+    const statusEl = overlayPanel.querySelector("#wt-status");
+    if (!statusEl) return;
+    statusEl.textContent = connected ? "Live" : "Offline";
+    statusEl.className = `wt-panel-status ${connected ? "wt-live" : ""}`;
+  }
+
   function syncMemberCountDom() {
     if (!overlayPanel) return;
     const el = overlayPanel.querySelector("#wt-member-count");
@@ -807,11 +876,16 @@
   function addSystemMsg(text) {
     const container = overlayPanel?.querySelector("#wt-messages");
     if (!container) return;
+    // Same cap as chat. Without it, one peer toggling captions repeatedly grew this list
+    // for the whole session: cc-state is relayed to everyone and rendered here every time.
     const div = document.createElement("div");
     div.className = "wt-msg wt-sys";
     div.textContent = text;
     container.appendChild(div);
     container.scrollTop = container.scrollHeight;
+    while (container.children.length > 100) {
+      container.removeChild(container.firstChild);
+    }
   }
 
   // ---------- Typing indicator ----------
@@ -916,6 +990,7 @@
     port.onMessage.addListener((msg) => {
       switch (msg.type) {
         case "room-created":
+          settleInFlight("create");
           currentRoom = msg.roomCode;
           myUserId = msg.userId || myUserId;
           inRoom = true;
@@ -930,6 +1005,7 @@
           break;
 
         case "room-joined":
+          settleInFlight("create", "join");
           currentRoom = msg.roomCode;
           myUserId = msg.userId || myUserId;
           inRoom = true;
@@ -947,6 +1023,25 @@
           memberCount = typeof msg.memberCount === "number" ? msg.memberCount : memberCount + 1;
           syncMemberCountDom();
           addSystemMsg(`${msg.userName} joined`);
+          break;
+
+        // The room ended somewhere else: the user left from the popup, or the party was
+        // attached to a different tab. Nothing in this panel would ever have found out, so
+        // it sat there showing a room code, a member count and a live chat box for a room
+        // this tab is no longer in.
+        case "room-ended":
+          settleInFlight("create", "join", "leave");
+          inRoom = false;
+          currentRoom = null;
+          memberCount = 1;
+          stopVoice();
+          voice.activePeerIds.clear();
+          updateVoiceBadge();
+          if (overlayPanel) {
+            showView("landing");
+            overlayPanel.querySelector("#wt-messages").innerHTML = "";
+          }
+          updateButtonState();
           break;
 
         case "member-left":
@@ -987,37 +1082,54 @@
           break;
 
         case "connection-status":
-          isConnected = msg.connected;
-          if (overlayPanel) {
-            const statusEl = overlayPanel.querySelector("#wt-status");
-            statusEl.textContent = msg.connected ? "Live" : "Offline";
-            statusEl.className = `wt-panel-status ${msg.connected ? "wt-live" : ""}`;
-          }
+          setStatusDom(msg.connected);
           break;
 
         case "state":
-          isConnected = msg.connected;
+          setStatusDom(msg.connected);
           if (msg.userId) myUserId = msg.userId;
           if (msg.currentRoom) {
             currentRoom = msg.currentRoom;
             inRoom = true;
+            // The whole point of asking for state on open is that a stale panel is
+            // impossible, but the member count was never read back, so a reinjected
+            // content script sat on its default of 1 while the popup showed the truth.
+            if (Array.isArray(msg.members) && msg.members.length) {
+              memberCount = msg.members.length;
+            } else if (typeof msg.memberCount === "number") {
+              memberCount = msg.memberCount;
+            }
             if (overlayPanel) {
               overlayPanel.querySelector("#wt-room-code").textContent = msg.currentRoom;
               showView("room");
             }
+            syncMemberCountDom();
             updateButtonState();
+          } else {
+            inRoom = false;
           }
           break;
 
+        // A message the background could not put on the wire. Silence here is what makes
+        // the product feel broken: you typed, it looked sent, nobody ever saw it.
+        case "send-failed":
+          addSystemMsg(msg.message || "Not sent, still reconnecting.");
+          break;
+
         case "error":
+          // Free every button waiting on an answer: this WAS the answer.
+          settleInFlight("create", "join", "leave");
           addSystemMsg(msg.message);
           break;
       }
     });
 
     port.onDisconnect.addListener(() => {
-      if (chrome.runtime.lastError) {}
+      void chrome.runtime.lastError;
       port = null;
+      // The relay just went away. Nothing else will tell the panel, so it used to keep
+      // showing a green "Live" for the whole reconnect gap.
+      setStatusDom(false);
       setTimeout(connectPort, 2000);
     });
 
@@ -1049,7 +1161,7 @@
     if (video) {
       const container = video.closest("[class*='player']") || video.parentElement;
       if (container) {
-        container.style.position = container.style.position || "relative";
+        /** @type {any} */ (container).style.position = /** @type {any} */ (container).style.position || "relative";
         container.appendChild(btn);
         return true;
       }

@@ -1,4 +1,4 @@
-# Rename history — Serenity
+# Rename history: Serenity
 
 Append-only log of every rename event for this project. Lives at
 `./.rename-history.jsonl` (one JSON object per line).
@@ -7,7 +7,7 @@ Append-only log of every rename event for this project. Lives at
 
 When a project's name changes across local folder + GitHub repo + Vercel
 project + iOS bundle URLs + Android base URLs + portfolio site + docs,
-things eventually break — a hardcoded old URL surfacing in a screenshot,
+things eventually break: a hardcoded old URL surfacing in a screenshot,
 a stale OG image, a search index hit, a backlink. This log makes those
 breakages debuggable. Look up the old slug here, see what the new slug
 + URLs are, fix the dangling link.

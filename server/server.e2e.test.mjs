@@ -95,6 +95,9 @@ before(async () => {
       // through fifteen real seconds of silence.
       LEADER_STALE_MS: String(TEST_LEADER_STALE_MS),
       LEADER_SWEEP_MS: "150",
+      // A host who reloads must keep their locked room; a host who leaves must not
+      // leave everyone locked out. Same rule, just not worth a real minute in a test.
+      HOST_ABSENCE_GRACE_MS: "400",
     },
     silent: true,
   });
@@ -711,19 +714,106 @@ test("rebuild: an infinite resume time cannot be seeded into the room", async ()
   closeAll({ ws });
 });
 
-test("rebuild: a host-only room comes back host-only, not a free-for-all", async () => {
+// Rebuilding a room and being its host are two different claims. Anyone who knows a code
+// can ask for a rebuild - that is the whole point, it is how a party survives the free
+// tier idling down - but honouring an unproven "mode: host" let a stranger wait for a room
+// to go quiet, rebuild it as locked, and own everyone's playback when the real members
+// came back. So a rebuild only restores host-only when the asker can produce the token
+// this server issued to the room's creator.
+test("rebuild: a host-only room comes back host-only when the real host asks", async () => {
+  const creator = await createClient();
+  send(creator, { type: "create-room", userName: "Host", mode: "host", customName: "GHOSTHOST" });
+  const created = await waitFor(creator, "room-created");
+  assert.equal(typeof created.hostToken, "string", "the creator is handed a token to come back with");
+  closeAll({ ws: creator });
+
+  const ws = await createClient();
+  send(ws, {
+    type: "join-room",
+    roomCode: "GHOSTHOST",
+    userName: "Returner",
+    recreateIfMissing: true,
+    mode: "host",
+    hostToken: created.hostToken,
+    resumeState: { playing: false, currentTime: 10, playbackRate: 1 },
+  });
+  const m = await waitFor(ws, "room-joined");
+  assert.equal(m.mode, "host", "a restart must not quietly unlock a locked room");
+  assert.equal(m.isHost, true, "the real host comes back as the host");
+  closeAll({ ws });
+});
+
+test("rebuild: a stranger cannot claim host by rebuilding a room they know the code for", async () => {
   const ws = await createClient();
   send(ws, {
     type: "join-room",
     roomCode: "GHOST5",
-    userName: "Returner",
+    userName: "Stranger",
     recreateIfMissing: true,
     mode: "host",
     resumeState: { playing: false, currentTime: 10, playbackRate: 1 },
   });
   const m = await waitFor(ws, "room-joined");
-  assert.equal(m.mode, "host", "a restart must not quietly unlock a locked room");
+  assert.equal(m.mode, "everyone", "no token, no lock: a rebuild must not hand control to whoever raced for it");
   closeAll({ ws });
+});
+
+test("rebuild: a forged host token is refused", async () => {
+  const ws = await createClient();
+  send(ws, {
+    type: "join-room",
+    roomCode: "GHOST6",
+    userName: "Forger",
+    recreateIfMissing: true,
+    mode: "host",
+    hostToken: "f".repeat(64),
+    resumeState: { playing: false, currentTime: 10, playbackRate: 1 },
+  });
+  const m = await waitFor(ws, "room-joined");
+  assert.equal(m.mode, "everyone", "a token we did not issue proves nothing");
+  closeAll({ ws });
+});
+
+// Reloading the party tab is not leaving the party. Every reconnect gets a fresh
+// server-side user id, so without a token the host came back as a guest in their own room
+// and a host-only room fell open to everyone the first time they refreshed.
+test("host: reloading the tab does not cost you your own room", async () => {
+  const creator = await createClient();
+  send(creator, { type: "create-room", userName: "Host", mode: "host" });
+  const created = await waitFor(creator, "room-created");
+  const guestWs = await createClient();
+  send(guestWs, { type: "join-room", roomCode: created.roomCode, userName: "Guest" });
+  await waitFor(guestWs, "room-joined");
+
+  // The host's tab reloads: the old socket dies, a new one rejoins with the token.
+  closeAll({ ws: creator });
+  await sleep(50);
+  const back = await createClient();
+  send(back, {
+    type: "join-room",
+    roomCode: created.roomCode,
+    userName: "Host",
+    hostToken: created.hostToken,
+  });
+  const rejoined = await waitFor(back, "room-joined");
+  assert.equal(rejoined.isHost, true, "the host is still the host after a reload");
+
+  // And the guest still cannot drive a host-only room.
+  send(guestWs, { type: "sync", action: "play", playing: true, currentTime: 5, playbackRate: 1 });
+  const err = await waitFor(guestWs, "error");
+  assert.match(err.message, /host/i, "host-only stays host-only across the reload");
+  closeAll({ ws: back }, { ws: guestWs });
+});
+
+test("sync: Infinity is not a position and must never reach the room", async () => {
+  const h = await host();
+  const g = await guest(h.code, "Guest");
+  await waitFor(h.ws, "member-joined");
+  send(h.ws, { type: "sync", action: "seek", playing: true, currentTime: "Infinity", playbackRate: 1 });
+  send(h.ws, { type: "sync", action: "seek", playing: true, currentTime: 42, playbackRate: 1 });
+  const got = await waitFor(g.ws, "sync");
+  assert.equal(got.currentTime, 42, "the Infinity must have been dropped, not relayed");
+  closeAll(h, g);
 });
 
 
@@ -738,6 +828,12 @@ test("watchdog: a silent sync leader is handed off to someone who can actually b
   drain(h.ws, "heartbeat-role");
   drain(g.ws, "heartbeat-role");
 
+  // The watchdog only polices a room that is actually PLAYING: a paused room's leader
+  // stops beating on purpose, because there is no position to correct. Start playback so
+  // the silence that follows is genuinely a leader who has stopped doing their job.
+  send(h.ws, { type: "sync", action: "play", playing: true, currentTime: 5, playbackRate: 1 });
+  await sleep(30);
+
   // The host is leader on creation. Say nothing and let the watchdog notice.
   const demoted = await waitFor(h.ws, "heartbeat-role", 4000);
   assert.equal(demoted.isLeader, false, "a leader that never beats must not keep the job");
@@ -745,6 +841,29 @@ test("watchdog: a silent sync leader is handed off to someone who can actually b
   const promoted = await waitFor(g.ws, "heartbeat-role", 4000);
   assert.equal(promoted.isLeader, true, "the job has to land on someone still in the room");
 
+  closeAll(h, g);
+});
+
+// The heartbeat is the whole running cost of this service, and a paused room has nothing
+// to say. The leader going quiet there is the optimisation working, so the watchdog must
+// not read it as a frozen tab and start handing the job around.
+test("watchdog: a paused room does not churn its leader for being quiet", async () => {
+  const h = await host();
+  const g = await guest(h.code, "Guest");
+  await waitFor(h.ws, "member-joined");
+  await sleep(50);
+  // Explicitly paused, then silence for well past the staleness window.
+  send(h.ws, { type: "sync", action: "pause", playing: false, currentTime: 42, playbackRate: 1 });
+  await sleep(50);
+  drain(h.ws, "heartbeat-role");
+  drain(g.ws, "heartbeat-role");
+
+  let churned = false;
+  try {
+    await waitFor(h.ws, "heartbeat-role", 1500);
+    churned = true;
+  } catch { /* nothing arrived, which is the point */ }
+  assert.equal(churned, false, "a paused room has no drift to correct and needs no new leader");
   closeAll(h, g);
 });
 

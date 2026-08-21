@@ -72,7 +72,7 @@ function close(...clients) { clients.forEach((c) => (c.ws || c).close()); }
 beforeAll(async () => {
   const { fork } = await import("child_process");
   serverProcess = fork("./server.js", [], {
-    env: { ...process.env, PORT: String(PORT), MAX_CONNECTIONS_PER_IP: "50", RATE_LIMIT_MAX: "200" },
+    env: { ...process.env, PORT: String(PORT), MAX_CONNECTIONS_PER_IP: "50", RATE_LIMIT_MAX: "200", HOST_ABSENCE_GRACE_MS: "400" },
     silent: true,
   });
   await sleep(800);
@@ -99,7 +99,7 @@ describe("Static checks", () => {
   it("all JS files have valid syntax", () => {
     const errors = [];
     for (const f of [...getJsFiles(extDir), join(__dirname, "server.js")]) {
-      try { execSync(`node -c "${f}" 2>&1`); } catch (e) { errors.push(f); }
+      try { execSync(`node -c "${f}" 2>&1`); } catch { errors.push(f); }
     }
     expect(errors).toEqual([]);
   });
@@ -143,25 +143,54 @@ describe("HTTP", () => {
     expect(b).not.toHaveProperty("videoUrl");
   });
 
-  it("join with video URL → 302 redirect", async () => {
-    const url = encodeURIComponent("https://youtube.com/watch?v=x");
+  it("join link redirects to the room's own video", async () => {
+    // The redirect target comes from the room, never from the query string.
+    const h = await host("H", "everyone", "https://youtube.com/watch?v=x");
     const r = await new Promise((res) =>
-      http.get(`http://localhost:${PORT}/join/A?url=${url}`, (h) => res({ status: h.statusCode, loc: h.headers.location }))
+      http.get(`http://localhost:${PORT}/join/${h.code}`, (x) => res({ status: x.statusCode, loc: x.headers.location }))
     );
     expect(r.status).toBe(302);
-    expect(r.loc).toContain("wt_room=A");
+    expect(r.loc).toContain(`wt_room=${h.code}`);
+    expect(r.loc).toContain("youtube.com");
+    h.ws.close();
+  });
+
+  it("join link is not an open redirect", async () => {
+    // ?url= used to be honoured when the room had no video of its own, which let anyone
+    // send a victim to any site with our domain doing the sending. It is ignored now.
+    const evil = encodeURIComponent("https://evil.example/phish");
+    const r = await new Promise((res) =>
+      http.get(`http://localhost:${PORT}/join/ABCDEF?url=${evil}`, (x) => res({ status: x.statusCode, loc: x.headers.location }))
+    );
+    expect(r.status).toBe(200);
+    expect(r.loc).toBeUndefined();
+    expect(r.status).not.toBe(302);
   });
 
   it("join without video → fallback page with security headers", async () => {
-    const r = await httpGet("/join/X");
+    const r = await httpGet("/join/ABCDEF");
     expect(r.status).toBe(200);
     expect(r.headers["x-frame-options"]).toBe("DENY");
     expect(r.body).toContain("Watch Together");
+    // No inline JavaScript on the page any more, so no JS context for a code to reach.
+    expect(r.body).not.toContain("onclick");
+    expect(r.headers["content-security-policy"]).toContain("default-src 'none'");
   });
 
   it("blocks javascript: URLs", async () => {
-    const r = await httpGet(`/join/X?url=${encodeURIComponent("javascript:alert(1)")}`);
+    const r = await httpGet(`/join/ABCDEF?url=${encodeURIComponent("javascript:alert(1)")}`);
     expect(r.status).toBe(200);
+    expect(r.body).not.toContain("javascript:alert");
+  });
+
+  it("a room code that could never have been issued is refused, not rendered", async () => {
+    // escapeHtml turns ' into &#39;, and an HTML attribute decodes that back to a real
+    // apostrophe before its JavaScript is compiled, so escaping alone never contained
+    // this. The code is validated now and the inline handler is gone.
+    const payload = encodeURIComponent("X');alert(1)//");
+    const r = await httpGet(`/join/${payload}`);
+    expect(r.status).toBe(404);
+    expect(r.body).not.toContain("alert(1)");
   });
 });
 

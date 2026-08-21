@@ -1,4 +1,4 @@
-# Watch Together — Deployment Guide
+# Watch Together: Deployment Guide
 
 ## Step 1: Deploy the Server (free, 5 minutes)
 
@@ -38,19 +38,64 @@ docker build -t watch-together .
 docker run -p 3000:3000 watch-together
 ```
 
-## Step 2: Update the Extension
+### Keeping a free-tier server awake
 
-Edit `extension/background.js` line 4:
-```js
-const DEFAULT_SERVER_URL = "wss://YOUR-SERVER-URL-HERE";
+Render's free tier sleeps after about 15 minutes of no traffic, and the first connection
+after that pays a cold start. There used to be a self-ping in `server.js` meant to prevent
+this; it pinged `http://localhost` from inside the container, which never reaches Render's
+front door and therefore never reset the idle timer. It has been removed rather than left
+in place looking like it worked.
+
+To actually keep it warm, point something external at the public health endpoint every
+10 to 13 minutes: cron-job.org and UptimeRobot both do this on a free plan, as does a
+scheduled GitHub Action.
+
 ```
+GET https://YOUR-SERVER-URL/health
+```
+
+Cloudflare has no equivalent problem: Durable Objects hibernate and wake on the next
+message, with no cold-start penalty of this kind.
+
+## Step 2: Point the Extension at Your Server
+
+The server URL lives in exactly ONE place: `extension/config.js`.
+
+```js
+const SERVER_URLS = [
+  "wss://your-server-url-here",
+];
+```
+
+It is a list, in priority order, not a single value. If the first relay does not answer,
+the extension moves to the next one on its own.
+
+### Moving to a different backend later, without a store update
+
+This is the important part. The server can be redeployed in seconds; the extension cannot,
+because it has to clear Chrome Web Store review and then wait for browsers to auto-update.
+So the OLD server is what migrates your users.
+
+1. Stand up the new relay and confirm it works.
+2. On the OLD server, set `SERVER_MOVED_URL` to the new `wss://` address and restart it.
+3. Every client that connects is told to move, remembers the new address, and reconnects
+   there. Nothing is stranded, and no release is involved.
+4. At your leisure, add the new URL to `SERVER_URLS` in `config.js` so fresh installs go
+   straight to it, and ship that whenever you next have a release to make.
+
+A user who has set their own server in Settings always keeps it: their explicit choice
+outranks anything a server tells the extension.
 
 ## Step 3: Publish to Chrome Web Store
 
-1. Zip the `extension/` folder:
+1. Build the packages:
    ```bash
-   cd extension && zip -r ../watch-together-extension.zip . -x "manifest.firefox.json" "background-firefox.js"
+   npm run package
    ```
+   This writes `dist/watch-together-chrome-v<version>.zip` and the Firefox equivalent. It
+   refuses to produce a package that is missing a file its manifest references, or that
+   carries anything that should never ship. Do not zip the folder by hand: the command
+   that used to be documented here shipped local editor directories into the store.
 2. Go to https://chrome.google.com/webstore/devconsole
 3. Pay the one-time $5 developer fee
 4. Click "New Item" → upload the zip
