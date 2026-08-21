@@ -149,6 +149,76 @@ the object went to sleep, which is exactly when they mattered.
   60 seconds).
 - **Storage writes are throttled**, so dragging a scrub bar is no longer one write per frame.
 
+### Ad breaks
+
+- **The room no longer runs on through an ad break that everybody is in.** Ads are
+  per-viewer, so one person's break was already handled. When EVERY viewer hits one at the
+  same time, which is exactly what a platform mid-roll causes, nobody was playing anything,
+  but the room's position is read by extrapolating forward on the assumption that somebody
+  was. A ninety second break convinced the room that ninety seconds of film had gone by, so
+  everyone came back and was hard-seeked past the scene they were about to watch: in sync
+  with each other, and a minute and a half into the future.
+- **The sync leader is never somebody sitting an ad out**, since that member has
+  deliberately stopped broadcasting, and **the watchdog no longer polices a room where
+  nobody can beat.**
+- **A stuck ad marker cannot wedge you out of the party.** Players reuse their ad container
+  and leave a stray node in it, and the escape valve used to be gated on the very marker
+  that was stuck.
+- **A short clip auto-playing after a long film is no longer mistaken for an advert.**
+
+### Waiting, and knowing why
+
+- **You can see what everyone is doing.** The member list shows each person as watching, in
+  an ad break, or buffering. A count answers "is anyone else there"; it does not answer the
+  question people actually have when something looks wrong, which is "is it me, or is it
+  them".
+- **"Wait for slow connections", off by default.** When someone's video stalls they fall
+  behind, and drift correction then seeks them FORWARD to catch up, skipping exactly the
+  footage they were waiting to load. Turn this on and the room pauses until they are ready.
+  It gives up after a minute, so one bad connection cannot hold four people hostage. Host
+  controlled, because one person's wifi stopping everyone else's film is a social decision.
+
+### Rooms staying alive
+
+- **Rooms no longer die halfway through a film.** The free-tier host sleeps after a quiet
+  spell and takes every in-memory room with it, and this release's own cost saving made that
+  worse before it made it better: once a paused room and a room of one stopped sending
+  anything, a party pausing for dinner produced no traffic at all and looked identical to a
+  party that had ended. The client now says "still here" once a minute, which marks the room
+  alive and nothing else, and a scheduled job keeps the server warm during the quiet period
+  before a party starts.
+
+### Watching together, talking together
+
+- **A call link belongs to the room.** The host pins a Zoom, Meet, Teams, Discord, Whereby or
+  Jitsi link once and everyone gets a button for it, including people who join an hour late,
+  with quick "Start a Zoom" and "Start a Meet" buttons. Deliberately a link rather than an
+  API integration: creating meetings through the vendors' APIs means OAuth, a published and
+  reviewed app, and token storage, to save one paste.
+- **Talk over the film without pausing it for everybody.** A per-viewer volume with a Duck
+  button that drops the film while you speak. Nothing here is heard by the room, because
+  everyone plays their own copy: only playback position ever crosses the network.
+
+### Permissions
+
+- **It no longer demands access to every site you visit.** The extension asks for the video
+  sites that actually have adapters and offers everything else as an optional grant, made
+  per site, by you, at the moment you want it. Same capability, and the difference between
+  "reads every page you visit" and "works on six video sites, and asks before touching
+  anything else".
+
+### Design
+
+- **It stops looking like every other extension.** The violet-to-indigo gradient is gone,
+  along with the accent it was built from. A watch party happens in the dark on top of
+  somebody else's player, so this is a projection booth: near-black surfaces, hairline
+  rules, and a single warm lamp-amber accent, with no gradients anywhere. The amber earns
+  its place practically too, since every player underneath has already claimed a colour.
+- **The panel is one thing again.** The default surface is the room code, who is here, and
+  chat. Everything else lives in one drawer, grouped into Sync, Room, Voice call, On this
+  device and Connection, each saying whether it affects the room or only you, and it
+  remembers being opened.
+
 ### Project
 
 - **ESLint and TypeScript on the whole codebase, and CI that runs everything.** The wire

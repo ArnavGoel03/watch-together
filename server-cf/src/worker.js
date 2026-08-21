@@ -10,6 +10,11 @@ const PROTOCOL_VERSION = 1;
 // the film really is playing for everybody else; it only disqualifies that member from
 // driving everyone's position while their own is stalled.
 const PRESENCE_STATES = ["watching", "ad", "buffering"];
+// See the long explanation in server/server.js. Off by default and host-controlled, because
+// one person's connection stopping everybody else's film is a social decision. The ceiling
+// matters as much as the feature: a connection that never recovers must not hold four other
+// people hostage.
+const WAIT_FOR_SLOW_MAX_MS = 60000;
 const MAX_ROOM_MEMBERS = 50;
 const MAX_ROOMS = 10000;
 const ROOM_TTL_MS = 12 * 3600000; // 12h
@@ -129,7 +134,7 @@ export default {
     return new Response(`<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>Watch Together</title>
-<style>body{font-family:-apple-system,sans-serif;background:#0f0f0f;color:#fff;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}.card{text-align:center}h1{font-size:32px;margin-bottom:8px}p{color:#888}.tag{font-size:11px;color:#a78bfa;margin-top:8px}</style>
+<style>body{font-family:-apple-system,sans-serif;background:#0f0f0f;color:#fff;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}.card{text-align:center}h1{font-size:32px;margin-bottom:8px}p{color:#888}.tag{font-size:11px;color:#e8a33d;margin-top:8px}</style>
 </head><body><div class="card"><h1>Watch Together</h1><p>Sync video playback with friends worldwide</p><p class="tag">Cloudflare edge</p></div></body></html>`, {
       headers: { "Content-Type": "text/html", "X-Frame-Options": "DENY", "Content-Security-Policy": "default-src 'self' 'unsafe-inline'" },
     });
@@ -382,6 +387,7 @@ export class RoomHubDO {
   async alarm() {
     await this.bootPromise;
     this._reapDeadSockets();
+    this._sweepStuckWaits();
     this._sweepHostAbsence();
     this._rotateStaleLeaders();
     this._sweepExpiredRooms();
@@ -403,8 +409,10 @@ export class RoomHubDO {
     const wasVoiceActive = !!(member && member.voiceActive);
     room.members.delete(userId);
     // The one person still watching may have just gone, leaving a room that is entirely in
-    // ad breaks, whose clock should stop rather than run on without anybody.
+    // ad breaks, whose clock should stop rather than run on without anybody. And if the
+    // person the room was WAITING for is the one who left, it should stop waiting.
     this._updateRoomAdFreeze(room);
+    this._updateWaitForSlow(room, code);
 
     this._broadcast(code, {
       type: "member-left",
@@ -534,7 +542,7 @@ export class RoomHubDO {
       const code = ROOM_CODE_REGEX.test(rawCode) || CUSTOM_NAME_REGEX.test(rawCode) ? rawCode : "";
       if (!code) {
         return new Response(
-          '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>Watch Together</title></head><body style="font-family:-apple-system,sans-serif;background:#1c1c1e;color:#fff;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0"><p>That is not a valid room code.</p></body></html>',
+          '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>Watch Together</title></head><body style="font-family:-apple-system,sans-serif;background:#0d0d0f;color:#fff;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0"><p>That is not a valid room code.</p></body></html>',
           { status: 404, headers: { "Content-Type": "text/html", "X-Frame-Options": "DENY", "Content-Security-Policy": "default-src 'none'" } }
         );
       }
@@ -555,7 +563,7 @@ export class RoomHubDO {
       return new Response(`<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>Join Watch Together - ${safeCode}</title>
-<style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,sans-serif;background:#1c1c1e;color:#fff;min-height:100vh;display:flex;align-items:center;justify-content:center}.card{background:#2c2c2e;border-radius:16px;padding:44px 36px;max-width:400px;width:90%;text-align:center}h1{font-size:20px;font-weight:700;margin-bottom:4px}.sub{color:rgba(235,235,245,.5);font-size:14px;margin-bottom:24px}.code{font-size:38px;font-weight:800;color:#a78bfa;letter-spacing:8px;margin:12px 0 8px}.st{font-size:13px;font-weight:500;margin-bottom:24px;color:${room ? "#30d158" : "rgba(235,235,245,.4)"}}.err{color:#ff453a;font-size:14px;margin-bottom:20px}.btn{display:block;padding:14px;background:linear-gradient(135deg,#7c3aed,#a78bfa);color:#fff;text-decoration:none;border-radius:10px;font-size:16px;font-weight:600;cursor:pointer;border:none;width:100%;margin-bottom:10px}.hint{font-size:12px;color:rgba(235,235,245,.3);margin-top:16px;line-height:1.6}</style>
+<style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,sans-serif;background:#0d0d0f;color:#fff;min-height:100vh;display:flex;align-items:center;justify-content:center}.card{background:#141417;border-radius:16px;padding:44px 36px;max-width:400px;width:90%;text-align:center}h1{font-size:20px;font-weight:700;margin-bottom:4px}.sub{color:rgba(235,235,245,.5);font-size:14px;margin-bottom:24px}.code{font-size:38px;font-weight:800;color:#e8a33d;letter-spacing:8px;margin:12px 0 8px}.st{font-size:13px;font-weight:500;margin-bottom:24px;color:${room ? "#3ecf7f" : "rgba(235,235,245,.4)"}}.err{color:#ff5f56;font-size:14px;margin-bottom:20px}.btn{display:block;padding:14px;background:#e8a33d;color:#fff;text-decoration:none;border-radius:10px;font-size:16px;font-weight:600;cursor:pointer;border:none;width:100%;margin-bottom:10px}.hint{font-size:12px;color:rgba(235,235,245,.3);margin-top:16px;line-height:1.6}</style>
 </head><body><div class="card"><h1>Watch Together</h1><p class="sub">You've been invited to watch together</p><div class="code">${safeCode}</div><div class="st">${room ? memberCount + " watching now" : "Waiting for host"}</div>${!room ? '<p class="err">Room not found - the host may have left.</p>' : ""}<p class="hint">Select the code above, then open your video, click Watch Together in the toolbar, and paste it in.</p></div></body></html>`,
         {
           headers: {
@@ -827,6 +835,7 @@ export class RoomHubDO {
       mode: room.mode,
       persistent: !!room.persistent,
       isHost: meta.userId === room.hostId,
+      waitForSlow: !!room.waitForSlow,
       hostToken: reclaimsHost ? await mintHostToken(this.env.HOST_TOKEN_SECRET, code) : undefined,
       videoUrl: room.videoUrl || "",
       serverTime: Date.now(),
@@ -1071,6 +1080,80 @@ export class RoomHubDO {
     else this.liveRoomsPerIp.set(room.ownerIp, n);
   }
 
+  _membersBuffering(room) {
+    const names = [];
+    for (const [, m] of room.members) {
+      if (!m.ws || m.ws.readyState !== 1 /* WebSocket.OPEN */) continue;
+      if (m.presence === "buffering") names.push(m.userName);
+    }
+    return names;
+  }
+
+  _updateWaitForSlow(room, code) {
+    if (!room.waitForSlow) {
+      if (room.autoPaused) this._resumeAfterWait(room, code);
+      return;
+    }
+    const stuck = this._membersBuffering(room);
+    const st = room.playbackState;
+
+    if (stuck.length > 0 && !room.autoPaused) {
+      if (!st.playing) return;
+      const elapsed = Math.max(0, Date.now() - st.lastUpdate) / 1000;
+      st.currentTime += elapsed * (st.playbackRate || 1);
+      st.playing = false;
+      st.lastUpdate = Date.now();
+      room.autoPaused = true;
+      room.autoPausedAt = Date.now();
+      this._broadcast(code, {
+        type: "sync",
+        action: "pause",
+        playing: false,
+        currentTime: st.currentTime,
+        playbackRate: st.playbackRate,
+        fromUser: "System",
+        waitingFor: stuck,
+        timestamp: Date.now(),
+        serverTime: Date.now(),
+      });
+      return;
+    }
+
+    if (room.autoPaused && stuck.length === 0) this._resumeAfterWait(room, code);
+  }
+
+  _resumeAfterWait(room, code) {
+    if (!room.autoPaused) return;
+    room.autoPaused = false;
+    room.autoPausedAt = 0;
+    const st = room.playbackState;
+    st.playing = true;
+    st.lastUpdate = Date.now();
+    this._broadcast(code, {
+      type: "sync",
+      action: "play",
+      playing: true,
+      currentTime: st.currentTime,
+      playbackRate: st.playbackRate,
+      fromUser: "System",
+      resumedAfterWait: true,
+      timestamp: Date.now(),
+      serverTime: Date.now(),
+    });
+  }
+
+  _sweepStuckWaits() {
+    const now = Date.now();
+    for (const [code, room] of this.rooms) {
+      if (!room.autoPaused) continue;
+      if (now - room.autoPausedAt < WAIT_FOR_SLOW_MAX_MS) continue;
+      for (const m of room.members.values()) {
+        if (m.presence === "buffering") m.presence = "watching";
+      }
+      this._resumeAfterWait(room, code);
+    }
+  }
+
   _handleAdState(ws, meta, msg) {
     const code = meta.currentRoom;
     if (!code) return;
@@ -1093,6 +1176,7 @@ export class RoomHubDO {
     this._setMeta(ws, { adActive: member.adActive, presence: state });
     room.lastActivity = Date.now();
     this._updateRoomAdFreeze(room);
+    this._updateWaitForSlow(room, code);
     // The freeze itself (frozenAt, and the position it was held at) has to reach storage,
     // or a wake reloads the pre-freeze playbackState and extrapolates across the whole
     // break plus the hibernation.
@@ -1119,8 +1203,17 @@ export class RoomHubDO {
     if (!room || room.hostId !== meta.userId) return;
     const newMode = msg.mode === "host" ? "host" : "everyone";
     room.mode = newMode;
+    if (typeof msg.waitForSlow === "boolean") {
+      room.waitForSlow = msg.waitForSlow;
+      this._updateWaitForSlow(room, code);
+    }
     this._persistRoom(code);
-    this._broadcast(code, { type: "mode-changed", mode: newMode, fromUser: meta.userName });
+    this._broadcast(code, {
+      type: "mode-changed",
+      mode: newMode,
+      waitForSlow: !!room.waitForSlow,
+      fromUser: meta.userName,
+    });
   }
 
   _handleNavigate(ws, meta, msg) {

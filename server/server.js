@@ -205,6 +205,103 @@ function cleanupRoom(roomCode) {
 // disqualify that member from driving everyone's position while their own is stalled.
 const PRESENCE_STATES = ["watching", "ad", "buffering"];
 
+// When somebody's connection stalls they fall behind, and the room's drift correction
+// then hard-seeks them FORWARD to catch up, skipping exactly the footage they were waiting
+// to load. Then it happens again. On a weak connection that person watches the film as a
+// slideshow with pieces missing, while everyone else sees nothing wrong at all.
+//
+// "Wait for me" is the other answer: hold the room until they are ready. It is off by
+// default and host-controlled, because one person's bad wifi pausing everybody else's film
+// is a social decision, not a technical one.
+//
+// The ceiling matters as much as the feature. A connection that never recovers must not
+// hold four other people hostage indefinitely, so after this long the room gives up waiting
+// and carries on without them.
+const WAIT_FOR_SLOW_MAX_MS = parseInt(process.env.WAIT_FOR_SLOW_MAX_MS, 10) || 60000;
+
+function membersBuffering(room) {
+  const names = [];
+  for (const [, member] of room.members) {
+    if (!member.ws || member.ws.readyState !== 1) continue;
+    if (member.presence === "buffering") names.push(member.userName);
+  }
+  return names;
+}
+
+// Hold the room, or let it go again, based on who is currently stuck.
+function updateWaitForSlow(room, code) {
+  if (!room.waitForSlow) {
+    // The setting was turned off while we were holding: let everyone carry on.
+    if (room.autoPaused) resumeAfterWait(room, code);
+    return;
+  }
+  const stuck = membersBuffering(room);
+  const st = room.playbackState;
+
+  if (stuck.length > 0 && !room.autoPaused) {
+    // Only ever interrupt a room that is actually playing.
+    if (!st.playing) return;
+    // Freeze at the true current position, exactly as an ad break does.
+    const elapsed = Math.max(0, Date.now() - st.lastUpdate) / 1000;
+    st.currentTime += elapsed * (st.playbackRate || 1);
+    st.playing = false;
+    st.lastUpdate = Date.now();
+    room.autoPaused = true;
+    room.autoPausedAt = Date.now();
+    broadcastToRoom(code, {
+      type: "sync",
+      action: "pause",
+      playing: false,
+      currentTime: st.currentTime,
+      playbackRate: st.playbackRate,
+      fromUser: "System",
+      waitingFor: stuck,
+      timestamp: Date.now(),
+      serverTime: Date.now(),
+    });
+    console.log(`[room] ${code} holding for ${stuck.join(", ")}`);
+    return;
+  }
+
+  if (room.autoPaused && stuck.length === 0) resumeAfterWait(room, code);
+}
+
+function resumeAfterWait(room, code) {
+  if (!room.autoPaused) return;
+  room.autoPaused = false;
+  room.autoPausedAt = 0;
+  const st = room.playbackState;
+  st.playing = true;
+  st.lastUpdate = Date.now();
+  broadcastToRoom(code, {
+    type: "sync",
+    action: "play",
+    playing: true,
+    currentTime: st.currentTime,
+    playbackRate: st.playbackRate,
+    fromUser: "System",
+    resumedAfterWait: true,
+    timestamp: Date.now(),
+    serverTime: Date.now(),
+  });
+  console.log(`[room] ${code} everyone caught up, carrying on`);
+}
+
+// A connection that never recovers must not hold everybody else hostage.
+function sweepStuckWaits() {
+  const now = Date.now();
+  for (const [code, room] of rooms) {
+    if (!room.autoPaused) continue;
+    if (now - room.autoPausedAt < WAIT_FOR_SLOW_MAX_MS) continue;
+    console.log(`[room] ${code} waited long enough, carrying on without them`);
+    // Whoever is still stuck stops being counted, so the room can actually resume.
+    for (const member of room.members.values()) {
+      if (member.presence === "buffering") member.presence = "watching";
+    }
+    resumeAfterWait(room, code);
+  }
+}
+
 function everyMemberInAd(room) {
   let live = 0;
   for (const member of room.members.values()) {
@@ -327,6 +424,7 @@ function rotateStaleLeaders() {
   }
 }
 setInterval(rotateStaleLeaders, LEADER_SWEEP_MS);
+setInterval(sweepStuckWaits, 2000);
 
 function notifyHeartbeatLeader(room) {
   const leaderId = getHeartbeatLeader(room);
@@ -482,14 +580,14 @@ function serveJoinPage(res, code, roomExists, memberCount) {
 <title>Join Watch Together - ${safeCode}</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#1c1c1e;color:#fff;min-height:100vh;display:flex;align-items:center;justify-content:center;-webkit-font-smoothing:antialiased}
-.card{background:#2c2c2e;border-radius:16px;padding:44px 36px;max-width:400px;width:90%;text-align:center}
+body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0d0d0f;color:#fff;min-height:100vh;display:flex;align-items:center;justify-content:center;-webkit-font-smoothing:antialiased}
+.card{background:#141417;border-radius:16px;padding:44px 36px;max-width:400px;width:90%;text-align:center}
 h1{font-size:20px;font-weight:700;margin-bottom:4px}
 .sub{color:rgba(235,235,245,.5);font-size:14px;margin-bottom:24px}
-.code{font-size:38px;font-weight:800;color:#a78bfa;letter-spacing:8px;margin:12px 0 8px}
-.st{font-size:13px;font-weight:500;margin-bottom:24px;color:${roomExists ? "#30d158" : "rgba(235,235,245,.4)"}}
-.err{color:#ff453a;font-size:14px;margin-bottom:20px}
-.btn{display:block;padding:14px;background:linear-gradient(135deg,#7c3aed,#a78bfa);color:#fff;text-decoration:none;border-radius:10px;font-size:16px;font-weight:600;cursor:pointer;border:none;width:100%;margin-bottom:10px}
+.code{font-size:38px;font-weight:800;color:#e8a33d;letter-spacing:8px;margin:12px 0 8px}
+.st{font-size:13px;font-weight:500;margin-bottom:24px;color:${roomExists ? "#3ecf7f" : "rgba(235,235,245,.4)"}}
+.err{color:#ff5f56;font-size:14px;margin-bottom:20px}
+.btn{display:block;padding:14px;background:#e8a33d;color:#fff;text-decoration:none;border-radius:10px;font-size:16px;font-weight:600;cursor:pointer;border:none;width:100%;margin-bottom:10px}
 .btn:hover{opacity:.9}
 .hint{font-size:12px;color:rgba(235,235,245,.3);margin-top:16px;line-height:1.6}
 </style></head><body>
@@ -556,7 +654,7 @@ const server = http.createServer((req, res) => {
     const code = ROOM_CODE_REGEX.test(rawCode) || CUSTOM_NAME_REGEX.test(rawCode) ? rawCode : "";
     if (!code) {
       res.writeHead(404, { "Content-Type": "text/html", "X-Frame-Options": "DENY", "Content-Security-Policy": "default-src 'self'" });
-      res.end("<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"UTF-8\"><title>Watch Together</title></head><body style=\"font-family:-apple-system,sans-serif;background:#1c1c1e;color:#fff;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0\"><p>That is not a valid room code.</p></body></html>");
+      res.end("<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"UTF-8\"><title>Watch Together</title></head><body style=\"font-family:-apple-system,sans-serif;background:#0d0d0f;color:#fff;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0\"><p>That is not a valid room code.</p></body></html>");
       return;
     }
     const room = rooms.get(code);
@@ -939,6 +1037,7 @@ wss.on("connection", (ws, req) => {
           mode: room.mode,
           persistent: !!room.persistent,
           isHost: userId === room.hostId,
+          waitForSlow: !!room.waitForSlow,
           // Only ever handed back to someone who already proved they hold it.
           hostToken: reclaimsHost ? mintHostToken(code) : undefined,
           videoUrl: room.videoUrl || "",
@@ -1229,6 +1328,7 @@ wss.on("connection", (ws, req) => {
         pMember.adActive = state === "ad";
         pRoom.lastActivity = Date.now();
         updateRoomAdFreeze(pRoom);
+        updateWaitForSlow(pRoom, currentRoom);
 
         broadcastToRoom(currentRoom, {
           type: "presence",
@@ -1269,9 +1369,16 @@ wss.on("connection", (ws, req) => {
         if (modeRoom.hostId !== userId) return;
         const newMode = msg.mode === "host" ? "host" : "everyone";
         modeRoom.mode = newMode;
+        // Sent alongside the mode by the same control panel, and host-only for the same
+        // reason: it decides whether one person's connection can stop everyone's film.
+        if (typeof msg.waitForSlow === "boolean") {
+          modeRoom.waitForSlow = msg.waitForSlow;
+          updateWaitForSlow(modeRoom, currentRoom);
+        }
         broadcastToRoom(currentRoom, {
           type: "mode-changed",
           mode: newMode,
+          waitForSlow: !!modeRoom.waitForSlow,
           fromUser: userName,
         });
         break;
@@ -1355,8 +1462,10 @@ wss.on("connection", (ws, req) => {
       const wasVoiceActive = !!(room.members.get(userId)?.voiceActive);
       room.members.delete(userId);
       // If the one person still watching just left, the rest are all in ads and the clock
-      // should stop rather than run on without them.
+      // should stop rather than run on without them. And if the person the room was WAITING
+      // for is the one who left, it should stop waiting.
       updateRoomAdFreeze(room);
+      updateWaitForSlow(room, currentRoom);
 
       broadcastToRoom(currentRoom, {
         type: "member-left",

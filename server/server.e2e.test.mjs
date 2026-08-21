@@ -98,6 +98,9 @@ before(async () => {
       // A host who reloads must keep their locked room; a host who leaves must not
       // leave everyone locked out. Same rule, just not worth a real minute in a test.
       HOST_ABSENCE_GRACE_MS: "400",
+      // A connection that never recovers must not hold the room forever. Proving that
+      // does not need a real minute of waiting.
+      WAIT_FOR_SLOW_MAX_MS: "1200",
     },
     silent: true,
   });
@@ -1084,6 +1087,111 @@ test("keepalive: a ping during an ad break does not end the break", async () => 
     const held = await waitFor(h.ws, "sync");
     const elapsed = (held.serverTime - held.timestamp) / 1000;
     assert.ok(elapsed < 0.5, `the break must still be holding the clock, got ${elapsed.toFixed(2)}s`);
+  } finally {
+    if (h) closeAll(h);
+    if (g) closeAll(g);
+  }
+});
+
+// When somebody's connection stalls they fall behind, and drift correction then hard-seeks
+// them FORWARD to catch up, skipping exactly the footage they were waiting to load. Then it
+// happens again. On a weak connection that person watches the film as a slideshow with
+// pieces missing while everybody else sees nothing wrong. Waiting for them is the other
+// answer, and it is off by default because one person's wifi stopping everyone else's film
+// is a social decision, not a technical one.
+test("wait for me: off by default, so a stall does not stop anybody else", async () => {
+  let h, g;
+  try {
+    h = await host();
+    g = await guest(h.code, "Guest");
+    await waitFor(h.ws, "member-joined");
+    send(h.ws, { type: "sync", action: "play", playing: true, currentTime: 40, playbackRate: 1 });
+    await sleep(80);
+    drain(h.ws, "sync");
+
+    send(g.ws, { type: "presence", state: "buffering" });
+    await sleep(400);
+    const paused = h.ws.msgs.some((m) => m.type === "sync" && m.playing === false);
+    assert.equal(paused, false, "nobody asked the room to wait, so it must not");
+  } finally {
+    if (h) closeAll(h);
+    if (g) closeAll(g);
+  }
+});
+
+test("wait for me: the host turns it on and the room holds until everyone is ready", async () => {
+  let h, g;
+  try {
+    h = await host();
+    g = await guest(h.code, "Guest");
+    await waitFor(h.ws, "member-joined");
+    send(h.ws, { type: "set-mode", mode: "everyone", waitForSlow: true });
+    const modeMsg = await waitFor(g.ws, "mode-changed");
+    assert.equal(modeMsg.waitForSlow, true, "the whole room is told the rule changed");
+
+    send(h.ws, { type: "sync", action: "play", playing: true, currentTime: 100, playbackRate: 1 });
+    await sleep(120);
+    drain(h.ws, "sync");
+    drain(g.ws, "sync");
+
+    // The guest's connection stalls.
+    send(g.ws, { type: "presence", state: "buffering" });
+    const held = await waitFor(h.ws, "sync", 2000);
+    assert.equal(held.playing, false, "the room stops for them");
+    assert.deepEqual(held.waitingFor, ["Guest"], "and says who it is waiting for");
+
+    // They recover.
+    drain(h.ws, "sync");
+    send(g.ws, { type: "presence", state: "watching" });
+    const resumed = await waitFor(h.ws, "sync", 2000);
+    assert.equal(resumed.playing, true, "and carries on once they are ready");
+    assert.equal(resumed.resumedAfterWait, true);
+    assert.ok(Math.abs(resumed.currentTime - 100) < 1.5, "from where it stopped, not from before");
+  } finally {
+    if (h) closeAll(h);
+    if (g) closeAll(g);
+  }
+});
+
+// A connection that never recovers must not hold four other people hostage.
+test("wait for me: the room gives up rather than waiting forever", async () => {
+  let h, g;
+  try {
+    h = await host();
+    g = await guest(h.code, "Guest");
+    await waitFor(h.ws, "member-joined");
+    send(h.ws, { type: "set-mode", mode: "everyone", waitForSlow: true });
+    await waitFor(g.ws, "mode-changed");
+    send(h.ws, { type: "sync", action: "play", playing: true, currentTime: 10, playbackRate: 1 });
+    await sleep(120);
+    drain(h.ws, "sync");
+
+    // Stall, and never recover.
+    send(g.ws, { type: "presence", state: "buffering" });
+    const held = await waitFor(h.ws, "sync", 2000);
+    assert.equal(held.playing, false);
+
+    drain(h.ws, "sync");
+    const resumed = await waitFor(h.ws, "sync", 4000);
+    assert.equal(resumed.playing, true, "the film carries on without them rather than stopping for good");
+  } finally {
+    if (h) closeAll(h);
+    if (g) closeAll(g);
+  }
+});
+
+test("wait for me: only the host decides whether the room waits", async () => {
+  let h, g;
+  try {
+    h = await host();
+    g = await guest(h.code, "Guest");
+    await waitFor(h.ws, "member-joined");
+    drain(h.ws, "mode-changed");
+
+    send(g.ws, { type: "set-mode", mode: "everyone", waitForSlow: true });
+    await sleep(250);
+    const changed = h.ws.msgs.some((m) => m.type === "mode-changed");
+    assert.equal(changed, false, "a guest cannot make everyone else's film stop for their connection");
   } finally {
     if (h) closeAll(h);
     if (g) closeAll(g);

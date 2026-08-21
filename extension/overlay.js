@@ -21,6 +21,7 @@
   let roomMode = "everyone";
   let syncOffset = 0; // seconds this viewer's copy runs ahead of the room's timeline
   let roomCallUrl = ""; // a voice call pinned to this room by its host
+  let waitForSlow = false; // does the room pause when somebody's connection stalls
   let pendingEnterSend = false; // true if user pressed Enter during IME composition
   const inFlight = new Set();
 
@@ -480,7 +481,12 @@
     wireHotkeyCapture();
     wireServerControls();
     wireModeControl();
+    wireWaitControl();
+    // Paint the host-only controls correctly on the FIRST render, not just when a
+    // mode-changed or host-transferred happens to arrive later. Until this ran, a guest saw
+    // an enabled toggle that would silently refuse to do anything.
     renderModeControl();
+    renderWaitControl();
   }
 
   // Only the host can move this, and the buttons say so by being disabled rather than by
@@ -610,6 +616,38 @@
     chrome.storage.local.get(["filmVolume"], /** @param {any} d */ (d) => {
       if (typeof d.filmVolume === "number") applyVolume(d.filmVolume, { remember: false });
     });
+  }
+
+  // Host-only, like the control mode, and for the same reason: it decides whether one
+  // person's connection can stop everybody else's film.
+  function wireWaitControl() {
+    const box = overlayPanel.querySelector("#wt-wait-slow");
+    box.addEventListener("change", (e) => {
+      e.stopPropagation();
+      if (!iAmHost) {
+        box.checked = waitForSlow;
+        return;
+      }
+      safePost({ type: "set-mode", mode: roomMode, waitForSlow: box.checked });
+    });
+  }
+
+  function renderWaitControl() {
+    if (!overlayPanel) return;
+    const box = overlayPanel.querySelector("#wt-wait-slow");
+    const field = overlayPanel.querySelector("#wt-wait-field");
+    if (!box) return;
+    box.checked = waitForSlow;
+    box.disabled = !iAmHost;
+    if (field) field.classList.toggle("wt-adv-locked", !iAmHost);
+
+    // The badge on a group heading is there to answer "can I actually change this", so it
+    // has to tell the truth for the person reading it rather than describing the control
+    // in the abstract.
+    const roomGroup = overlayPanel.querySelector("#wt-room-group");
+    if (roomGroup) roomGroup.classList.toggle("wt-adv-locked", !iAmHost);
+    const badge = overlayPanel.querySelector("#wt-host-only-badge");
+    if (badge) badge.textContent = iAmHost ? "you" : "host only";
   }
 
   function describeHotkey(key) {
@@ -874,74 +912,102 @@
         </div>
         <details class="wt-advanced" id="wt-advanced">
           <summary class="wt-advanced-summary">
-            <svg class="wt-chev" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="9 18 15 12 9 6"/></svg>
-            Advanced
+            <svg class="wt-chev" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+            <span>Settings</span>
+            <span class="wt-advanced-note">sync, room, call, audio</span>
           </summary>
           <div class="wt-advanced-body">
-            <div class="wt-sync-row">
-              <span class="wt-sync-health" id="wt-sync-health" title="How far your video is from the room">Sync: checking...</span>
-              <button class="wt-btn-small" id="wt-resync" title="Snap to the room's current position">Resync</button>
-            </div>
-            <div class="wt-adv-field" id="wt-mode-field">
-              <span class="wt-adv-label">Who can control playback</span>
-              <div class="wt-seg" id="wt-mode-seg">
-                <button class="wt-seg-btn" data-mode="everyone">Everyone</button>
-                <button class="wt-seg-btn" data-mode="host">Host only</button>
+
+            <section class="wt-group">
+              <h4 class="wt-group-title">Sync</h4>
+              <div class="wt-sync-row">
+                <span class="wt-sync-health" id="wt-sync-health" title="How far your video is from the room">Sync: checking...</span>
+                <button class="wt-btn-small" id="wt-resync" title="Snap to the room's current position">Resync</button>
               </div>
-              <span class="wt-adv-hint" id="wt-mode-hint"></span>
-            </div>
-            <div class="wt-adv-field" id="wt-call-field">
-              <span class="wt-adv-label">Voice call for this room</span>
+              <div class="wt-adv-field">
+                <span class="wt-adv-label">My copy runs ahead by</span>
+                <div class="wt-inline">
+                  <button class="wt-step" id="wt-offset-down" title="Less">&minus;</button>
+                  <input type="number" id="wt-offset" class="wt-input wt-offset-input" step="0.5" value="0">
+                  <span class="wt-unit">s</span>
+                  <button class="wt-step" id="wt-offset-up" title="More">+</button>
+                  <button class="wt-btn-small" id="wt-offset-measure" title="Use the difference the room is showing right now">Use current</button>
+                </div>
+                <span class="wt-adv-hint">For when your copy is not identical to everyone else's: a different rip, a region cut, or a version without the adverts.</span>
+              </div>
+            </section>
+
+            <section class="wt-group" id="wt-room-group">
+              <h4 class="wt-group-title">Room <span class="wt-group-badge" id="wt-host-only-badge">host</span></h4>
+              <div class="wt-adv-field" id="wt-mode-field">
+                <span class="wt-adv-label">Who can control playback</span>
+                <div class="wt-seg" id="wt-mode-seg">
+                  <button class="wt-seg-btn" data-mode="everyone">Everyone</button>
+                  <button class="wt-seg-btn" data-mode="host">Host only</button>
+                </div>
+                <span class="wt-adv-hint" id="wt-mode-hint"></span>
+              </div>
+              <div class="wt-adv-field" id="wt-wait-field">
+                <label class="wt-check">
+                  <input type="checkbox" id="wt-wait-slow">
+                  <span>Wait for slow connections</span>
+                </label>
+                <span class="wt-adv-hint">If someone's video stalls, the room pauses until they catch up rather than leaving them behind. It gives up after a minute, so one bad connection cannot hold everyone.</span>
+              </div>
+            </section>
+
+            <section class="wt-group" id="wt-call-field">
+              <h4 class="wt-group-title">Voice call <span class="wt-group-badge">host</span></h4>
+              <div class="wt-adv-field">
+                <div class="wt-actions">
+                  <button class="wt-btn-small" id="wt-call-new-zoom">Start a Zoom</button>
+                  <button class="wt-btn-small" id="wt-call-new-meet">Start a Meet</button>
+                </div>
+                <input type="text" id="wt-call-input" class="wt-input" placeholder="Or paste a Zoom, Meet, Teams or Discord link" spellcheck="false">
+                <div class="wt-actions">
+                  <button class="wt-btn-small" id="wt-call-save">Pin to room</button>
+                  <button class="wt-btn-small" id="wt-call-clear">Remove</button>
+                </div>
+                <span class="wt-adv-hint" id="wt-call-hint">Everyone gets a button for it, including people who join later.</span>
+              </div>
+            </section>
+
+            <section class="wt-group">
+              <h4 class="wt-group-title">On this device <span class="wt-group-badge wt-badge-quiet">only you</span></h4>
+              <div class="wt-adv-field">
+                <span class="wt-adv-label">Film volume</span>
+                <div class="wt-inline">
+                  <input type="range" id="wt-volume" class="wt-range" min="0" max="100" step="5" value="100">
+                  <span class="wt-unit" id="wt-volume-label">100%</span>
+                  <button class="wt-btn-small" id="wt-duck">Duck</button>
+                </div>
+                <span class="wt-adv-hint">Nobody else hears this: everyone plays their own copy. Duck drops the film while you talk, instead of pausing it for the room.</span>
+              </div>
+              <div class="wt-adv-field">
+                <span class="wt-adv-label">Open this panel with</span>
+                <input type="text" id="wt-hotkey" class="wt-input wt-hotkey-input" readonly placeholder="Click, then press a key">
+                <span class="wt-adv-hint" id="wt-hotkey-hint"></span>
+              </div>
               <div class="wt-actions">
-                <button class="wt-btn-small" id="wt-call-new-zoom">Start a Zoom</button>
-                <button class="wt-btn-small" id="wt-call-new-meet">Start a Meet</button>
+                <button class="wt-btn-small" id="wt-pip" title="Picture-in-picture">Picture in picture</button>
+                <button class="wt-btn-small" id="wt-mic" title="Toggle voice">
+                  <span id="wt-mic-label">Voice</span>
+                </button>
               </div>
-              <input type="text" id="wt-call-input" class="wt-input" placeholder="Paste a Zoom, Meet, Teams or Discord link" spellcheck="false">
-              <div class="wt-actions">
-                <button class="wt-btn-small" id="wt-call-save">Pin call link</button>
-                <button class="wt-btn-small" id="wt-call-clear">Remove</button>
+            </section>
+
+            <section class="wt-group">
+              <h4 class="wt-group-title">Connection</h4>
+              <div class="wt-adv-field">
+                <input type="text" id="wt-server" class="wt-input" placeholder="wss://..." spellcheck="false">
+                <div class="wt-actions">
+                  <button class="wt-btn-small" id="wt-server-save">Save</button>
+                  <button class="wt-btn-small" id="wt-server-reset">Use default</button>
+                </div>
+                <span class="wt-adv-hint">Only change this if you are running your own sync server.</span>
               </div>
-              <span class="wt-adv-hint" id="wt-call-hint">Everyone in the room gets a button for it, including people who join later.</span>
-            </div>
-            <div class="wt-adv-field">
-              <span class="wt-adv-label">Film volume, just for me</span>
-              <div class="wt-offset">
-                <input type="range" id="wt-volume" class="wt-range" min="0" max="100" step="5" value="100">
-                <span class="wt-offset-unit" id="wt-volume-label">100%</span>
-                <button class="wt-btn-small" id="wt-duck">Duck</button>
-              </div>
-              <span class="wt-adv-hint">Everyone plays their own copy, so nothing here is heard by the room: this only changes your speakers. Use Duck to drop the film while you talk, instead of pausing it for everybody.</span>
-            </div>
-            <div class="wt-adv-field">
-              <span class="wt-adv-label">My video runs ahead of the room by</span>
-              <div class="wt-offset">
-                <button class="wt-step" id="wt-offset-down" title="Less">-</button>
-                <input type="number" id="wt-offset" class="wt-input wt-offset-input" step="0.5" value="0">
-                <span class="wt-offset-unit">s</span>
-                <button class="wt-step" id="wt-offset-up" title="More">+</button>
-                <button class="wt-btn-small" id="wt-offset-measure" title="Use the difference the room is showing right now">Use current</button>
-              </div>
-              <span class="wt-adv-hint">For when your copy is not identical to everyone else's: a different rip, a region cut, or a version without the adverts.</span>
-            </div>
-            <div class="wt-adv-field">
-              <span class="wt-adv-label">Show this panel with</span>
-              <input type="text" id="wt-hotkey" class="wt-input wt-hotkey-input" readonly placeholder="Click, then press a key">
-              <span class="wt-adv-hint" id="wt-hotkey-hint"></span>
-            </div>
-            <div class="wt-adv-field">
-              <span class="wt-adv-label">Sync server</span>
-              <input type="text" id="wt-server" class="wt-input" placeholder="wss://..." spellcheck="false">
-              <div class="wt-actions">
-                <button class="wt-btn-small" id="wt-server-save">Save server</button>
-                <button class="wt-btn-small" id="wt-server-reset">Use default</button>
-              </div>
-            </div>
-            <div class="wt-actions">
-              <button class="wt-btn-small" id="wt-pip" title="Picture-in-picture">Picture in picture</button>
-              <button class="wt-btn-small" id="wt-mic" title="Toggle voice">
-                <span id="wt-mic-label">Voice</span>
-              </button>
-            </div>
+            </section>
+
           </div>
         </details>
         <button class="wt-btn-leave" id="wt-leave">Leave</button>
@@ -1473,7 +1539,9 @@
           iAmHost = !!msg.isHost;
           roomMode = msg.mode || "everyone";
           roomCallUrl = window.__wtConfig.isValidCallUrl(msg.callUrl) ? msg.callUrl : "";
+          waitForSlow = !!msg.waitForSlow;
           renderCallLink();
+          renderWaitControl();
           membersById.clear();
           for (const m of msg.members || []) membersById.set(m.id, { userName: m.userName, inAd: false });
           if (!membersById.has(myUserId)) membersById.set(myUserId, { userName: userName || "You", inAd: false });
@@ -1621,6 +1689,15 @@
 
         case "mode-changed":
           roomMode = msg.mode || "everyone";
+          if (typeof msg.waitForSlow === "boolean" && msg.waitForSlow !== waitForSlow) {
+            waitForSlow = msg.waitForSlow;
+            addSystemMsg(
+              waitForSlow
+                ? "The room will now wait for anyone whose video stalls"
+                : "The room will no longer wait for slow connections"
+            );
+          }
+          renderWaitControl();
           renderModeControl();
           addSystemMsg(
             roomMode === "host"
@@ -1632,6 +1709,7 @@
         case "host-transferred":
           iAmHost = !!msg.isHost;
           renderCallLink();
+          renderWaitControl();
           renderModeControl();
           renderMembers();
           if (iAmHost) addSystemMsg("You are the host now");
@@ -1703,6 +1781,48 @@
     const style = document.createElement("style");
     style.id = "wt-overlay-styles";
     style.textContent = `
+      /* ------------------------------------------------------------------
+         The look, defined once.
+
+         A watch party happens in the dark, on top of somebody else's player,
+         so this is a projection booth rather than a dashboard: near-black
+         surfaces, hairline rules, and a single warm lamp-amber accent. One
+         accent, no gradients, no second hue competing with it.
+
+         Amber also does something practical. Every player this sits on top of
+         has already claimed a colour (YouTube and Netflix red, Prime blue), so
+         a warm accent stays legible as OURS instead of reading as part of the
+         site underneath.
+
+         Everything below refers to these. A colour written out by hand
+         somewhere else is drift waiting to happen.
+         ------------------------------------------------------------------ */
+      #wt-overlay-panel, #wt-overlay-btn, #wt-sync-label, #wt-notification {
+        --wt-bg: #0d0d0f;
+        --wt-bg-raised: rgba(255, 255, 255, 0.055);
+        --wt-bg-raised-hover: rgba(255, 255, 255, 0.09);
+        --wt-line: rgba(255, 255, 255, 0.09);
+        --wt-line-strong: rgba(255, 255, 255, 0.16);
+
+        --wt-text: #f4f4f5;
+        --wt-text-dim: rgba(244, 244, 245, 0.6);
+        --wt-text-faint: rgba(244, 244, 245, 0.36);
+
+        /* The lamp. */
+        --wt-accent: #e8a33d;
+        --wt-accent-hover: #f2b455;
+        --wt-accent-soft: rgba(232, 163, 61, 0.13);
+        --wt-on-accent: #17130b;
+
+        --wt-good: #3ecf7f;
+        --wt-warn: #e8a33d;
+        --wt-bad: #ff5f56;
+        --wt-info: #5aa9ff;
+
+        --wt-radius: 9px;
+        --wt-radius-lg: 13px;
+      }
+
       #wt-overlay-btn {
         display: flex;
         align-items: center;
@@ -1730,7 +1850,7 @@
         transform: translateX(-50%);
         width: 6px;
         height: 6px;
-        background: #a78bfa;
+        background: var(--wt-accent);
         border-radius: 50%;
       }
       #wt-overlay-btn.wt-floating {
@@ -1759,7 +1879,7 @@
         max-width: calc(100vw - 32px);
         max-height: calc(100vh - 76px);
         flex-direction: column;
-        background: #1c1c1e;
+        background: var(--wt-bg);
         border-radius: 12px;
         box-shadow: 0 12px 48px rgba(0,0,0,0.5);
         z-index: 2147483647;
@@ -1789,13 +1909,13 @@
       .wt-panel-status {
         font-size: 11px;
         font-weight: 500;
-        color: rgba(235,235,245,0.4);
+        color: var(--wt-text-faint);
       }
-      .wt-panel-status.wt-live { color: #30d158; }
+      .wt-panel-status.wt-live { color: var(--wt-good); }
       .wt-panel-close {
         background: none;
         border: none;
-        color: rgba(235,235,245,0.4);
+        color: var(--wt-text-faint);
         font-size: 20px;
         cursor: pointer;
         padding: 0 4px;
@@ -1811,7 +1931,7 @@
         padding: 10px 12px;
         border: none;
         border-radius: 8px;
-        background: rgba(120,120,128,0.24);
+        background: var(--wt-bg-raised);
         color: #fff;
         font-family: inherit;
         font-size: 14px;
@@ -1819,8 +1939,8 @@
         margin-bottom: 8px;
         box-sizing: border-box;
       }
-      .wt-input::placeholder { color: rgba(235,235,245,0.3); }
-      .wt-input:focus { background: rgba(120,120,128,0.36); }
+      .wt-input::placeholder { color: var(--wt-text-faint); }
+      .wt-input:focus { background: var(--wt-bg-raised-hover); }
 
       .wt-btn {
         width: 100%;
@@ -1836,18 +1956,18 @@
       .wt-btn:hover { opacity: 0.85; }
       .wt-btn:active { transform: scale(0.98); }
       .wt-btn-primary {
-        background: linear-gradient(135deg, #7c3aed, #a78bfa);
+        background: var(--wt-accent);
         color: #fff;
       }
       .wt-btn-secondary {
-        background: rgba(120,120,128,0.24);
+        background: var(--wt-bg-raised);
         color: #fff;
       }
 
       .wt-divider {
         text-align: center;
         font-size: 12px;
-        color: rgba(235,235,245,0.3);
+        color: var(--wt-text-faint);
         margin: 10px 0;
       }
 
@@ -1876,7 +1996,7 @@
         border-radius: 5px;
         font-family: inherit;
         font-size: 12px;
-        color: rgba(235,235,245,0.5);
+        color: var(--wt-text-dim);
         cursor: pointer;
       }
       .wt-watchers:hover { color: rgba(235,235,245,0.8); background: rgba(120,120,128,0.18); }
@@ -1893,20 +2013,20 @@
         margin-bottom: 10px;
         padding: 9px;
         border-radius: 8px;
-        background: rgba(48,209,88,0.14);
-        color: #30d158;
+        background: rgba(62, 207, 127, 0.13);
+        color: var(--wt-good);
         font-size: 12px;
         font-weight: 700;
         text-decoration: none;
       }
-      .wt-call:hover { background: rgba(48,209,88,0.22); }
+      .wt-call:hover { background: rgba(62, 207, 127, 0.2); }
       .wt-call[hidden] { display: none; }
 
       .wt-members {
         margin: 0 0 10px;
         padding: 6px;
         border-radius: 8px;
-        background: rgba(120,120,128,0.12);
+        background: var(--wt-bg-raised);
         display: flex;
         flex-direction: column;
         gap: 2px;
@@ -1925,13 +2045,13 @@
         width: 6px;
         height: 6px;
         border-radius: 50%;
-        background: #30d158;
+        background: var(--wt-good);
       }
-      .wt-member-away { background: #ff9f0a; }
-      .wt-member-stalled { background: #0a84ff; }
+      .wt-member-away { background: var(--wt-warn); }
+      .wt-member-stalled { background: var(--wt-info); }
       .wt-member-name {
         flex: 1;
-        color: rgba(235,235,245,0.9);
+        color: var(--wt-text);
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -1939,7 +2059,7 @@
       .wt-member-state {
         flex: 0 0 auto;
         font-size: 11px;
-        color: rgba(235,235,245,0.45);
+        color: var(--wt-text-faint);
       }
       .wt-member-badge {
         flex: 0 0 auto;
@@ -1949,13 +2069,13 @@
         text-transform: uppercase;
         padding: 2px 5px;
         border-radius: 4px;
-        background: rgba(167,139,250,0.18);
-        color: #a78bfa;
+        background: var(--wt-accent-soft);
+        color: var(--wt-accent);
       }
       .wt-member-empty {
         padding: 6px;
         font-size: 11px;
-        color: rgba(235,235,245,0.4);
+        color: var(--wt-text-faint);
         text-align: center;
       }
 
@@ -1964,7 +2084,7 @@
          being opened so somebody who wants the detail opens it once and never again. */
       .wt-advanced {
         margin-top: 10px;
-        border-top: 1px solid rgba(120,120,128,0.24);
+        border-top: 1px solid var(--wt-line);
         padding-top: 8px;
       }
       .wt-advanced-summary {
@@ -1977,30 +2097,30 @@
         font-weight: 700;
         letter-spacing: 0.4px;
         text-transform: uppercase;
-        color: rgba(235,235,245,0.45);
+        color: var(--wt-text-faint);
         padding: 4px 2px;
         user-select: none;
       }
       .wt-advanced-summary::-webkit-details-marker { display: none; }
-      .wt-advanced-summary:hover { color: rgba(235,235,245,0.75); }
+      .wt-advanced-summary:hover { color: var(--wt-text-dim); }
       .wt-advanced[open] .wt-advanced-summary .wt-chev { transform: rotate(90deg); }
       .wt-advanced-summary .wt-chev { transition: transform 0.15s; }
       .wt-advanced-body {
         display: flex;
         flex-direction: column;
-        gap: 12px;
-        padding: 8px 2px 2px;
+        gap: 14px;
+        padding: 12px 2px 2px;
       }
       .wt-adv-field { display: flex; flex-direction: column; gap: 5px; }
       .wt-adv-label {
         font-size: 11px;
         font-weight: 600;
-        color: rgba(235,235,245,0.65);
+        color: var(--wt-text-dim);
       }
       .wt-adv-hint {
         font-size: 10px;
         line-height: 1.45;
-        color: rgba(235,235,245,0.38);
+        color: var(--wt-text-faint);
       }
 
       .wt-seg {
@@ -2008,7 +2128,7 @@
         gap: 2px;
         padding: 2px;
         border-radius: 7px;
-        background: rgba(120,120,128,0.2);
+        background: var(--wt-bg-raised);
       }
       .wt-seg-btn {
         flex: 1;
@@ -2016,48 +2136,122 @@
         border: none;
         border-radius: 5px;
         background: none;
-        color: rgba(235,235,245,0.6);
+        color: var(--wt-text-dim);
         font-family: inherit;
         font-size: 11px;
         font-weight: 600;
         cursor: pointer;
       }
-      .wt-seg-btn.wt-seg-on { background: rgba(167,139,250,0.9); color: #fff; }
+      .wt-seg-btn.wt-seg-on { background: var(--wt-accent); color: #fff; }
       .wt-seg-btn:disabled { cursor: default; opacity: 0.55; }
 
-      .wt-offset { display: flex; align-items: center; gap: 4px; }
+      
       .wt-offset-input {
         width: 62px;
         text-align: center;
         padding: 5px 4px;
         margin: 0;
       }
-      .wt-offset-unit { font-size: 11px; color: rgba(235,235,245,0.45); }
+      
       .wt-step {
         width: 24px;
         height: 26px;
         border: none;
         border-radius: 5px;
-        background: rgba(120,120,128,0.24);
-        color: #a78bfa;
+        background: var(--wt-bg-raised);
+        color: var(--wt-accent);
         font-family: inherit;
         font-size: 14px;
         font-weight: 700;
         cursor: pointer;
       }
-      .wt-step:hover { background: rgba(120,120,128,0.36); }
+      .wt-step:hover { background: var(--wt-bg-raised-hover); }
       .wt-hotkey-input { text-align: center; margin: 0; }
-      .wt-range { flex: 1; accent-color: #a78bfa; margin: 0; }
+      /* ---------- the drawer ----------
+         Grouped, because fifteen controls in a flat list is a wall, and somebody who came
+         looking for one of them should be able to find it by scanning five headings rather
+         than reading every label. The groups also carry the answer to the question people
+         actually have about a setting, which is "does this affect everyone, or just me". */
+      .wt-group {
+        display: flex;
+        flex-direction: column;
+        gap: 11px;
+        padding-bottom: 14px;
+        border-bottom: 1px solid var(--wt-line);
+      }
+      .wt-group:last-child { border-bottom: none; padding-bottom: 2px; }
+      .wt-group-title {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        margin: 0;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.7px;
+        text-transform: uppercase;
+        color: var(--wt-text-faint);
+      }
+      .wt-group-badge {
+        font-size: 9px;
+        font-weight: 700;
+        letter-spacing: 0.4px;
+        text-transform: uppercase;
+        padding: 2px 5px;
+        border-radius: 4px;
+        background: var(--wt-accent-soft);
+        color: var(--wt-accent);
+      }
+      .wt-badge-quiet {
+        background: var(--wt-bg-raised);
+        color: var(--wt-text-faint);
+      }
+      .wt-advanced-note {
+        margin-left: auto;
+        font-size: 10px;
+        font-weight: 500;
+        letter-spacing: 0;
+        text-transform: none;
+        color: var(--wt-text-faint);
+      }
+      .wt-advanced[open] .wt-advanced-note { opacity: 0; }
+
+      .wt-inline { display: flex; align-items: center; gap: 6px; }
+      .wt-unit { font-size: 11px; color: var(--wt-text-faint); font-variant-numeric: tabular-nums; }
+
+      /* Keyboard users get a real focus ring. The panel sits over arbitrary sites, so it
+         cannot rely on the host page having sane focus styles. */
+      #wt-overlay-panel :focus-visible {
+        outline: 2px solid var(--wt-accent);
+        outline-offset: 2px;
+        border-radius: 4px;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        #wt-overlay-panel, #wt-overlay-panel * { animation: none !important; transition: none !important; }
+      }
+
+      .wt-check {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--wt-text-dim);
+        cursor: pointer;
+      }
+      .wt-check input { accent-color: var(--wt-accent); margin: 0; cursor: pointer; }
+      .wt-adv-locked { opacity: 0.55; }
+      .wt-range { flex: 1; accent-color: var(--wt-accent); margin: 0; }
       .wt-room-code {
         display: block;
         font-size: 24px;
         font-weight: 800;
         letter-spacing: 6px;
-        color: #a78bfa;
+        color: var(--wt-accent);
       }
       .wt-watchers {
         font-size: 12px;
-        color: rgba(235,235,245,0.5);
+        color: var(--wt-text-dim);
       }
 
       .wt-actions {
@@ -2070,15 +2264,15 @@
         padding: 6px;
         border: none;
         border-radius: 6px;
-        background: rgba(120,120,128,0.24);
-        color: #a78bfa;
+        background: var(--wt-bg-raised);
+        color: var(--wt-accent);
         font-family: inherit;
         font-size: 12px;
         font-weight: 600;
         cursor: pointer;
         transition: background 0.15s;
       }
-      .wt-btn-small:hover { background: rgba(120,120,128,0.36); }
+      .wt-btn-small:hover { background: var(--wt-bg-raised-hover); }
 
       /* Sync health: the one number that says whether the party is actually together. */
       .wt-sync-row {
@@ -2094,8 +2288,8 @@
         gap: 6px;
         padding: 6px 8px;
         border-radius: 6px;
-        background: rgba(120,120,128,0.16);
-        color: rgba(235,235,245,0.6);
+        background: var(--wt-bg-raised);
+        color: var(--wt-text-dim);
         font-size: 11px;
         font-weight: 600;
         letter-spacing: 0.2px;
@@ -2111,26 +2305,26 @@
         border-radius: 50%;
         background: currentColor;
       }
-      .wt-sync-good { background: rgba(48,209,88,0.14); color: #30d158; }
-      .wt-sync-warn { background: rgba(255,159,10,0.14); color: #ff9f0a; }
-      .wt-sync-bad  { background: rgba(255,69,58,0.14); color: #ff453a; }
+      .wt-sync-good { background: rgba(62, 207, 127, 0.13); color: var(--wt-good); }
+      .wt-sync-warn { background: var(--wt-accent-soft); color: var(--wt-warn); }
+      .wt-sync-bad  { background: rgba(255, 95, 86, 0.13); color: var(--wt-bad); }
       .wt-sync-row .wt-btn-small { flex: 0 0 auto; padding: 6px 10px; }
 
       #wt-mic.wt-mic-on {
-        background: linear-gradient(135deg, #7c3aed, #a78bfa);
+        background: var(--wt-accent);
         color: #fff;
       }
       .wt-voice-active {
         text-align: center;
         font-size: 11px;
-        color: #30d158;
+        color: var(--wt-good);
         margin-bottom: 8px;
         min-height: 14px;
       }
       .wt-typing {
         font-size: 11px;
         font-style: italic;
-        color: rgba(235,235,245,0.45);
+        color: var(--wt-text-faint);
         padding: 0 10px 4px;
         min-height: 14px;
         line-height: 14px;
@@ -2150,10 +2344,10 @@
       }
       .wt-chat-messages::-webkit-scrollbar { width: 0; }
       .wt-msg { margin-bottom: 6px; line-height: 1.4; word-break: break-word; }
-      .wt-msg-name { font-weight: 600; font-size: 12px; color: rgba(235,235,245,0.5); }
-      .wt-msg-name.wt-own { color: #a78bfa; }
+      .wt-msg-name { font-weight: 600; font-size: 12px; color: var(--wt-text-dim); }
+      .wt-msg-name.wt-own { color: var(--wt-accent); }
       .wt-msg-text { font-size: 12px; color: rgba(235,235,245,0.7); }
-      .wt-sys { font-size: 11px; color: rgba(235,235,245,0.3); text-align: center; padding: 3px 0; }
+      .wt-sys { font-size: 11px; color: var(--wt-text-faint); text-align: center; padding: 3px 0; }
 
       .wt-chat-input-row {
         display: flex;
@@ -2171,7 +2365,7 @@
         padding: 8px 10px;
         background: none;
         border: none;
-        color: #a78bfa;
+        color: var(--wt-accent);
         cursor: pointer;
         display: flex;
         align-items: center;
@@ -2184,7 +2378,7 @@
         border: none;
         border-radius: 6px;
         background: none;
-        color: #ff453a;
+        color: var(--wt-bad);
         font-family: inherit;
         font-size: 13px;
         font-weight: 500;

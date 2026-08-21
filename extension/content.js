@@ -918,7 +918,19 @@
       switch (msg.type) {
         case "sync":
           applySync(msg);
-          if (msg.fromUser && msg.action) showSyncLabel(msg.fromUser, msg.action);
+          // A room that stops on its own, with nothing on screen to say why, reads as a
+          // bug. Name the person it is waiting for.
+          if (Array.isArray(msg.waitingFor) && msg.waitingFor.length) {
+            showNotification(
+              msg.waitingFor.length === 1
+                ? `Waiting for ${msg.waitingFor[0]} to catch up`
+                : `Waiting for ${msg.waitingFor.length} people to catch up`
+            );
+          } else if (msg.resumedAfterWait) {
+            showNotification("Everyone is caught up");
+          } else if (msg.fromUser && msg.action) {
+            showSyncLabel(msg.fromUser, msg.action);
+          }
           break;
 
         case "cc-state":
@@ -1081,7 +1093,7 @@
     row.style.cssText = "all:initial;display:flex;gap:8px;justify-content:center;";
     const go = document.createElement("button");
     go.textContent = actionLabel;
-    go.style.cssText = "all:initial;font-family:inherit;cursor:pointer;background:#7c3aed;color:#fff;font-size:13px;font-weight:600;padding:9px 18px;border-radius:8px;";
+    go.style.cssText = "all:initial;font-family:inherit;cursor:pointer;background:#e8a33d;color:#17130b;font-size:13px;font-weight:600;padding:9px 18px;border-radius:8px;";
     const no = document.createElement("button");
     no.textContent = "Not now";
     no.style.cssText = "all:initial;font-family:inherit;cursor:pointer;background:rgba(255,255,255,0.1);color:rgba(235,235,245,0.75);font-size:13px;font-weight:500;padding:9px 14px;border-radius:8px;";

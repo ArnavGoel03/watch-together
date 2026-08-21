@@ -1,24 +1,40 @@
-/* === WATCH TOGETHER - APPLE DESIGN === */
+/* === WATCH TOGETHER ===
+ *
+ * A watch party happens in the dark, so this is a projection booth rather than a
+ * dashboard: near-black surfaces, hairline rules, and a single warm lamp-amber accent.
+ * One accent, no gradients, no second hue competing with it.
+ *
+ * The amber is doing work beyond taste. The in-player overlay sits on top of sites that
+ * have already claimed a colour (YouTube and Netflix red, Prime blue), and a warm accent
+ * stays legible as OURS instead of reading as part of the page underneath. The popup uses
+ * the same values so the two surfaces are recognisably one product.
+ *
+ * Kept deliberately in step with the token block in extension/overlay.js. A colour written
+ * out by hand anywhere else is drift waiting to happen.
+ */
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 :root {
-  --bg: #1c1c1e;
-  --bg-elevated: #2c2c2e;
-  --bg-secondary: #242426;
-  --bg-tertiary: #3a3a3c;
-  --fill: rgba(120, 120, 128, 0.24);
-  --fill-hover: rgba(120, 120, 128, 0.36);
-  --separator: rgba(84, 84, 88, 0.35);
-  --label: #ffffff;
-  --label-secondary: rgba(235, 235, 245, 0.6);
-  --label-tertiary: rgba(235, 235, 245, 0.3);
-  --label-quaternary: rgba(235, 235, 245, 0.16);
-  --accent: #a78bfa;
-  --accent-hover: #c4b5fd;
-  --green: #30d158;
-  --red: #ff453a;
-  --orange: #ff9f0a;
+  --bg: #0d0d0f;
+  --bg-elevated: #17171a;
+  --bg-secondary: #121214;
+  --bg-tertiary: #232327;
+  --fill: rgba(255, 255, 255, 0.055);
+  --fill-hover: rgba(255, 255, 255, 0.09);
+  --separator: rgba(255, 255, 255, 0.09);
+  --label: #f4f4f5;
+  --label-secondary: rgba(244, 244, 245, 0.6);
+  --label-tertiary: rgba(244, 244, 245, 0.36);
+  --label-quaternary: rgba(244, 244, 245, 0.16);
+  --accent: #e8a33d;
+  --accent-hover: #f2b455;
+  --accent-soft: rgba(232, 163, 61, 0.13);
+  --on-accent: #17130b;
+  --green: #3ecf7f;
+  --red: #ff5f56;
+  --orange: #e8a33d;
+  --blue: #5aa9ff;
   --radius: 12px;
   --radius-sm: 10px;
   --radius-xs: 8px;
@@ -58,7 +74,7 @@ header {
 
 .logo-icon {
   width: 30px; height: 30px;
-  background: linear-gradient(135deg, #7c3aed, #a78bfa);
+  background: var(--accent);
   border-radius: 7px;
   display: flex;
   align-items: center;
@@ -238,8 +254,8 @@ header {
 }
 
 .btn-glow {
-  background: linear-gradient(135deg, #7c3aed, #a78bfa);
-  color: #fff;
+  background: var(--accent);
+  color: var(--on-accent);
   box-shadow: 0 2px 16px rgba(124, 58, 237, 0.2);
 }
 
@@ -327,7 +343,7 @@ header {
 
 .mode-btn.mode-active {
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
 }
 
 .room-mode {
@@ -445,7 +461,7 @@ header {
   cursor: pointer;
   color: var(--label-secondary);
 }
-.radio-opt input { accent-color: #a78bfa; cursor: pointer; }
+.radio-opt input { accent-color: var(--accent); cursor: pointer; }
 .hotkey-row {
   display: flex;
   align-items: center;
@@ -748,7 +764,7 @@ header {
 
 /* === SELECTION === */
 ::selection {
-  background: rgba(167, 139, 250, 0.25);
+  background: rgba(232, 163, 61, 0.28);
 }
 
 /* Shown when the room is alive but has no video tab bound to it: the user closed the
@@ -788,8 +804,8 @@ header {
   margin: 10px 0 4px;
   padding: 12px;
   border-radius: 10px;
-  background: rgba(167, 139, 250, 0.12);
-  border: 1px solid rgba(167, 139, 250, 0.25);
+  background: var(--accent-soft);
+  border: 1px solid rgba(232, 163, 61, 0.28);
 }
 .site-permission-text {
   margin: 0 0 10px;
@@ -798,7 +814,7 @@ header {
   color: rgba(235, 235, 245, 0.75);
 }
 .site-permission-text strong {
-  color: #a78bfa;
+  color: var(--accent);
   font-weight: 600;
   word-break: break-all;
 }
