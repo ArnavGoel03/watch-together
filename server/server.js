@@ -152,13 +152,71 @@ function cleanupRoom(roomCode) {
   console.log(`[cleanup] Room ${roomCode} empty - deletion scheduled in ${grace}ms (persistent=${!!room.persistent})`);
 }
 
+// Ads are per-viewer: your pre-roll is not your friend's, so an ad is a "drop out and
+// catch back up" event rather than a "pause the room" event. That works fine when one
+// person hits an ad. It breaks when EVERYONE does, which is exactly what a platform
+// mid-roll causes, because everybody is at the same timestamp of the same title.
+//
+// The room's position is stored as (currentTime, lastUpdate) and read by extrapolating
+// forward from lastUpdate, on the assumption that playback carried on. While every single
+// member is sitting out an ad, nobody is playing anything, so that assumption is false: a
+// 90-second ad break made the room believe 90 seconds of film had gone by. Everyone came
+// back, asked where the room was, and got hard-seeked 90 seconds past the scene they were
+// about to watch. In sync with each other, and a minute and a half into the future.
+//
+// So when the last viewer goes dark, freeze the clock. When the first one comes back,
+// start it again from where it stopped.
+function everyMemberInAd(room) {
+  if (room.members.size === 0) return false;
+  for (const member of room.members.values()) {
+    if (!member.adActive) return false;
+  }
+  return true;
+}
+
+function updateRoomAdFreeze(room) {
+  const st = room.playbackState;
+  if (!st) return;
+  const dark = everyMemberInAd(room);
+
+  if (dark && !st.frozenAt) {
+    // Advance to where the film actually was at the moment the last person looked away,
+    // then hold it there.
+    if (st.playing) {
+      const elapsed = Math.max(0, Date.now() - st.lastUpdate) / 1000;
+      st.currentTime += elapsed * (st.playbackRate || 1);
+    }
+    st.lastUpdate = Date.now();
+    st.frozenAt = Date.now();
+    console.log(`[room] ${room.code} every member is in an ad break, holding the clock at ${st.currentTime.toFixed(1)}s`);
+  } else if (!dark && st.frozenAt) {
+    // Somebody is watching again. Restart from the held position, not from before the break.
+    st.lastUpdate = Date.now();
+    st.frozenAt = null;
+    console.log(`[room] ${room.code} ad break over, clock running again from ${st.currentTime.toFixed(1)}s`);
+  }
+}
+
+// What to stamp on a position we are handing out. While the clock is frozen the answer is
+// "now", so the client extrapolates by zero instead of by the length of the ad break.
+function positionTimestamp(room) {
+  const st = room.playbackState;
+  return st && st.frozenAt ? Date.now() : st.lastUpdate;
+}
+
 // Elect heartbeat leader - the first member in the room.
 // Only this user sends heartbeats to avoid N^2 broadcast storm.
 function getHeartbeatLeader(room) {
-  // First member in insertion order, but only one whose socket is actually open. A
-  // member whose connection died without a clean close is still in the map until
-  // ping/pong reaps it, and handing them the job stalls drift correction for the whole
-  // room until the next sweep, silently.
+  // First member in insertion order, but only one whose socket is actually open AND who is
+  // not currently sitting out an ad. A member whose connection died without a clean close
+  // is still in the map until ping/pong reaps it, and a member watching an ad deliberately
+  // stops broadcasting position; handing the job to either one stalls drift correction for
+  // the whole room until the next sweep, silently.
+  for (const [uid, member] of room.members) {
+    if (member.ws && member.ws.readyState === 1 && !member.adActive) return uid;
+  }
+  // Everyone is either gone or in an ad. Fall back to anyone still connected: the room has
+  // nothing to sync to right now anyway, and this keeps the role assigned.
   for (const [uid, member] of room.members) {
     if (member.ws && member.ws.readyState === 1) return uid;
   }
@@ -183,8 +241,10 @@ function rotateStaleLeaders() {
     if (room.members.size < 2) continue; // nobody to hand it to
     // A paused room has no position to correct, so its leader deliberately stops beating.
     // Silence there is the system working, not a frozen tab, and demoting over it would
-    // churn the leader for the whole time a room sits paused.
+    // churn the leader for the whole time a room sits paused. The same is true of a room
+    // where every member is sitting out an ad.
     if (!room.playbackState || !room.playbackState.playing) continue;
+    if (everyMemberInAd(room)) continue;
     const since = now - (room.lastHeartbeatAt || room.createdAt || now);
     if (since <= LEADER_STALE_MS) continue;
 
@@ -784,8 +844,11 @@ wss.on("connection", (ws, req) => {
         // A room whose host never came back has nobody steering; the first arrival takes it.
         if (room.hostId === null) room.hostId = userId;
 
-        room.members.set(userId, { ws, userName });
+        room.members.set(userId, { ws, userName, adActive: false });
         room.peakMembers = Math.max(room.peakMembers || 0, room.members.size);
+        // A new arrival is watching the film, so a room that was entirely in ads is not
+        // any more.
+        updateRoomAdFreeze(room);
         room.lastActivity = Date.now();
         currentRoom = code;
 
@@ -803,7 +866,7 @@ wss.on("connection", (ws, req) => {
           serverTime: Date.now(),
           playbackState: {
             ...room.playbackState,
-            timestamp: room.playbackState.lastUpdate,
+            timestamp: positionTimestamp(room),
             serverTime: Date.now(),
           },
           members: Array.from(room.members.entries()).map(([id, m]) => ({
@@ -856,6 +919,11 @@ wss.on("connection", (ws, req) => {
           playbackRate,
           lastUpdate: Date.now(),
         };
+        // Somebody is demonstrably watching the film, so the clock is running whatever we
+        // believed a moment ago.
+        const syncMember = room.members.get(userId);
+        if (syncMember) syncMember.adActive = false;
+        updateRoomAdFreeze(room);
         room.lastActivity = Date.now();
 
         const now = Date.now();
@@ -898,6 +966,9 @@ wss.on("connection", (ws, req) => {
           playbackRate: pr,
           lastUpdate: Date.now(),
         };
+        const hbMember = rm.members.get(userId);
+        if (hbMember) hbMember.adActive = false;
+        updateRoomAdFreeze(rm);
         rm.lastActivity = Date.now();
         rm.lastHeartbeatAt = Date.now(); // the leader is alive and watching
 
@@ -937,7 +1008,8 @@ wss.on("connection", (ws, req) => {
           currentTime: st.currentTime,
           playbackRate: st.playbackRate,
           videoUrl: rs.videoUrl || "",
-          timestamp: st.lastUpdate,
+          // Frozen means "nobody has been watching, do not add the elapsed time".
+          timestamp: positionTimestamp(rs),
           serverTime: rsNow,
         });
         break;
@@ -1010,6 +1082,37 @@ wss.on("connection", (ws, req) => {
           userName,
           isTyping: !!msg.isTyping,
         }, ws);
+        break;
+      }
+
+      // Who is currently sitting out an ad. Two things depend on knowing this, and neither
+      // can be worked out from silence alone: the room clock has to stop when every member
+      // is in a break, and the sync leader should not be somebody who has deliberately
+      // stopped broadcasting. It also lets the others see why one person went quiet.
+      case "ad-state": {
+        if (!currentRoom) return;
+        const adRoom = rooms.get(currentRoom);
+        if (!adRoom) return;
+        const adMember = adRoom.members.get(userId);
+        if (!adMember) return;
+
+        const wasLeader = getHeartbeatLeader(adRoom);
+        adMember.adActive = !!msg.active;
+        adRoom.lastActivity = Date.now();
+        updateRoomAdFreeze(adRoom);
+
+        broadcastToRoom(currentRoom, {
+          type: "ad-state",
+          userId,
+          userName,
+          active: adMember.adActive,
+          // How many people are watching the film right now, as opposed to an advert.
+          watchingCount: Array.from(adRoom.members.values()).filter((m) => !m.adActive).length,
+          memberCount: adRoom.members.size,
+        }, ws);
+
+        // The leader may have just walked into an ad, or come back out of one.
+        if (getHeartbeatLeader(adRoom) !== wasLeader) notifyHeartbeatLeader(adRoom);
         break;
       }
 
@@ -1102,6 +1205,9 @@ wss.on("connection", (ws, req) => {
       const wasHost = room.hostId === userId;
       const wasVoiceActive = !!(room.members.get(userId)?.voiceActive);
       room.members.delete(userId);
+      // If the one person still watching just left, the rest are all in ads and the clock
+      // should stop rather than run on without them.
+      updateRoomAdFreeze(room);
 
       broadcastToRoom(currentRoom, {
         type: "member-left",

@@ -241,6 +241,7 @@ function connect() {
       case "chat":
       case "chat-typing":
       case "cc-state":
+      case "ad-state":
       case "voice-state":
       case "voice-signal":
       case "error":
@@ -449,7 +450,7 @@ chrome.runtime.onConnect.addListener((port) => {
   port.onMessage.addListener((msg) => {
     // Playback traffic is only trusted from the tab the party is bound to. Otherwise
     // any other video the user has open can drive everyone else's playback.
-    const PLAYBACK_TYPES = ["sync", "heartbeat", "navigate", "cc-state"];
+    const PLAYBACK_TYPES = ["sync", "heartbeat", "navigate", "cc-state", "ad-state"];
     if (PLAYBACK_TYPES.includes(msg.type) && !isPartyTabPort(port)) return;
 
     switch (msg.type) {
@@ -556,6 +557,7 @@ chrome.runtime.onConnect.addListener((port) => {
       case "voice-signal":
       case "chat-typing":
       case "cc-state":
+      case "ad-state":
         sendToServer(msg);
         break;
 

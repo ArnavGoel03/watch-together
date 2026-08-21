@@ -382,11 +382,23 @@
     adSince = nowAd ? Date.now() : 0;
 
     if (!inRoom) return;
+
+    // Tell the room. Two things depend on this and neither can be inferred from us simply
+    // going quiet: the server holds the room's clock still while EVERY member is in a
+    // break (otherwise a platform mid-roll, which everyone hits at the same timestamp,
+    // convinces the room that the film advanced through it and hurls everybody forward by
+    // the length of the ads), and it stops handing the sync-leader job to somebody who has
+    // deliberately stopped broadcasting.
+    sendMsg({ type: "ad-state", active: nowAd });
+
     if (nowAd) {
-      showNotification("Ad playing, sync paused");
+      showNotification("Ad break, you will be caught up automatically");
     } else {
-      showNotification("Ad over, resyncing...");
+      showNotification("Ad over, catching up");
       requestResync();
+      // Whatever we drifted while sitting the break out wants correcting promptly, not on
+      // a relaxed twelve-second beat.
+      quickenHeartbeat();
     }
   }
   // <all_urls> means this file runs in every tab the user has open. Ten querySelector
@@ -535,6 +547,18 @@
   function requestResync() {
     if (!inRoom) return;
     sendMsg({ type: "request-state" });
+  }
+
+  // ad-state is only ever sent on a transition, which is fine until the socket happens to
+  // be down at the moment one occurs: sendMsg drops it silently and the server keeps a
+  // belief that is no longer true. A stale "still in an ad" is not harmless, because the
+  // server excludes that member from the sync-leader role and, if it thinks every member
+  // is in a break, holds the whole room's clock. So state it plainly whenever the
+  // connection or the membership is re-established, rather than trusting that the last
+  // edge arrived.
+  function reassertAdState() {
+    if (!inRoom) return;
+    sendMsg({ type: "ad-state", active: adActive });
   }
 
   // Apply sync state from another user
@@ -749,6 +773,24 @@
           showNotification(`${msg.userName || "Someone"} turned captions ${msg.active ? "ON" : "OFF"}`);
           break;
 
+        // Somebody else hit an ad. Worth saying out loud: without it their playback simply
+        // stops matching yours for thirty seconds and the natural conclusion is that the
+        // extension is broken. It also explains the wait if the whole room is held.
+        case "ad-state": {
+          const who = msg.userName || "Someone";
+          if (msg.active) {
+            const stillWatching = typeof msg.watchingCount === "number" ? msg.watchingCount : null;
+            showNotification(
+              stillWatching === 0
+                ? `${who} hit an ad. Everyone is in a break, the film is held here.`
+                : `${who} is in an ad break and will catch up`
+            );
+          } else {
+            showNotification(`${who} is back`);
+          }
+          break;
+        }
+
         case "heartbeat":
           // Ignore heartbeats if we just sent or received a sync - prevents overriding actions
           if (Date.now() - lastSyncTime < HEARTBEAT_COOLDOWN) break;
@@ -782,6 +824,10 @@
           if (msg.resumed && msg.videoUrl && normalizeUrl(msg.videoUrl) !== normalizeUrl(location.href)) {
             sendMsg({ type: "navigate", url: location.href, onResume: true });
           }
+
+          // Whatever the server last heard about our ad state belongs to a previous
+          // connection, or to nobody at all if this is a fresh join.
+          reassertAdState();
 
           showNotification(
             msg.resumed
@@ -824,7 +870,10 @@
         // The socket dropped and came back. We may have missed every sync in between,
         // so do not trust our position: re-fetch the room's.
         case "connection-status":
-          if (msg.connected && inRoom) requestResync();
+          if (msg.connected && inRoom) {
+            requestResync();
+            reassertAdState();
+          }
           break;
 
         case "error":

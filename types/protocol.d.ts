@@ -129,6 +129,15 @@ export type ClientMessage =
   | { type: "set-mode"; mode: RoomMode; v?: ProtocolVersion }
   | { type: "chat-typing"; isTyping: boolean; v?: ProtocolVersion }
   | { type: "cc-state"; active: boolean; v?: ProtocolVersion }
+  /**
+   * Whether this viewer is currently sitting out an advert. Ads are per-viewer, so one
+   * person's break is not the room's, but the server needs to know because when EVERY
+   * member is in one it must stop the room's clock: the position is stored as
+   * (currentTime, lastUpdate) and read by extrapolating forward, which assumes somebody
+   * was watching. It also stops the sync-leader job going to someone who has deliberately
+   * stopped broadcasting.
+   */
+  | { type: "ad-state"; active: boolean; v?: ProtocolVersion }
   | { type: "voice-state"; active: boolean; v?: ProtocolVersion }
   | { type: "voice-signal"; toUserId: string; signal: unknown; v?: ProtocolVersion };
 
@@ -184,6 +193,15 @@ export type ServerMessage =
   | ({ type: "chat"; message: string; userName: string; userId: string; timestamp: number } & ServerStamped)
   | ({ type: "chat-typing"; userId: string; userName: string; isTyping: boolean } & ServerStamped)
   | ({ type: "cc-state"; userId: string; userName: string; active: boolean } & ServerStamped)
+  | ({
+      type: "ad-state";
+      userId: string;
+      userName: string;
+      active: boolean;
+      /** How many members are watching the film rather than an advert. Zero means held. */
+      watchingCount: number;
+      memberCount: number;
+    } & ServerStamped)
   | ({ type: "voice-state"; userId: string; userName: string; active: boolean; activeUserIds: string[] } & ServerStamped)
   | ({ type: "voice-signal"; fromUserId: string; fromUserName: string; signal: unknown } & ServerStamped)
   | ({ type: "error"; message: string } & ServerStamped);

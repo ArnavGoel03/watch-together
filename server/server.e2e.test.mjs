@@ -844,6 +844,388 @@ test("watchdog: a silent sync leader is handed off to someone who can actually b
   closeAll(h, g);
 });
 
+// ============================================================
+// Four people in a room
+// ============================================================
+// Almost everything here was originally reasoned about, and tested, with two people. Two
+// is the case where "the others" is a single other, so a rule like "hold the clock when
+// everyone is in an ad" and a rule like "hold it when the one other person is" are
+// indistinguishable. They are very different with four, and a watch party is usually four.
+
+/**
+ * A room of `n` people: one host and n-1 guests, all joined and settled.
+ *
+ * Note the finally-block discipline at every call site. An assertion that throws used to
+ * leave four sockets open, and since the server caps connections per address, a single
+ * genuine failure exhausted the cap and made every subsequent test time out. Thirteen
+ * red tests, one real bug. Always close.
+ */
+async function party(n, opts = {}) {
+  const h = await host(opts);
+  const guests = [];
+  for (let i = 1; i < n; i++) {
+    guests.push(await guest(h.code, `Guest${i}`));
+    await waitFor(h.ws, "member-joined");
+  }
+  await sleep(80);
+  const all = [h, ...guests];
+  for (const c of all) { drain(c.ws, "member-joined"); drain(c.ws, "heartbeat-role"); }
+  return { host: h, guests, all, code: h.code };
+}
+
+test("four people: one person's play reaches all three others", async () => {
+  let room;
+  try {
+    room = await party(4);
+    send(room.guests[1].ws, { type: "sync", action: "play", playing: true, currentTime: 42, playbackRate: 1 });
+
+    // Everyone except the sender, and nobody is left out.
+    const others = [room.host, room.guests[0], room.guests[2]];
+    const seen = await Promise.all(others.map((c) => waitFor(c.ws, "sync")));
+    for (const m of seen) {
+      assert.equal(m.currentTime, 42);
+      assert.equal(m.playing, true);
+      assert.equal(m.fromUser, "Guest2", "everyone can see who did it");
+    }
+  } finally {
+    if (room) closeAll(...room.all);
+  }
+});
+
+test("four people: one ad does not hold the film for the other three", async () => {
+  let room;
+  try {
+    room = await party(4);
+    send(room.host.ws, { type: "sync", action: "play", playing: true, currentTime: 300, playbackRate: 1 });
+    await sleep(80);
+
+    send(room.guests[0].ws, { type: "ad-state", active: true });
+    const notice = await waitFor(room.host.ws, "ad-state");
+    assert.equal(notice.watchingCount, 3, "three of the four are still watching the film");
+    assert.equal(notice.memberCount, 4);
+
+    await sleep(700);
+    drain(room.host.ws, "sync");
+    send(room.host.ws, { type: "request-state" });
+    const state = await waitFor(room.host.ws, "sync");
+    const elapsed = (state.serverTime - state.timestamp) / 1000;
+    assert.ok(elapsed > 0.4, "three people are watching, so the film really is advancing");
+  } finally {
+    if (room) closeAll(...room.all);
+  }
+});
+
+test("four people: the clock holds only when the LAST of them hits an ad", async () => {
+  let room;
+  try {
+    room = await party(4);
+    send(room.host.ws, { type: "sync", action: "play", playing: true, currentTime: 500, playbackRate: 1 });
+    await sleep(80);
+
+    // Three of the four go into a break. The room must keep running for the fourth.
+    send(room.host.ws, { type: "ad-state", active: true });
+    send(room.guests[0].ws, { type: "ad-state", active: true });
+    send(room.guests[1].ws, { type: "ad-state", active: true });
+    await sleep(250);
+
+    drain(room.guests[2].ws, "sync");
+    send(room.guests[2].ws, { type: "request-state" });
+    const running = await waitFor(room.guests[2].ws, "sync");
+    const runningElapsed = (running.serverTime - running.timestamp) / 1000;
+    assert.ok(runningElapsed > 0.1, "one person is still watching, so the film is still moving");
+
+    // Now the fourth hits it too, and only now does the room go dark.
+    send(room.guests[2].ws, { type: "ad-state", active: true });
+    await sleep(150);
+    await sleep(900);
+
+    drain(room.guests[2].ws, "sync");
+    send(room.guests[2].ws, { type: "request-state" });
+    const held = await waitFor(room.guests[2].ws, "sync");
+    const heldElapsed = (held.serverTime - held.timestamp) / 1000;
+    assert.ok(heldElapsed < 0.5, `with all four in a break the clock must hold, got ${heldElapsed.toFixed(2)}s`);
+  } finally {
+    if (room) closeAll(...room.all);
+  }
+});
+
+test("four people: the first one back out of a break starts the film again", async () => {
+  let room;
+  try {
+    room = await party(4);
+    send(room.host.ws, { type: "sync", action: "play", playing: true, currentTime: 800, playbackRate: 1 });
+    await sleep(80);
+    for (const c of room.all) send(c.ws, { type: "ad-state", active: true });
+    await sleep(200);
+    await sleep(900);
+
+    // One person's ad finishes. The room is watching again, from where it stopped.
+    send(room.guests[1].ws, { type: "ad-state", active: false });
+    await sleep(150);
+
+    drain(room.guests[1].ws, "sync");
+    send(room.guests[1].ws, { type: "request-state" });
+    const back = await waitFor(room.guests[1].ws, "sync");
+    assert.ok(back.currentTime < 800 + 0.8, `must not skip the break, got ${back.currentTime.toFixed(2)}s`);
+    await sleep(500);
+    drain(room.guests[1].ws, "sync");
+    send(room.guests[1].ws, { type: "request-state" });
+    const later = await waitFor(room.guests[1].ws, "sync");
+    const elapsed = (later.serverTime - later.timestamp) / 1000;
+    assert.ok(elapsed > 0.2, "and the clock is genuinely running again, not still held");
+  } finally {
+    if (room) closeAll(...room.all);
+  }
+});
+
+test("four people: the leader role walks past everyone in an ad", async () => {
+  let room;
+  try {
+    room = await party(4);
+    for (const c of room.all) drain(c.ws, "heartbeat-role");
+
+    // The host leads on creation. Send them into a break: the role has to move to the
+    // next person who is actually watching the film.
+    send(room.host.ws, { type: "ad-state", active: true });
+    const firstHop = await waitFor(room.guests[0].ws, "heartbeat-role", 3000);
+    assert.equal(firstHop.isLeader, true, "the role moves off the person in a break");
+
+    // Now that one hits a break too. It must step over them as well, not stop there.
+    for (const c of room.all) drain(c.ws, "heartbeat-role");
+    send(room.guests[0].ws, { type: "ad-state", active: true });
+    const secondHop = await waitFor(room.guests[1].ws, "heartbeat-role", 3000);
+    assert.equal(secondHop.isLeader, true, "and keeps walking until it finds a watcher");
+
+    // The two in breaks must know they are not driving the room.
+    const demoted = await waitFor(room.guests[0].ws, "heartbeat-role", 3000);
+    assert.equal(demoted.isLeader, false);
+  } finally {
+    if (room) closeAll(...room.all);
+  }
+});
+
+test("four people: everyone hears everyone, with no duplicates", async () => {
+  let room;
+  try {
+    room = await party(4);
+    const heard = [];
+    room.host.ws.on("message", (raw) => {
+      const m = JSON.parse(raw);
+      if (m.type === "chat") heard.push(m.message);
+    });
+
+    send(room.guests[0].ws, { type: "chat", message: "one" });
+    send(room.guests[1].ws, { type: "chat", message: "two" });
+    send(room.guests[2].ws, { type: "chat", message: "three" });
+    await sleep(400);
+
+    assert.deepEqual(heard.sort(), ["one", "three", "two"], "each line arrives exactly once");
+  } finally {
+    if (room) closeAll(...room.all);
+  }
+});
+
+test("four people: a member leaving is seen by the remaining three with the right count", async () => {
+  let room;
+  try {
+    room = await party(4);
+    closeAll(room.guests[2]);
+    const left = await waitFor(room.host.ws, "member-left");
+    assert.equal(left.memberCount, 3, "the count reflects who is actually still there");
+  } finally {
+    if (room) closeAll(room.host, room.guests[0], room.guests[1]);
+  }
+});
+
+// Ads are per-viewer: your pre-roll is not your friend's. One person sitting a break out
+// must not stop the room, and the room must not run on without them when EVERYBODY is
+// sitting one out, which is exactly what a platform mid-roll causes because every viewer
+// is at the same timestamp of the same title.
+test("ad break: one viewer's ad does not stop the film for everyone else", async () => {
+  let h, g;
+  try {
+    h = await host();
+    g = await guest(h.code, "Guest");
+    await waitFor(h.ws, "member-joined");
+
+    send(h.ws, { type: "sync", action: "play", playing: true, currentTime: 100, playbackRate: 1 });
+    await waitFor(g.ws, "sync");
+
+    // The guest hits an ad. The host keeps watching.
+    send(g.ws, { type: "ad-state", active: true });
+    const notice = await waitFor(h.ws, "ad-state");
+    assert.equal(notice.active, true, "the room is told who stepped out");
+    assert.equal(notice.watchingCount, 1, "one person is still watching the film");
+
+    await sleep(600);
+    drain(h.ws, "sync");
+    send(h.ws, { type: "request-state" });
+    const state = await waitFor(h.ws, "sync");
+    // The host never stopped watching, so time really did pass for the film.
+    assert.ok(state.currentTime >= 100, "the room kept its position");
+    assert.equal(state.playing, true);
+  } finally {
+    if (h) closeAll(h);
+    if (g) closeAll(g);
+  }
+});
+
+// This is the one that matters. Without the clock freeze the room believes the film
+// advanced through the entire ad break, and everyone gets hard-seeked that far past the
+// scene they were about to watch: in sync with each other, and a minute into the future.
+test("ad break: the room does not run on while every member is in one", async () => {
+  let h, g;
+  try {
+    h = await host();
+    g = await guest(h.code, "Guest");
+    await waitFor(h.ws, "member-joined");
+
+    send(h.ws, { type: "sync", action: "play", playing: true, currentTime: 100, playbackRate: 1 });
+    await waitFor(g.ws, "sync");
+    await sleep(50);
+
+    // A mid-roll: both viewers hit it at the same timestamp.
+    send(h.ws, { type: "ad-state", active: true });
+    send(g.ws, { type: "ad-state", active: true });
+    await sleep(100);
+
+    // Sit through the break.
+    const AD_MS = 1500;
+    await sleep(AD_MS);
+
+    drain(h.ws, "sync");
+    send(h.ws, { type: "request-state" });
+    const held = await waitFor(h.ws, "sync");
+
+    // The position a client lands on is currentTime plus however long the server says has
+    // passed since it was recorded. While the room is held, that elapsed span must be ~0.
+    const elapsedThatWouldBeApplied = (held.serverTime - held.timestamp) / 1000;
+    assert.ok(
+      elapsedThatWouldBeApplied < 0.5,
+      `a held room must not hand out ${elapsedThatWouldBeApplied.toFixed(2)}s of elapsed time it did not watch`
+    );
+    assert.ok(
+      held.currentTime < 100 + 0.7,
+      `the film must still be at about 100s, not ${held.currentTime.toFixed(2)}s`
+    );
+  } finally {
+    if (h) closeAll(h);
+    if (g) closeAll(g);
+  }
+});
+
+test("ad break: the clock starts again from where it stopped, not from before the break", async () => {
+  let h, g;
+  try {
+    h = await host();
+    g = await guest(h.code, "Guest");
+    await waitFor(h.ws, "member-joined");
+
+    send(h.ws, { type: "sync", action: "play", playing: true, currentTime: 200, playbackRate: 1 });
+    await waitFor(g.ws, "sync");
+    await sleep(50);
+    send(h.ws, { type: "ad-state", active: true });
+    send(g.ws, { type: "ad-state", active: true });
+    await sleep(1200);
+
+    // The host's ad finishes first.
+    send(h.ws, { type: "ad-state", active: false });
+    await sleep(100);
+
+    drain(h.ws, "sync");
+    send(h.ws, { type: "request-state" });
+    const back = await waitFor(h.ws, "sync");
+    assert.ok(
+      back.currentTime < 200 + 0.7,
+      `resuming must not skip the ad break's worth of film, got ${back.currentTime.toFixed(2)}s`
+    );
+    const elapsed = (back.serverTime - back.timestamp) / 1000;
+    assert.ok(elapsed < 0.5, "and the clock restarts from now, not from before the break");
+  } finally {
+    if (h) closeAll(h);
+    if (g) closeAll(g);
+  }
+});
+
+// The leader is the only member broadcasting position, and a member in an ad deliberately
+// stops broadcasting. Handing them the job means the room silently loses drift correction.
+test("ad break: the sync leader is never somebody sitting one out", async () => {
+  let h, g;
+  try {
+    h = await host();
+    g = await guest(h.code, "Guest");
+    await waitFor(h.ws, "member-joined");
+    await sleep(50);
+    drain(h.ws, "heartbeat-role");
+    drain(g.ws, "heartbeat-role");
+
+    // The host is leader on creation. Send them into an ad.
+    send(h.ws, { type: "ad-state", active: true });
+
+    const demoted = await waitFor(h.ws, "heartbeat-role", 3000);
+    assert.equal(demoted.isLeader, false, "someone watching an advert cannot drive the room");
+    const promoted = await waitFor(g.ws, "heartbeat-role", 3000);
+    assert.equal(promoted.isLeader, true, "the job goes to whoever is still watching the film");
+  } finally {
+    if (h) closeAll(h);
+    if (g) closeAll(g);
+  }
+});
+
+test("ad break: a room entirely in ads does not churn its leader", async () => {
+  let h, g;
+  try {
+    h = await host();
+    g = await guest(h.code, "Guest");
+    await waitFor(h.ws, "member-joined");
+    send(h.ws, { type: "sync", action: "play", playing: true, currentTime: 10, playbackRate: 1 });
+    await sleep(50);
+    send(h.ws, { type: "ad-state", active: true });
+    send(g.ws, { type: "ad-state", active: true });
+    await sleep(100);
+    drain(h.ws, "heartbeat-role");
+    drain(g.ws, "heartbeat-role");
+
+    let churned = false;
+    try {
+      await waitFor(h.ws, "heartbeat-role", 1500);
+      churned = true;
+    } catch { /* nothing arrived, which is the point */ }
+    assert.equal(churned, false, "nobody can beat during a break, so handing the role around achieves nothing");
+  } finally {
+    if (h) closeAll(h);
+    if (g) closeAll(g);
+  }
+});
+
+test("ad break: a member who leaves mid-break does not strand the clock", async () => {
+  let h, g;
+  try {
+    h = await host();
+    g = await guest(h.code, "Guest");
+    await waitFor(h.ws, "member-joined");
+    send(h.ws, { type: "sync", action: "play", playing: true, currentTime: 50, playbackRate: 1 });
+    await sleep(50);
+
+    // The guest is in an ad; the host is the only one watching, and then leaves.
+    send(g.ws, { type: "ad-state", active: true });
+    await sleep(100);
+    closeAll(h);
+    await sleep(200);
+
+    // The room is now entirely in ads, so it must hold rather than run on.
+    await sleep(900);
+    drain(g.ws, "sync");
+    send(g.ws, { type: "request-state" });
+    const state = await waitFor(g.ws, "sync");
+    const elapsed = (state.serverTime - state.timestamp) / 1000;
+    assert.ok(elapsed < 0.5, "with nobody watching, the clock holds");
+  } finally {
+    if (h) closeAll(h);
+    if (g) closeAll(g);
+  }
+});
+
 // The heartbeat is the whole running cost of this service, and a paused room has nothing
 // to say. The leader going quiet there is the optimisation working, so the watchdog must
 // not read it as a frozen tab and start handing the job around.

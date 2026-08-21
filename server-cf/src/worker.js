@@ -283,8 +283,12 @@ export class RoomHubDO {
 
   // -------- Heartbeat leader (first member) --------
   _heartbeatLeader(room) {
-    // First member in order whose socket is actually open. Promoting a dead socket makes
-    // the room go quiet with nobody able to notice until the next sweep.
+    // First member in order whose socket is open AND who is not sitting out an ad.
+    // Promoting a dead socket, or someone who has deliberately stopped broadcasting,
+    // makes the room go quiet with nobody able to notice until the next sweep.
+    for (const [uid, m] of room.members) {
+      if (m.ws && m.ws.readyState === 1 /* WebSocket.OPEN */ && !m.adActive) return uid;
+    }
     for (const [uid, m] of room.members) {
       if (m.ws && m.ws.readyState === 1 /* WebSocket.OPEN */) return uid;
     }
@@ -309,8 +313,10 @@ export class RoomHubDO {
     for (const room of this.rooms.values()) {
       if (room.members.size < 2) continue; // nobody to hand it to
       // A paused room's leader deliberately stops beating: there is no position to
-      // correct. Silence is correct behaviour there, not a frozen tab.
+      // correct. Silence is correct behaviour there, not a frozen tab. Same for a room
+      // where every member is sitting out an ad.
       if (!room.playbackState || !room.playbackState.playing) continue;
+      if (this._everyMemberInAd(room)) continue;
       const since = now - (room.lastHeartbeatAt || room.createdAt || now);
       if (since <= LEADER_STALE_MS) continue;
       const leaderId = this._heartbeatLeader(room);
@@ -530,6 +536,7 @@ export class RoomHubDO {
       case "chat": return this._handleChat(ws, meta, msg);
       case "chat-typing": return this._handleChatTyping(ws, meta, msg);
       case "cc-state": return this._handleCcState(ws, meta, msg);
+      case "ad-state": return this._handleAdState(ws, meta, msg);
       case "set-mode": return this._handleSetMode(ws, meta, msg);
       case "navigate": return this._handleNavigate(ws, meta, msg);
       case "voice-state": return this._handleVoiceState(ws, meta, msg);
@@ -689,7 +696,9 @@ export class RoomHubDO {
     const reclaimsHost = await isValidHostToken(this.env.HOST_TOKEN_SECRET, code, msg.hostToken);
     if (reclaimsHost) room.hostId = meta.userId;
     if (room.hostId === null || room.hostId === undefined) room.hostId = meta.userId;
-    room.members.set(meta.userId, { ws, userName, voiceActive: false });
+    room.members.set(meta.userId, { ws, userName, voiceActive: false, adActive: false });
+    // A new arrival is watching the film, so a room that was entirely in ads is not.
+    this._updateRoomAdFreeze(room);
     room.lastActivity = Date.now();
     this._setMeta(ws, { userName, currentRoom: code });
     await this._persistRoom(code);
@@ -704,7 +713,7 @@ export class RoomHubDO {
       hostToken: reclaimsHost ? await mintHostToken(this.env.HOST_TOKEN_SECRET, code) : undefined,
       videoUrl: room.videoUrl || "",
       serverTime: Date.now(),
-      playbackState: { ...room.playbackState, timestamp: room.playbackState.lastUpdate, serverTime: Date.now() },
+      playbackState: { ...room.playbackState, timestamp: this._positionTimestamp(room), serverTime: Date.now() },
       members: Array.from(room.members.entries()).map(([id, m]) => ({ id, userName: m.userName })),
     });
     this._broadcast(code, {
@@ -731,6 +740,9 @@ export class RoomHubDO {
     const wasHost = room.hostId === meta.userId;
     const wasVoiceActive = !!(room.members.get(meta.userId)?.voiceActive);
     room.members.delete(meta.userId);
+    // If the one person still watching just left, the rest are all in ads and the clock
+    // should stop rather than run on without them.
+    this._updateRoomAdFreeze(room);
 
     this._broadcast(code, {
       type: "member-left",
@@ -785,6 +797,10 @@ export class RoomHubDO {
     if (!isFinite(pr) || pr < 0.1 || pr > 16) return;
 
     room.playbackState = { playing: !!msg.playing, currentTime: ct, playbackRate: pr, lastUpdate: Date.now() };
+    // Somebody is demonstrably watching the film, so the clock is running.
+    const syncMember = room.members.get(meta.userId);
+    if (syncMember) syncMember.adActive = false;
+    this._updateRoomAdFreeze(room);
     room.lastActivity = Date.now();
     // Throttled: dragging a scrub bar is one of these per frame, and every one was a
     // Durable Object storage write. What is being saved is only a resume hint.
@@ -818,6 +834,9 @@ export class RoomHubDO {
     if (!isFinite(pr) || pr < 0.1 || pr > 16) return;
 
     room.playbackState = { playing: !!msg.playing, currentTime: ct, playbackRate: pr, lastUpdate: Date.now() };
+    const hbMember = room.members.get(meta.userId);
+    if (hbMember) hbMember.adActive = false;
+    this._updateRoomAdFreeze(room);
     room.lastActivity = Date.now();
     room.lastHeartbeatAt = Date.now(); // the leader is alive and watching
     // The watchdog reads this clock after a hibernation wake, so it has to reach storage.
@@ -857,7 +876,7 @@ export class RoomHubDO {
       currentTime: st.currentTime,
       playbackRate: st.playbackRate,
       videoUrl: room.videoUrl || "",
-      timestamp: st.lastUpdate,
+      timestamp: this._positionTimestamp(room),
       serverTime: now,
     });
   }
@@ -904,6 +923,68 @@ export class RoomHubDO {
       userName: meta.userName,
       active: !!msg.active,
     }, ws);
+  }
+
+  // Ads are per-viewer, so one person's break is not the room's. But when EVERY member is
+  // in one, which is what a platform mid-roll produces because everybody is at the same
+  // timestamp of the same title, nobody is playing anything, and the room's position is
+  // stored as (currentTime, lastUpdate) and read by extrapolating forward from lastUpdate.
+  // That extrapolation assumes playback continued. Left alone, a 90-second break convinced
+  // the room 90 seconds of film had gone by and hurled everyone that far past the scene
+  // they were about to watch. Hold the clock while the room is dark; restart it from where
+  // it stopped when somebody comes back.
+  _everyMemberInAd(room) {
+    if (room.members.size === 0) return false;
+    for (const m of room.members.values()) if (!m.adActive) return false;
+    return true;
+  }
+
+  _updateRoomAdFreeze(room) {
+    const st = room.playbackState;
+    if (!st) return;
+    const dark = this._everyMemberInAd(room);
+    if (dark && !st.frozenAt) {
+      if (st.playing) {
+        const elapsed = Math.max(0, Date.now() - st.lastUpdate) / 1000;
+        st.currentTime += elapsed * (st.playbackRate || 1);
+      }
+      st.lastUpdate = Date.now();
+      st.frozenAt = Date.now();
+    } else if (!dark && st.frozenAt) {
+      st.lastUpdate = Date.now();
+      st.frozenAt = null;
+    }
+  }
+
+  // Frozen means "nobody has been watching, do not add the elapsed time".
+  _positionTimestamp(room) {
+    const st = room.playbackState;
+    return st && st.frozenAt ? Date.now() : st.lastUpdate;
+  }
+
+  _handleAdState(ws, meta, msg) {
+    const code = meta.currentRoom;
+    if (!code) return;
+    const room = this.rooms.get(code);
+    if (!room) return;
+    const member = room.members.get(meta.userId);
+    if (!member) return;
+
+    const wasLeader = this._heartbeatLeader(room);
+    member.adActive = !!msg.active;
+    room.lastActivity = Date.now();
+    this._updateRoomAdFreeze(room);
+
+    this._broadcast(code, {
+      type: "ad-state",
+      userId: meta.userId,
+      userName: meta.userName,
+      active: member.adActive,
+      watchingCount: Array.from(room.members.values()).filter((m) => !m.adActive).length,
+      memberCount: room.members.size,
+    }, ws);
+
+    if (this._heartbeatLeader(room) !== wasLeader) this._notifyHeartbeatLeader(room);
   }
 
   _handleSetMode(ws, meta, msg) {
