@@ -5,16 +5,21 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Watch Together - watch anything, with anyone, anywhere</title>
 <meta name="description" content="Keep video in step with people anywhere. Works on YouTube, Netflix, Prime Video and any site with a player. Free, no account, nothing you watch is recorded.">
+<link rel="preconnect" href="https://i.ytimg.com" crossorigin>
+<link rel="preconnect" href="https://www.youtube-nocookie.com">
 <link rel="icon" href="/assets/favicon-32.png" sizes="32x32">
 <link rel="apple-touch-icon" href="/assets/logo-256.png">
 <link rel="canonical" href="https://watch.arnavgoel.dev/">
 <meta name="theme-color" content="#0b0b0d">
 <meta property="og:title" content="Watch Together">
-<meta property="og:description" content="Press play once. Everyone stays in step, wherever they are.">
-<meta property="og:image" content="https://watch.arnavgoel.dev/assets/logo-256.png">
+<meta property="og:description" content="Press play once. Everyone stays in step, on whatever they are watching.">
+<meta property="og:image" content="https://watch.arnavgoel.dev/assets/og-card.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Press play once. Everyone stays in step, on whatever they are watching.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://watch.arnavgoel.dev/">
-<meta name="twitter:card" content="summary">
+<meta name="twitter:card" content="summary_large_image">
 <link rel="stylesheet" href="/styles.css">
 <script type="module" src="/app.js"></script>
 </head>
@@ -43,23 +48,27 @@
   <div class="stage" data-demo>
     <div class="screens">
       <div class="screen" data-screen="you">
-        <div class="screen-bar"><span class="dot"></span><span class="screen-who">You</span><span class="screen-state">watching</span></div>
-        <div class="pic"><div class="band"></div><div class="vig"></div><div class="adcard">Advert</div></div>
+        <div class="screen-bar"><span class="dot"></span><span class="screen-who">You</span><button class="sound" data-sound type="button" aria-pressed="false" title="Sound is yours alone. Hers stays muted.">Unmute</button><span class="screen-state">watching</span></div>
+        <div class="pic"><img class="poster" src="https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg" alt="" width="480" height="360" decoding="async"><div class="frame" data-frame></div><div class="vig"></div><div class="adcard">Advert</div></div>
         <div class="controls"><div class="track"><div class="fill"></div><div class="head"></div></div><span class="time">0:34</span></div>
       </div>
       <div class="screen" data-screen="them">
         <div class="screen-bar"><span class="dot"></span><span class="screen-who">Priya, 4,800 miles away</span><span class="screen-state">watching</span></div>
-        <div class="pic"><div class="band"></div><div class="vig"></div><div class="adcard">Advert</div></div>
+        <div class="pic"><img class="poster" src="https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg" alt="" width="480" height="360" decoding="async"><div class="frame" data-frame></div><div class="vig"></div><div class="adcard">Advert</div></div>
         <div class="controls"><div class="track"><div class="fill"></div><div class="head"></div></div><span class="time">0:34</span></div>
       </div>
+      <button class="stage-start" data-start type="button">
+        <span class="stage-start-mark" aria-hidden="true"></span>
+        Play the demo
+      </button>
     </div>
     <div class="stage-controls">
-      <button class="btn btn-sm" data-play>Pause</button>
+      <button class="btn btn-sm" data-play>Play</button>
       <button class="btn btn-sm btn-quiet" data-ad-one>Give her an ad</button>
       <button class="btn btn-sm btn-quiet" data-ad-both>Mid-roll, both of you</button>
       <button class="btn btn-sm btn-quiet" data-buffer>Stall her connection</button>
     </div>
-    <p class="stage-hint" data-hint>Drag either scrubber. Both move, because it is one room.</p>
+    <p class="stage-hint" data-hint>Two real players, one room. Press play, then try to break it.</p>
   </div>
 </header>
 
@@ -125,6 +134,7 @@
   <span>Watch Together</span>
   <span>
     <a href="https://github.com/ArnavGoel03/watch-together">Source</a> &nbsp;·&nbsp;
+    <a href="/support">Support</a> &nbsp;&#183;&nbsp;
     <a href="/privacy">Privacy</a>
   </span>
 </footer>

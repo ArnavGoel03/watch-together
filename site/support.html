@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Watch Together - Support</title>
+<meta name="description" content="Fixes for the things that go wrong with Watch Together, and how to reach a human when they do not help.">
+<link rel="icon" href="/assets/favicon-32.png" sizes="32x32">
+<link rel="apple-touch-icon" href="/assets/logo-256.png">
+<link rel="canonical" href="https://watch.arnavgoel.dev/support">
+<meta name="theme-color" content="#0b0b0d">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div class="glow" aria-hidden="true"></div>
+
+<nav>
+  <a class="brand" href="/"><img src="/assets/logo-256.png" alt=""> Watch Together</a>
+  <a class="btn btn-sm" href="https://chromewebstore.google.com/detail/kilmggcpfkcfpkaapillgloabbgmeeoa">Add to Chrome</a>
+</nav>
+
+<main class="doc">
+  <h1>Support</h1>
+  <p class="updated">Nearly everything people write in about is one of the eight below.</p>
+
+  <h2>Something is not working</h2>
+
+  <div class="qa">
+    <h3>I installed it and nothing happens on the page</h3>
+    <p>Reload the tab. A browser extension cannot reach into pages that were already open when it was installed, so the first tab you try it on almost always needs one refresh. This catches most people once and never again.</p>
+  </div>
+
+  <div class="qa">
+    <h3>It works on YouTube but not on the site I want</h3>
+    <p>That is deliberate. Watch Together only asks for the sites it needs at install, rather than for every site you visit, so anything outside that list is off until you turn it on.</p>
+    <p>Open the video you want, click the Watch Together icon, and use <strong>Enable on this site</strong>. Your browser will ask you to confirm. Reload the page and the room will work there. You only do this once per site.</p>
+  </div>
+
+  <div class="qa">
+    <h3>We have drifted apart</h3>
+    <p>Look at the member list first, because it usually tells you why without you having to guess. Someone marked <strong>ad break</strong> is in an advert you are not seeing. Someone marked <strong>buffering</strong> has a slow connection.</p>
+    <p>If everyone reads as watching and you are still apart, press <strong>Resync</strong>. If one person is consistently a second or two out, open the panel's advanced settings and give that person a sync offset, which shifts only their playback and leaves the rest of the room alone.</p>
+  </div>
+
+  <div class="qa">
+    <h3>Our room died halfway through the film</h3>
+    <p>This was a real bug and it is fixed. Rooms used to be dropped by the host after a period with no messages, which a long quiet stretch of a film could trigger. Rooms now hold themselves open, survive the backend restarting, and fail over to a second backend on their own.</p>
+    <p>If you are still on an older build, update: open <code>chrome://extensions</code>, turn on Developer mode, and press Update. You want <strong>1.2.0</strong> or later.</p>
+  </div>
+
+  <div class="qa">
+    <h3>An advert threw everyone minutes ahead</h3>
+    <p>Also fixed, and it is the thing this version is really about. When an advert covers everybody at once, the room clock now holds instead of running on in the dark, so the film is where you left it when the break ends. When an advert covers only one person, the film carries on for everyone else and that person rejoins the room rather than the room rejoining them.</p>
+  </div>
+
+  <div class="qa">
+    <h3>The panel disappears in fullscreen</h3>
+    <p>It should move with you. If it does not, press the overlay hotkey, which is <code>Alt</code> and <code>W</code> by default and can be changed in the extension's settings. Going from normal to theatre to fullscreen and back is handled, on YouTube included.</p>
+  </div>
+
+  <div class="qa">
+    <h3>The Zoom or Meet call is fighting the video audio</h3>
+    <p>Start the call from the panel's own Zoom or Meet button rather than separately. Started that way, the call link is shared with the room, anyone arriving late gets it without being sent it again, and the video is ducked so the two are not competing.</p>
+  </div>
+
+  <div class="qa">
+    <h3>Does it work on Firefox?</h3>
+    <p>Yes. There is a Firefox build alongside the Chrome one. Everything except the per-site permission prompt behaves the same, and Firefox asks for permissions in its own way.</p>
+  </div>
+
+  <h2>Still stuck</h2>
+  <div class="doc-cta">
+    <p>Email <a href="mailto:watch@arnavgoel.dev">watch@arnavgoel.dev</a> and it will be read. Say which site you were on, what you expected, and what happened instead. A screenshot of the member list at the moment it went wrong is worth more than any description of it.</p>
+    <p>If you would rather have it in public, or want to follow the fix, <a href="https://github.com/ArnavGoel03/watch-together/issues/new">open an issue</a> instead.</p>
+  </div>
+
+  <h2>What it does with your data</h2>
+  <p>It knows where the playhead is, and the address of the one tab you attached a room to. That is genuinely all. No account, no tracking, nothing you watch is recorded. The <a href="/privacy">full privacy policy</a> spells out each item.</p>
+</main>
+
+<footer class="wrap">
+  <span>Watch Together</span>
+  <span>
+    <a href="https://github.com/ArnavGoel03/watch-together">Source</a> &nbsp;·&nbsp;
+    <a href="/support">Support</a> &nbsp;·&nbsp;
+    <a href="/privacy">Privacy</a>
+  </span>
+</footer>
+</body>
+</html>

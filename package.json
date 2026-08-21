@@ -13,6 +13,7 @@
     "test:browser": "npm --prefix server run test:browser",
     "test": "npm run lint && npm run typecheck && npm run check:dashes && node scripts/check-version.mjs && npm run test:server && npm run test:cf",
     "check:dashes": "node scripts/check-dashes.mjs",
+    "check:site": "node scripts/check-site.mjs",
     "package": "node scripts/package.mjs"
   },
   "devDependencies": {

@@ -1,27 +1,203 @@
 // The hero demo.
 //
 // The most persuasive thing this page can do is not describe synchronised playback, it is
-// BE synchronised playback: two players driven by one shared clock, which the visitor can
-// scrub, pause and interrupt. Everything below is the real behaviour of the extension,
-// modelled honestly rather than faked with a video of a video.
+// BE synchronised playback. So these are two real YouTube players, in two separate frames,
+// driven by one shared room clock that the visitor can scrub, pause and interrupt. The
+// rules below are the same rules the extension's relay applies to a real room; nothing
+// here is a video of a video.
 //
-// Deliberately no framework and no WebGL. The whole demo is a shared clock and two DOM
-// elements reading from it, which is both cheaper than a canvas and a truer picture of
-// what the product actually does.
+// No framework and no WebGL. A shared clock and two embeds is both cheaper than a canvas
+// and a truer picture of what the product actually does.
 
-const DURATION = 214; // seconds of imaginary film
+const VIDEO_ID = "dQw4w9WgXcQ";
+const EMBED_ORIGIN = "https://www.youtube-nocookie.com";
+const FALLBACK_DURATION = 213;
 const AD_LENGTH = 8;
+const BUFFER_LENGTH = 5;
+
+// How far a player may drift from the room before it is pulled back. Below roughly a
+// third of a second a correction is more visible than the drift it fixes.
+const DRIFT_TOLERANCE = 0.55;
+// A seek takes a moment to land, and reading the old position in the meantime would
+// trigger another seek, and another. One correction, then wait.
+const SEEK_COOLDOWN_MS = 1400;
+// How long to give the embeds before deciding they are not going to play. Some browsers
+// and some networks refuse YouTube embeds outright, and a visitor must never be shown
+// YouTube's "video unavailable" card where the demo should be. When this runs out the
+// screens go back to their posters and the clock demo carries on without them.
+const EMBED_TIMEOUT_MS = 6500;
 
 const fmt = (t) => {
   const m = Math.floor(t / 60);
-  const s = Math.floor(t % 60);
+  const s = Math.floor(Math.max(0, t) % 60);
   return `${m}:${String(s).padStart(2, "0")}`;
 };
 
+/**
+ * One embedded player, spoken to over postMessage.
+ *
+ * Deliberately not the YouTube IFrame API script: loading their JavaScript into this
+ * origin would mean widening script-src for a page that otherwise runs nothing but its
+ * own code. The frame's message channel does everything needed here.
+ */
+class Player {
+  constructor(mount, { muted }) {
+    this.time = 0;
+    this.duration = FALLBACK_DURATION;
+    this.ready = false;
+    this.started = false;
+    this.failed = false;
+    this.lastSeek = 0;
+    this.muted = muted;
+
+    const params = new URLSearchParams({
+      enablejsapi: "1",
+      origin: location.origin,
+      controls: "0",
+      disablekb: "1",
+      modestbranding: "1",
+      rel: "0",
+      playsinline: "1",
+      iv_load_policy: "3",
+      mute: muted ? "1" : "0",
+      loop: "1",
+      playlist: VIDEO_ID,
+    });
+
+    this.frame = document.createElement("iframe");
+    this.frame.src = `${EMBED_ORIGIN}/embed/${VIDEO_ID}?${params}`;
+    this.frame.title = "Demonstration video";
+    this.frame.allow = "autoplay; encrypted-media";
+    this.frame.setAttribute("tabindex", "-1");
+    this.frame.addEventListener("load", () => this.listen());
+    mount.appendChild(this.frame);
+  }
+
+  listen() {
+    this.ready = true;
+    this.post({ event: "listening", id: 1, channel: "widget" });
+  }
+
+  post(payload) {
+    this.frame.contentWindow?.postMessage(JSON.stringify(payload), EMBED_ORIGIN);
+  }
+
+  send(func, args = []) {
+    if (!this.ready) return;
+    this.post({ event: "command", func, args, id: 1, channel: "widget" });
+  }
+
+  play() { this.send("playVideo"); }
+  pause() { this.send("pauseVideo"); }
+
+  setMuted(muted) {
+    this.muted = muted;
+    this.send(muted ? "mute" : "unMute");
+  }
+
+  seek(t) {
+    this.time = t;
+    this.lastSeek = performance.now();
+    this.send("seekTo", [t, true]);
+  }
+
+  /** True while a seek is still settling, so drift readings are not to be trusted. */
+  get settling() { return performance.now() - this.lastSeek < SEEK_COOLDOWN_MS; }
+
+  accept(info) {
+    if (info.playerState === 1 || info.currentTime > 0) this.started = true;
+    if (typeof info.currentTime === "number") this.time = info.currentTime;
+    if (typeof info.duration === "number" && info.duration > 0) this.duration = info.duration;
+  }
+}
+
+class Member {
+  constructor(room, el, name, { muted }) {
+    this.room = room;
+    this.el = el;
+    this.name = name;
+    this.muted = muted;
+    this.state = "watching"; // watching | ad | buffering
+    this.remaining = 0;
+    this.player = null;
+    room.add(this);
+  }
+
+  attach() {
+    if (this.player) return;
+    this.player = new Player(this.el.querySelector("[data-frame]"), { muted: this.muted });
+  }
+
+  owns(frame) { return this.player?.frame.contentWindow === frame; }
+
+  interrupt(kind, seconds) {
+    this.state = kind;
+    this.remaining = seconds;
+    this.player?.pause();
+  }
+
+  /** The position this member can actually see, which is the player's own clock. */
+  get position() {
+    if (this.player?.started && !this.player.failed) return this.player.time;
+    return this.room.position;
+  }
+
+  tick(dt) {
+    if (this.state === "watching") return;
+    this.remaining -= dt;
+    if (this.remaining > 0) return;
+
+    // Coming back from an advert or a stall, rejoin the room rather than resuming where
+    // the picture happened to stop. This is the whole trick: the room decided what time
+    // it is, not this player.
+    this.state = "watching";
+    this.remaining = 0;
+    if (this.player && !this.player.failed && this.room.live) {
+      this.player.seek(this.room.position);
+      if (this.room.playing) this.player.play();
+    }
+  }
+
+  /** Hold this player against the room clock, the way the extension holds a real one. */
+  reconcile() {
+    const p = this.player;
+    if (!p?.ready || p.failed || this.state !== "watching") return;
+
+    if (!this.room.playing) { p.pause(); return; }
+    p.play();
+
+    if (p.settling) return;
+    if (Math.abs(p.time - this.room.position) > DRIFT_TOLERANCE) p.seek(this.room.position);
+  }
+
+  render(roomDark) {
+    const el = this.el;
+    el.classList.toggle("is-ad", this.state === "ad");
+
+    const dot = el.querySelector(".dot");
+    dot.className =
+      "dot" + (this.state === "ad" ? " ad" : this.state === "buffering" ? " buf" : "");
+
+    el.querySelector(".screen-state").textContent =
+      this.state === "ad" ? `ad break ${Math.ceil(this.remaining)}s`
+      : this.state === "buffering" ? "buffering"
+      : roomDark ? "holding"
+      : this.room.playing ? "watching"
+      : "paused";
+
+    const pos = this.position;
+    const pct = (pos / this.room.duration) * 100;
+    el.querySelector(".fill").style.width = `${Math.max(0, Math.min(100, pct))}%`;
+    el.querySelector(".head").style.left = `${Math.max(0, Math.min(100, pct))}%`;
+    el.querySelector(".time").textContent = fmt(pos);
+  }
+}
+
 class Room {
   constructor() {
-    this.position = 34;      // where the film is, for everybody
-    this.playing = true;
+    this.position = 0;
+    this.playing = false;
+    this.live = false; // true once the embeds exist
     this.members = [];
     this.last = performance.now();
     this.onchange = () => {};
@@ -29,8 +205,24 @@ class Room {
 
   add(member) { this.members.push(member); return member; }
 
+  get duration() {
+    for (const m of this.members) {
+      if (m.player?.duration) return m.player.duration;
+    }
+    return FALLBACK_DURATION;
+  }
+
   /** True when nobody can currently see the film, which is when the clock must hold. */
-  get dark() { return this.members.length > 0 && this.members.every((m) => m.state !== "watching"); }
+  get dark() {
+    return this.members.length > 0 && this.members.every((m) => m.state !== "watching");
+  }
+
+  /** Whoever the room takes its time from: someone who can actually see the picture. */
+  get leader() {
+    return this.members.find(
+      (m) => m.state === "watching" && m.player?.started && !m.player.failed && !m.player.settling,
+    );
+  }
 
   tick(now) {
     const dt = Math.min(0.25, (now - this.last) / 1000);
@@ -38,68 +230,36 @@ class Room {
 
     for (const m of this.members) m.tick(dt);
 
-    // The rule the whole product turns on: with nobody watching, the film does not advance.
-    // Without this an ad break that catches everyone convinces the room that time passed,
-    // and everybody is thrown that far forward when they come back.
+    // The rule the whole product turns on: with nobody watching, the film does not
+    // advance. Without this an advert that catches everyone convinces the room that time
+    // passed, and everybody is thrown that far forward when they come back.
     if (this.playing && !this.dark) {
-      this.position = Math.min(DURATION, this.position + dt);
-      if (this.position >= DURATION) this.position = 0;
+      const leader = this.leader;
+      if (leader) this.position = leader.position;
+      else this.position = Math.min(this.duration, this.position + dt);
     }
+
+    for (const m of this.members) m.reconcile();
     this.onchange();
   }
 
   seek(t) {
-    this.position = Math.max(0, Math.min(DURATION, t));
+    this.position = Math.max(0, Math.min(this.duration, t));
+    for (const m of this.members) {
+      if (m.state === "watching" && m.player && !m.player.failed) m.player.seek(this.position);
+    }
     this.onchange();
   }
 
-  toggle() { this.playing = !this.playing; this.onchange(); }
-}
-
-class Member {
-  constructor(room, el, name) {
-    this.room = room;
-    this.el = el;
-    this.name = name;
-    this.state = "watching";   // watching | ad | buffering
-    this.remaining = 0;
-    room.add(this);
-  }
-
-  interrupt(kind, seconds) {
-    this.state = kind;
-    this.remaining = seconds;
-  }
-
-  tick(dt) {
-    if (this.state === "watching") return;
-    this.remaining -= dt;
-    if (this.remaining <= 0) {
-      this.state = "watching";
-      this.remaining = 0;
+  setPlaying(playing) {
+    this.playing = playing;
+    for (const m of this.members) {
+      if (m.state !== "watching") continue;
+      if (!m.player || m.player.failed) continue;
+      if (playing) m.player.play();
+      else m.player.pause();
     }
-  }
-
-  render(position, playing, roomDark) {
-    const el = this.el;
-    el.classList.toggle("is-ad", this.state === "ad");
-
-    const dot = el.querySelector(".dot");
-    dot.className = "dot" + (this.state === "ad" ? " ad" : this.state === "buffering" ? " buf" : "");
-
-    const label =
-      this.state === "ad" ? `ad break ${Math.ceil(this.remaining)}s`
-      : this.state === "buffering" ? "buffering"
-      : roomDark ? "holding"
-      : playing ? "watching" : "paused";
-    el.querySelector(".screen-state").textContent = label;
-
-    const pct = (position / DURATION) * 100;
-    el.querySelector(".fill").style.width = pct + "%";
-    el.querySelector(".head").style.left = pct + "%";
-    el.querySelector(".time").textContent = fmt(position);
-    // The picture drifts with the playhead, so the two screens visibly show the same frame.
-    el.querySelector(".band").style.setProperty("--shift", (-position * 0.28) + "%");
+    this.onchange();
   }
 }
 
@@ -108,54 +268,116 @@ function start() {
   if (!stage) return;
 
   const room = new Room();
-  const you = new Member(room, stage.querySelector('[data-screen="you"]'), "You");
-  const them = new Member(room, stage.querySelector('[data-screen="them"]'), "Priya");
+  // Only one side ever carries sound, which is the honest answer to "will we hear it
+  // twice". In a real room you hear your own tab and nobody else's.
+  const you = new Member(room, stage.querySelector('[data-screen="you"]'), "You", { muted: true });
+  const them = new Member(room, stage.querySelector('[data-screen="them"]'), "Priya", { muted: true });
+
   const hint = stage.querySelector("[data-hint]");
   const playBtn = stage.querySelector("[data-play]");
-
+  const soundBtn = stage.querySelector("[data-sound]");
   const say = (text) => { hint.textContent = text; };
 
   room.onchange = () => {
     const dark = room.dark;
-    you.render(room.position, room.playing, dark);
-    them.render(room.position, room.playing, dark);
+    you.render(dark);
+    them.render(dark);
     playBtn.textContent = room.playing ? "Pause" : "Play";
   };
+
+  // One message channel for both frames; each member claims the ones from its own.
+  window.addEventListener("message", (e) => {
+    if (e.origin !== EMBED_ORIGIN) return;
+    let data;
+    try { data = JSON.parse(e.data); } catch { return; }
+    if (data?.event !== "infoDelivery" || !data.info) return;
+    for (const m of room.members) {
+      if (m.owns(e.source)) m.player.accept(data.info);
+    }
+  });
+
+  let live = false;
+  const goLive = () => {
+    if (live) return;
+    live = true;
+    room.live = true;
+    stage.classList.add("is-live");
+    for (const m of room.members) m.attach();
+    room.setPlaying(true);
+    say("Two separate players, one room. Interrupt either one.");
+
+    // If the embeds never start, take them away rather than leaving YouTube's error card
+    // sitting where the product demo should be. Everything else still works: the room
+    // clock, the adverts, the stall, the scrubbers.
+    setTimeout(() => {
+      if (room.members.some((m) => m.player?.started)) return;
+      for (const m of room.members) {
+        if (m.player) m.player.failed = true;
+      }
+      stage.classList.remove("is-live");
+      stage.classList.add("is-fallback");
+      say("The embeds are blocked here, so this is the room clock on its own. Everything below still holds.");
+    }, EMBED_TIMEOUT_MS);
+  };
+
+  stage.querySelector("[data-start]").addEventListener("click", goLive);
 
   // Scrubbing either track moves the room, because in the real thing anyone can drive.
   for (const track of stage.querySelectorAll(".track")) {
     const seekFrom = (e) => {
       const r = track.getBoundingClientRect();
       const x = (e.touches ? e.touches[0].clientX : e.clientX) - r.left;
-      room.seek((Math.max(0, Math.min(1, x / r.width))) * DURATION);
+      room.seek(Math.max(0, Math.min(1, x / r.width)) * room.duration);
     };
     let dragging = false;
-    track.addEventListener("pointerdown", (e) => { dragging = true; track.setPointerCapture(e.pointerId); seekFrom(e); say("Either of you can scrub. The room follows whoever moved."); });
+    track.addEventListener("pointerdown", (e) => {
+      goLive();
+      dragging = true;
+      track.setPointerCapture(e.pointerId);
+      seekFrom(e);
+      say("Either of you can scrub. The room follows whoever moved.");
+    });
     track.addEventListener("pointermove", (e) => { if (dragging) seekFrom(e); });
     track.addEventListener("pointerup", () => { dragging = false; });
     track.addEventListener("pointercancel", () => { dragging = false; });
   }
 
   playBtn.addEventListener("click", () => {
-    room.toggle();
+    if (!live) { goLive(); return; }
+    room.setPlaying(!room.playing);
     say(room.playing ? "Playing, for both of you." : "Paused, for both of you.");
   });
 
-  stage.querySelector("[data-ad-one]").addEventListener("click", () => {
-    them.interrupt("ad", AD_LENGTH);
-    say("Her advert, not yours. The film carries on and she rejoins where the room is.");
+  soundBtn?.addEventListener("click", () => {
+    if (!live) { goLive(); return; }
+    const on = soundBtn.getAttribute("aria-pressed") !== "true";
+    soundBtn.setAttribute("aria-pressed", String(on));
+    soundBtn.textContent = on ? "Mute" : "Unmute";
+    you.player?.setMuted(!on);
+    say(on ? "Your audio only. Hers stays muted, so a call over the top still works."
+           : "Muted again.");
   });
 
-  stage.querySelector("[data-ad-both]").addEventListener("click", () => {
-    you.interrupt("ad", AD_LENGTH);
-    them.interrupt("ad", AD_LENGTH);
-    say("A mid-roll catches you both. Watch the clock: it holds, so nobody is thrown forward when it ends.");
-  });
+  const interrupt = (fn, message) => () => {
+    if (!live) { goLive(); }
+    fn();
+    say(message);
+  };
 
-  stage.querySelector("[data-buffer]").addEventListener("click", () => {
-    them.interrupt("buffering", 5);
-    say("Her connection stalls. You can see why, rather than watching her drift and guessing.");
-  });
+  stage.querySelector("[data-ad-one]").addEventListener("click", interrupt(
+    () => them.interrupt("ad", AD_LENGTH),
+    "Her advert, not yours. The film carries on and she rejoins where the room is.",
+  ));
+
+  stage.querySelector("[data-ad-both]").addEventListener("click", interrupt(
+    () => { you.interrupt("ad", AD_LENGTH); them.interrupt("ad", AD_LENGTH); },
+    "A mid-roll catches you both. Watch the clock: it holds, so nobody is thrown forward when it ends.",
+  ));
+
+  stage.querySelector("[data-buffer]").addEventListener("click", interrupt(
+    () => them.interrupt("buffering", BUFFER_LENGTH),
+    "Her connection stalls. You can see why, rather than watching her drift and guessing.",
+  ));
 
   const loop = (now) => { room.tick(now); requestAnimationFrame(loop); };
   requestAnimationFrame(loop);

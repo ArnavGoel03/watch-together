@@ -131,14 +131,20 @@ h1 .line:nth-child(2) > span { animation-delay: 90ms; }
 /* The picture: a cheap, tasteful stand-in for video rather than a real file, so the page
    stays instant and nothing has to be licensed. */
 .pic { position:relative; aspect-ratio: 16/9; overflow:hidden; background:#050506; }
-.pic .band {
-  position:absolute; inset:0;
-  background:
-    linear-gradient(115deg, rgba(96,165,250,.30), rgba(167,139,250,.22) 40%, rgba(74,222,128,.18) 75%),
-    repeating-linear-gradient(115deg, rgba(255,255,255,.05) 0 2px, transparent 2px 9px);
-  transform: translateX(var(--shift, 0%));
-  transition: transform 120ms linear;
-}
+.screens { position:relative; }
+/* The demo screens hold real YouTube embeds. Until somebody presses play they hold the
+   video's own thumbnail instead, because two embeds are most of a megabyte and this page
+   has to paint on mobile data before it has earned that. */
+.pic .poster, .pic .frame { position:absolute; inset:0; width:100%; height:100%; }
+.pic .poster { object-fit: cover; opacity:.92; }
+.pic .frame { border:0; opacity:0; transition: opacity .5s ease; }
+.pic .frame iframe { width:100%; height:100%; border:0; display:block; pointer-events:none; }
+.stage.is-live .pic .frame { opacity:1; }
+.stage.is-live .pic .poster { opacity:0; transition: opacity .5s ease .1s; }
+
+/* The picture is scaled a touch so the embed's own letterboxing never shows a seam. */
+.stage.is-live .pic .frame iframe { transform: scale(1.02); transform-origin:center; }
+
 .pic .vig { position:absolute; inset:0; background: radial-gradient(75% 75% at 50% 45%, transparent 0%, rgba(0,0,0,.55) 100%); }
 .pic .adcard {
   position:absolute; inset:0; display:grid; place-items:center;
@@ -202,3 +208,90 @@ footer a:hover { color: var(--text); }
   html { scroll-behavior:auto; }
   .reveal { opacity:1; transform:none; }
 }
+
+/* Start affordance. Sits over both screens, because pressing it starts the room, not one
+   player, which is the whole point being demonstrated. */
+.stage-start {
+  position:absolute; inset:0; z-index:3; display:flex; gap:12px;
+  align-items:center; justify-content:center;
+  font: inherit; font-size:15px; font-weight:600; color: var(--text);
+  background: rgba(6,6,8,.55); backdrop-filter: blur(3px);
+  border:0; cursor:pointer; border-radius:14px;
+  transition: opacity .35s ease, visibility .35s ease;
+}
+.stage-start-mark {
+  width:44px; height:44px; border-radius:50%;
+  background: rgba(255,255,255,.10);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.16), 0 6px 18px rgba(0,0,0,.45);
+  position:relative;
+}
+.stage-start-mark::after {
+  content:""; position:absolute; left:52%; top:50%; translate:-50% -50%;
+  border-left: 13px solid var(--text);
+  border-top: 8px solid transparent; border-bottom: 8px solid transparent;
+}
+.stage-start:hover .stage-start-mark { background: rgba(255,255,255,.15); }
+.stage-start:active { scale: .995; }
+.stage.is-live .stage-start { opacity:0; visibility:hidden; pointer-events:none; }
+
+/* Only one side ever carries sound, which is the answer to "will we hear it twice". */
+.sound {
+  font: inherit; font-size:11px; font-weight:600; letter-spacing:.02em;
+  color: var(--faint); background: rgba(255,255,255,.05);
+  border:0; border-radius:999px; padding:3px 9px; margin-left:auto; cursor:pointer;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.07);
+  transition: color .2s ease, background .2s ease;
+}
+.sound:hover { color: var(--text); background: rgba(255,255,255,.09); }
+.sound[aria-pressed="true"] { color: var(--text); background: rgba(255,255,255,.12); }
+/* Scoped to the sibling, so the screen without a sound button keeps its own
+   margin-left:auto and its status stays pinned right. */
+.sound + .screen-state { margin-left:12px; }
+.stage:not(.is-live) .sound { visibility:hidden; }
+@media (prefers-reduced-motion: reduce) {
+  .pic .frame, .pic .poster, .stage-start { transition:none; }
+}
+
+/* When the embeds are blocked, the screens keep their posters and the demo keeps running
+   on the room clock alone. Better an honest still than a third party's error card. */
+.stage.is-fallback .pic .frame { display:none; }
+.stage.is-fallback .stage-start { opacity:0; visibility:hidden; pointer-events:none; }
+.stage.is-fallback .sound { display:none; }
+
+/* Document pages: support and privacy. Same material as the rest of the site, because a
+   support page that looks like a different product is the moment somebody stops trusting
+   the thing they just installed. Narrower measure than the marketing page, since these
+   are read rather than scanned. */
+.doc { max-width: 760px; margin: 0 auto; padding: 96px 24px 0; }
+.doc h1 { font-size: clamp(34px, 5vw, 46px); font-weight: 700; letter-spacing: -.03em; line-height: 1.08; }
+.doc .updated { margin-top: 14px; font-size: 13px; color: var(--faint); }
+.doc h2 {
+  margin-top: 52px; font-size: 20px; font-weight: 650; letter-spacing: -.018em;
+  padding-top: 26px; border-top: 1px solid var(--line);
+}
+.doc h3 { margin-top: 30px; font-size: 16px; font-weight: 650; letter-spacing: -.012em; }
+.doc p { margin-top: 12px; color: var(--dim); font-size: 15.5px; }
+.doc ul { margin-top: 14px; padding-left: 20px; }
+.doc li { color: var(--dim); font-size: 15.5px; margin-bottom: 9px; }
+.doc strong { color: var(--text); font-weight: 600; }
+.doc a[href] { text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--line-2); }
+.doc a[href]:hover { text-decoration-color: var(--text); }
+.doc code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .92em;
+  background: var(--raised); border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px;
+}
+
+/* A question and its answer, raised off the page so a long list of them stays scannable. */
+.qa {
+  margin-top: 14px; padding: 20px 22px;
+  background: var(--raised); border: 1px solid var(--line); border-radius: var(--r);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.05);
+}
+.qa h3 { margin-top: 0; }
+.qa p:first-of-type { margin-top: 10px; }
+.doc-cta {
+  margin-top: 20px; padding: 24px;
+  background: var(--raised); border: 1px solid var(--line-2); border-radius: var(--r-lg);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.07);
+}
+.doc-cta p:first-child { margin-top: 0; }
