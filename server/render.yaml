@@ -14,4 +14,18 @@ services:
         value: 10000
       - key: MAX_ROOM_MEMBERS
         value: 50
+      # Signs the host tokens that let someone reclaim their own room after a reload, and
+      # that stop a stranger claiming host by rebuilding a room they merely know the code
+      # for. generateValue makes Render mint it once and keep it stable across deploys,
+      # which is the point: a secret that changed on every deploy would silently disable
+      # host reclaim exactly when it is needed, since a restart is when rooms get rebuilt.
+      # Without it the server still runs and simply never restores host, which is the safe
+      # direction to fail.
+      - key: HOST_TOKEN_SECRET
+        generateValue: true
+      # Number of proxies in front of this process that append to X-Forwarded-For. Render
+      # terminates TLS and adds exactly one. Reading the wrong end of that header is how
+      # a client forges its own address and walks past every per-IP limit.
+      - key: TRUSTED_PROXY_HOPS
+        value: 1
     healthCheckPath: /health
