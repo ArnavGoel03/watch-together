@@ -61,11 +61,27 @@
       return root.__wtConfig.ROOM_CODE_REGEX.test(c) || root.__wtConfig.CUSTOM_NAME_REGEX.test(c);
     },
 
-    // A relay URL we are willing to talk to. wss only: room codes, chat and the address of
+    // A relay URL we are willing to talk to.
+    //
+    // wss only, with one exception: loopback. Room codes, chat and the address of
     // everything you watch cross this socket, and ws:// puts all of it in clear text on
-    // whatever network the viewer happens to be on.
+    // whatever network the viewer is on. Loopback never leaves the machine, cannot be
+    // intercepted, and cannot be given a real certificate, so refusing it does not protect
+    // anyone: it just makes local development and the browser test harness impossible.
+    //
+    // That is not hypothetical. Rejecting ws://localhost silently sent the two-browser
+    // harness to the PRODUCTION relay instead of the local one under test, where it quietly
+    // passed for a while and then started failing against real rate limits.
     isValidServerUrl(raw) {
-      return typeof raw === "string" && /^wss:\/\/[^\s]+$/i.test(raw);
+      if (typeof raw !== "string") return false;
+      if (/^wss:\/\/[^\s]+$/i.test(raw)) return true;
+      if (!/^ws:\/\/[^\s]+$/i.test(raw)) return false;
+      try {
+        const host = new URL(raw).hostname;
+        return host === "localhost" || host === "127.0.0.1" || host === "[::1]" || host === "::1";
+      } catch {
+        return false;
+      }
     },
 
     // True only for a URL it is safe to send someone's tab to.

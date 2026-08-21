@@ -398,9 +398,9 @@ $("#btnSaveServer").addEventListener("click", () => {
     showToast("Enter a server URL");
     return;
   }
-  // wss:// only. Room codes, chat and the URL of everything you watch cross this socket,
-  // and ws:// puts all of it in clear text on whatever network the user happens to be on.
-  if (!/^wss:\/\//i.test(url)) {
+  // One shared rule, in config.js: wss everywhere, with a loopback exception so local
+  // development and the test harness can point at a server on this machine.
+  if (!window.__wtConfig.isValidServerUrl(url)) {
     showToast("Server URL must start with wss://");
     return;
   }

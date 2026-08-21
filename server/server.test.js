@@ -86,6 +86,30 @@ afterAll(() => { if (serverProcess) serverProcess.kill("SIGTERM"); });
 
 describe("Static checks", () => {
   const extDir = join(__dirname, "..", "extension");
+
+  // People run this alongside a Zoom or Meet call: that is the whole reason the built-in
+  // voice mesh ships disabled. Two microphone consumers on one machine is at best an echo
+  // problem and at worst a call that cannot hear you, and a microphone permission sitting
+  // next to <all_urls> is what got an earlier version rejected from the Chrome Web Store.
+  // The WebRTC code is deliberately kept, so this asserts the gate rather than its absence.
+  it("never asks for the microphone: voice is gated, not merely unused", () => {
+    const overlay = readFileSync(join(extDir, "overlay.js"), "utf8");
+    expect(overlay).toMatch(/const VOICE_ENABLED = false/);
+
+    // Every getUserMedia call must sit behind that flag.
+    const lines = overlay.split("\n");
+    lines.forEach((line, i) => {
+      if (!line.includes("getUserMedia(")) return;
+      if (line.trim().startsWith("//") || line.includes("console.")) return;
+      const before = lines.slice(Math.max(0, i - 30), i).join("\n");
+      expect(before).toMatch(/if \(!VOICE_ENABLED\) return/);
+    });
+
+    for (const name of ["manifest.json", "manifest.firefox.json"]) {
+      const manifest = readFileSync(join(extDir, name), "utf8");
+      expect(manifest).not.toMatch(/microphone|audioCapture/i);
+    }
+  });
   const getJsFiles = (dir) => {
     const files = [];
     for (const e of readdirSync(dir, { withFileTypes: true })) {
@@ -111,16 +135,25 @@ describe("Static checks", () => {
     expect(m.content_scripts[0].run_at).toBe("document_start");
   });
 
-  it("no hardcoded localhost in extension (except config)", () => {
+  // What this is actually protecting against is a development endpoint shipping to users:
+  // a relay URL pointing at the machine it was written on, which works perfectly for the
+  // author and for nobody else.
+  //
+  // It is deliberately about URLs, not about the word. config.js names localhost as part of
+  // a validation RULE (ws:// is refused everywhere except loopback, so that local
+  // development and the test harness can point at a server on this machine), and that is
+  // the opposite of a hardcoded endpoint. Matching the bare word flagged that rule and
+  // would have pushed someone to delete a security check to get a green suite.
+  it("no development endpoint is hardcoded in the extension", () => {
+    const ENDPOINT = /(wss?|https?):\/\/(localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)/i;
     for (const f of getJsFiles(extDir)) {
-      const c = readFileSync(f, "utf-8");
-      if (f.includes("background") && c.includes("DEFAULT_SERVER_URL")) continue;
-      const lines = c.split("\n");
-      for (let i = 0; i < lines.length; i++) {
-        if (lines[i].includes("localhost") && !lines[i].trim().startsWith("//")) {
-          throw new Error(`${f}:${i + 1} has localhost`);
+      const lines = readFileSync(f, "utf-8").split("\n");
+      lines.forEach((line, i) => {
+        if (line.trim().startsWith("//") || line.trim().startsWith("*")) return;
+        if (ENDPOINT.test(line)) {
+          throw new Error(`${f}:${i + 1} hardcodes a local endpoint: ${line.trim()}`);
         }
-      }
+      });
     }
   });
 });

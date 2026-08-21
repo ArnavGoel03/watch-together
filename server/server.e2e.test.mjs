@@ -844,6 +844,60 @@ test("watchdog: a silent sync leader is handed off to someone who can actually b
   closeAll(h, g);
 });
 
+// Host-only mode is a promise: nobody but the host moves the film. The heartbeat path used
+// to have no host check at all, which did not matter while the leader was almost always the
+// host. It started mattering the moment the leader role learned to step over anybody in an
+// ad break: the host hits a routine advert, a guest inherits the role, and that guest's
+// self-reported position starts driving the host's own video.
+test("host mode: a guest cannot drive playback even after inheriting the leader role", async () => {
+  let h, g;
+  try {
+    h = await host({ mode: "host" });
+    g = await guest(h.code, "Guest");
+    await waitFor(h.ws, "member-joined");
+    await sleep(50);
+
+    // The host hits an ad, which is precisely when the role would move.
+    send(h.ws, { type: "ad-state", active: true });
+    await sleep(150);
+    drain(h.ws, "heartbeat");
+
+    // The guest, leader or not, tries to drive the room.
+    send(g.ws, { type: "heartbeat", playing: true, currentTime: 9999, playbackRate: 1 });
+    await sleep(300);
+
+    drain(h.ws, "sync");
+    send(h.ws, { type: "request-state" });
+    const state = await waitFor(h.ws, "sync");
+    assert.notEqual(state.currentTime, 9999, "a guest must never become the room's position authority in host mode");
+  } finally {
+    if (h) closeAll(h);
+    if (g) closeAll(g);
+  }
+});
+
+test("host mode: the host keeps the leader role rather than handing it to a guest", async () => {
+  let h, g;
+  try {
+    h = await host({ mode: "host" });
+    g = await guest(h.code, "Guest");
+    await waitFor(h.ws, "member-joined");
+    await sleep(80);
+    drain(g.ws, "heartbeat-role");
+
+    // Even with the host in an ad break, the guest must not be told they are leading: in a
+    // host-only room every heartbeat they sent would be rejected anyway, which reads as a
+    // room that has quietly stopped syncing.
+    send(h.ws, { type: "ad-state", active: true });
+    await sleep(300);
+    const roles = g.ws.msgs.filter((m) => m.type === "heartbeat-role");
+    assert.ok(!roles.some((r) => r.isLeader), "a guest is never the leader of a host-only room");
+  } finally {
+    if (h) closeAll(h);
+    if (g) closeAll(g);
+  }
+});
+
 // ============================================================
 // Four people in a room
 // ============================================================

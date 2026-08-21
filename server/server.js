@@ -167,11 +167,17 @@ function cleanupRoom(roomCode) {
 // So when the last viewer goes dark, freeze the clock. When the first one comes back,
 // start it again from where it stopped.
 function everyMemberInAd(room) {
-  if (room.members.size === 0) return false;
+  let live = 0;
   for (const member of room.members.values()) {
+    // A socket that died without a close frame sits in the map for up to a minute before
+    // ping/pong reaps it, carrying whatever it last reported. A ghost still marked
+    // "watching" would veto the freeze on behalf of somebody who is not there, and the
+    // room would run on through an ad break exactly as it did before any of this existed.
+    if (!member.ws || member.ws.readyState !== 1) continue;
+    live++;
     if (!member.adActive) return false;
   }
-  return true;
+  return live > 0;
 }
 
 function updateRoomAdFreeze(room) {
@@ -193,6 +199,11 @@ function updateRoomAdFreeze(room) {
     // Somebody is watching again. Restart from the held position, not from before the break.
     st.lastUpdate = Date.now();
     st.frozenAt = null;
+    // The staleness clock has to restart too. The whole break counted as silence, and the
+    // sweep was exempting the room for exactly that reason; without this the first sweep
+    // after the break sees a minute of quiet and demotes the leader at the precise moment
+    // playback is trying to resume.
+    room.lastHeartbeatAt = Date.now();
     console.log(`[room] ${room.code} ad break over, clock running again from ${st.currentTime.toFixed(1)}s`);
   }
 }
@@ -207,6 +218,15 @@ function positionTimestamp(room) {
 // Elect heartbeat leader - the first member in the room.
 // Only this user sends heartbeats to avoid N^2 broadcast storm.
 function getHeartbeatLeader(room) {
+  // In a host-only room the host is the only member the server will accept playback from,
+  // so they are the only member it is meaningful to make leader. Handing the role to a
+  // guest there produces a leader whose every heartbeat is rejected, which looks exactly
+  // like a room that has silently stopped syncing.
+  if (room.mode === "host") {
+    const host = room.members.get(room.hostId);
+    return host && host.ws && host.ws.readyState === 1 ? room.hostId : null;
+  }
+
   // First member in insertion order, but only one whose socket is actually open AND who is
   // not currently sitting out an ad. A member whose connection died without a clean close
   // is still in the map until ping/pong reaps it, and a member watching an ad deliberately
@@ -654,6 +674,19 @@ wss.on("connection", (ws, req) => {
 
     if (!msg || typeof msg.type !== "string") return;
 
+    // Anything at all arriving from this member, other than the message that sets the flag,
+    // is proof they are connected and doing something. The ad flag is edge-triggered, so
+    // without a path like this a lost "my ad ended" leaves them marked in a break with no
+    // organic way back: their heartbeats are dropped before the reset line if they are not
+    // the leader, and a solo viewer stops heartbeating altogether.
+    if (msg.type !== "ad-state" && currentRoom) {
+      const self = rooms.get(currentRoom)?.members.get(userId);
+      if (self && self.adActive) {
+        self.adActive = false;
+        updateRoomAdFreeze(rooms.get(currentRoom));
+      }
+    }
+
     switch (msg.type) {
       case "create-room": {
         if (!isLoopback(clientIp) && !roomCreateLimiter.check(clientIp)) {
@@ -954,6 +987,14 @@ wss.on("connection", (ws, req) => {
         // Only accept heartbeats from the designated leader
         const leaderId = getHeartbeatLeader(rm);
         if (userId !== leaderId) return;
+
+        // And in a host-only room, only from the host. The `sync` path has always checked
+        // this; the heartbeat path never did, which did not matter while the leader was
+        // almost always the host. It matters now that the leader role deliberately steps
+        // over anybody in an ad break: the host hits a routine advert, a guest inherits the
+        // role, and that guest's self-reported position starts driving the host's own
+        // video. That is exactly what host-only mode exists to prevent.
+        if (rm.mode === "host" && rm.hostId !== userId) return;
 
         const ct = parseFloat(msg.currentTime);
         const pr = parseFloat(msg.playbackRate) || 1;

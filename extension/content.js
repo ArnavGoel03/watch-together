@@ -54,6 +54,16 @@
   let lastAttachedElement = null; // identity, so re-binding the same node is not a "remount"
   let attachedAt = 0;   // when we last bound a genuinely NEW video element
   let awaitingGesture = false; // autoplay policy blocked a remote play; the viewer must click
+  // Seconds this viewer's copy of the film runs AHEAD of the room's timeline. Two people
+  // watching the same title from different sources do not share a clock: a different rip, a
+  // region cut, a version with the adverts still cut in. Without a way to say so, the room
+  // and the viewer drag each other back and forth forever, each convinced the other has
+  // drifted. The room's timeline stays canonical; this shifts one viewer against it, and
+  // only locally.
+  let syncOffset = 0;
+  chrome.storage.local.get(["syncOffset"], /** @param {any} d */ (d) => {
+    if (typeof d.syncOffset === "number") syncOffset = d.syncOffset;
+  });
 
   function isLiveStream(video) {
     if (!video) return false;
@@ -149,6 +159,11 @@
       video.addEventListener(event, onVideoEvent);
     });
 
+    // A different element, or the same element loading different content, means whatever
+    // we learned about "how long the show is" belongs to something else now.
+    if (isNewElement) forgetContentDuration();
+    video.addEventListener("durationchange", onDurationChange);
+
     setupCCDetection(video);
 
     // If we have a pending playback state, apply it now
@@ -164,6 +179,18 @@
     events.forEach((event) => {
       video.removeEventListener(event, onVideoEvent);
     });
+    video.removeEventListener("durationchange", onDurationChange);
+  }
+
+  // The player swapped what this element is playing. If the new thing is materially
+  // shorter than what we had learned, that is a different piece of content, not an advert
+  // inside the old one, so stop comparing the two.
+  function onDurationChange(e) {
+    const d = e.target && e.target.duration;
+    if (!isFinite(d) || d <= 0) return;
+    if (contentDuration && d > AD_MAX_DURATION && Math.abs(d - contentDuration) > AD_MAX_DURATION) {
+      forgetContentDuration();
+    }
   }
 
   // Fullscreen transitions on YouTube/Netflix often remount the video element,
@@ -308,6 +335,16 @@
   const AD_DURATION_RATIO = 3;      // content must be at least 3x the ad to trust the signal
   const AD_WEDGE_MAX_MS = 180000;   // no real ad break runs this long
 
+  // The longest duration seen SO FAR, for the video we are currently bound to. It used to
+  // be reset only when the URL changed, which misses the case that actually happens on a
+  // playlist or an autoplay carousel: the site rolls from a 90 minute film straight into a
+  // 40 second recap without touching the URL. The old film's length then made the recap
+  // look exactly like an advert, and sync went quiet for three minutes.
+  function forgetContentDuration() {
+    contentDuration = 0;
+    durationLearnedAt = Date.now();
+  }
+
   function noteContentDuration(video) {
     if (!video) return;
     const d = video.duration;
@@ -318,7 +355,16 @@
     }
   }
 
+  // While this is in the future we do not believe DOM ad markers. Set only after a marker
+  // has insisted an ad is running for longer than any real ad break, which happens: players
+  // reuse their ad container and leave a stray hidden node in it, so `:not(:empty)` keeps
+  // matching after the ad has visibly finished. Trusting that forever means this viewer is
+  // silently cut out of the party for the rest of the session, and can hold the whole
+  // room's clock with them.
+  let markerDistrustUntil = 0;
+
   function adMarkerPresent() {
+    if (Date.now() < markerDistrustUntil) return false;
     for (const sel of AD_SELECTORS) {
       if (document.querySelector(sel)) return true;
     }
@@ -333,8 +379,17 @@
     const d = video.duration;
     if (!isFinite(d) || d <= 0) return false;
 
+    // The duration-collapse test compares this video against the longest one we have seen.
+    // Straight after we learn a new length that comparison is against the PREVIOUS show,
+    // so a short clip following a long film reads as an ad. The warmup used to live in the
+    // polling loop only, which left the three callers that actually gate behaviour
+    // (onVideoEvent, applySync, sendHeartbeat) unprotected: they would cut this viewer out
+    // of the room for a video that was never an ad.
+    const heuristicWarm = Date.now() - durationLearnedAt > AD_HEURISTIC_WARMUP_MS;
+
     // Universal: the element's duration collapsed far below the known content length.
     if (
+      heuristicWarm &&
       contentDuration > AD_MAX_DURATION * 1.5 &&
       d <= AD_MAX_DURATION &&
       contentDuration / d >= AD_DURATION_RATIO
@@ -365,16 +420,23 @@
 
   function updateAdState() {
     noteContentDuration(activeVideo);
-    let nowAd = adMarkerPresent() || (Date.now() - durationLearnedAt > AD_HEURISTIC_WARMUP_MS && isAdPlaying());
+    let nowAd = isAdPlaying();
 
-    // Safety valve. The duration heuristic can be wrong: a genuinely short video that
-    // follows a long one on the same page looks exactly like an ad, and being wrong here
-    // means sync is silently dead for the rest of the session. No real ad break runs for
-    // three minutes, so if we still believe one is running and no player has actually said
-    // so, we are the ones who are wrong. Forget the content length and rejoin the room.
-    if (nowAd && adActive && !adMarkerPresent() && Date.now() - adSince > AD_WEDGE_MAX_MS) {
+    // Safety valve, and it deliberately does NOT exempt the marker case. Every way of
+    // deciding an ad is running can be wrong: the duration heuristic mistakes a short clip
+    // that follows a long film, and a DOM marker can simply never clear. Being wrong here
+    // means sync is silently dead for the rest of the session, and now that the server
+    // holds the room's clock when everyone reports a break, being wrong can stop the film
+    // for people who are watching it perfectly happily.
+    //
+    // No real ad break runs for three minutes. Past that, whatever we think we are seeing,
+    // we are the ones who are wrong: drop the learned content length, and stop believing
+    // DOM markers for a while so the same stuck node does not re-trip this immediately.
+    if (nowAd && adActive && Date.now() - adSince > AD_WEDGE_MAX_MS) {
       contentDuration = 0;
       nowAd = false;
+      markerDistrustUntil = Date.now() + 60000;
+      console.warn("[WatchTogether] Ad detection was stuck for too long, rejoining the room");
     }
 
     if (nowAd === adActive) return;
@@ -603,8 +665,9 @@
 
     lastSyncTime = Date.now();
 
-    // Compensate for network/server delay using clock offset (corrects for skewed system clocks)
-    let targetTime = msg.currentTime;
+    // Compensate for network/server delay using clock offset (corrects for skewed system
+    // clocks), and shift into this viewer's copy of the film if they have said it differs.
+    let targetTime = msg.currentTime + syncOffset;
     if (!live && msg.playing && msg.timestamp) {
       const elapsedSec = (nowServer() - msg.timestamp) / 1000;
       targetTime += Math.max(0, elapsedSec) * normalRate;
@@ -725,7 +788,8 @@
     sendMsg({
       type: "heartbeat",
       playing: !video.paused,
-      currentTime: video.currentTime,
+      // Translated out of this copy's timeline and into the room's.
+      currentTime: video.currentTime - syncOffset,
       playbackRate: video.playbackRate,
     });
 
@@ -1199,6 +1263,12 @@
   window.__wtCore = {
     resync: requestResync,
     isInRoom: () => inRoom,
+    // The overlay owns the offset control; the sync core owns applying it.
+    setOffset: (seconds) => {
+      const n = Number(seconds);
+      syncOffset = Number.isFinite(n) ? n : 0;
+    },
+    getOffset: () => syncOffset,
     // Drift goes stale fast: report null rather than a number the user would misread.
     getDrift: () => (Date.now() - lastDriftAt > 12000 ? null : lastDrift),
   };

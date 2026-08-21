@@ -533,7 +533,7 @@ chrome.runtime.onConnect.addListener((port) => {
 
       case "set-server-url":
         if (port.name !== "popup") break;
-        if (typeof msg.url !== "string" || !/^wss:\/\//i.test(msg.url)) {
+        if (!self.__wtConfig.isValidServerUrl(msg.url)) {
           postTo("popup", { type: "error", message: "Server URL must start with wss://" });
           break;
         }

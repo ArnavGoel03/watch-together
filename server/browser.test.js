@@ -219,12 +219,31 @@ async function closeAllPages(browser) {
   }
 }
 
+// Point the extension at the server this test started, and PROVE it took.
+//
+// This used to be fire-and-forget, and when a later change tightened the popup's URL
+// validation to wss-only it silently rejected ws://localhost. The extension quietly stayed
+// on the production relay, so this whole suite spent its runs creating real rooms on the
+// live server. It passed, too, right up until it started tripping production rate limits,
+// at which point the failure looked like a sync bug. A test that does not verify what it is
+// testing against is not testing what you think.
 async function setServerUrl(popup) {
-  await popup.evaluate((port) => {
-    document.getElementById("serverUrl").value = `ws://localhost:${port}`;
+  const target = `ws://localhost:${SERVER_PORT}`;
+  await popup.evaluate((url) => {
+    document.getElementById("serverUrl").value = url;
     document.getElementById("btnSaveServer").click();
-  }, SERVER_PORT);
+  }, target);
   await sleep(800);
+
+  const stored = await popup.evaluate(
+    () => new Promise((r) => chrome.storage.local.get(["serverUrl"], (d) => r(d.serverUrl || "")))
+  );
+  if (stored !== target) {
+    throw new Error(
+      `The extension did not accept the test server URL (stored ${JSON.stringify(stored)}, wanted ${target}). ` +
+        `Refusing to run: these tests would otherwise be driving the production relay.`
+    );
+  }
 }
 
 // The popup only enables Create once it believes it is over a real video tab.
@@ -336,6 +355,83 @@ describe("Browser integration", () => {
     const hostFollowed = await waitUntil(async () => Math.abs((await videoTime(hostPage)) - 120) < 5);
     expect(hostFollowed, `host sat at ${await videoTime(hostPage)}s while the guest was at 120s`).toBe(true);
   }, 120000);
+
+  // The member list is the change that makes this feel trustworthy. A count answers "is
+  // anyone else there". It does not answer the question people actually ask when something
+  // looks wrong, which is "is it me, or is it them".
+  it("the overlay shows who is in the room, by name", async () => {
+    const hostPage = await openVideoPage(hostBrowser, "wholist-host");
+    const hostPopup = await openPopupFor(hostBrowser, "wholist-host");
+    await setServerUrl(hostPopup);
+    const code = await createRoom(hostPopup, "Alice");
+    await hostPopup.close();
+
+    const guestPopup = await openPopupFor(guestBrowser, "wholist-guest");
+    await setServerUrl(guestPopup);
+    expect(await joinRoom(guestPopup, "Bob", code)).toBe(code);
+    await guestPopup.close();
+
+    // Open the panel and reveal the list, the way a viewer would.
+    await hostPage.waitForSelector("#wt-overlay-btn", { timeout: 15000 });
+    await hostPage.evaluate(() => document.getElementById("wt-overlay-btn").click());
+    await hostPage.waitForSelector("#wt-members-toggle", { timeout: 10000 });
+    await hostPage.evaluate(() => {
+      const list = document.getElementById("wt-members");
+      if (list.hasAttribute("hidden")) document.getElementById("wt-members-toggle").click();
+    });
+
+    const listed = await waitUntil(async () => {
+      const names = await hostPage.evaluate(() =>
+        [...document.querySelectorAll("#wt-members .wt-member-name")].map((e) => e.textContent)
+      );
+      return names.length >= 2 && names.some((n) => n.includes("Bob"));
+    });
+    const names = await hostPage.evaluate(() =>
+      [...document.querySelectorAll("#wt-members .wt-member-name")].map((e) => e.textContent)
+    );
+    expect(listed, `member list showed ${JSON.stringify(names)}`).toBe(true);
+    // You are always first, and always marked, so the row you care about is findable.
+    expect(names[0]).toMatch(/\(you\)/);
+  }, 120000);
+
+  // Everything past the three things most people need lives behind one disclosure, and it
+  // has to actually contain the things a power user came looking for.
+  it("advanced controls are collapsed for a first-time viewer but complete", async () => {
+    // Both disclosures deliberately REMEMBER being opened, which is the whole point: a
+    // power user opens them once and never thinks about it again. So to see what a
+    // FIRST-TIME viewer sees, this uses the guest profile, which never opens them: the
+    // member-list test above drives the host profile, and that preference is now stored
+    // there. Clearing the preference directly is not an option, because chrome.storage
+    // does not exist in the main world that page.evaluate runs in, and opening an
+    // extension page to reach it makes that page nominate itself as the party tab.
+    const page = await openVideoPage(guestBrowser, "advanced");
+    await page.waitForSelector("#wt-overlay-btn", { timeout: 15000 });
+    await page.evaluate(() => document.getElementById("wt-overlay-btn").click());
+    await page.waitForSelector("#wt-advanced", { timeout: 10000 });
+    await new Promise((r) => setTimeout(r, 400)); // the stored preference is read async
+
+    const state = await page.evaluate(() => {
+      const adv = document.getElementById("wt-advanced");
+      const inside = (sel) => !!adv.querySelector(sel);
+      return {
+        closed: !adv.open,
+        membersHidden: document.getElementById("wt-members").hasAttribute("hidden"),
+        has: {
+          syncHealth: inside("#wt-sync-health"),
+          resync: inside("#wt-resync"),
+          controlMode: inside("#wt-mode-seg"),
+          offset: inside("#wt-offset"),
+          hotkey: inside("#wt-hotkey"),
+          server: inside("#wt-server"),
+        },
+      };
+    });
+    expect(state.closed, "the drawer must start closed").toBe(true);
+    expect(state.membersHidden, "and the member list must start collapsed").toBe(true);
+    for (const [name, present] of Object.entries(state.has)) {
+      expect(present, `${name} should live in the advanced drawer`).toBe(true);
+    }
+  }, 60000);
 
   it("a session survives the party tab reloading", async () => {
     // The host drives, so the room has a real position to come back to.

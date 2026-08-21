@@ -60,6 +60,9 @@ interface WatchTogetherCore {
   isInRoom(): boolean;
   /** Seconds behind (+) or ahead (-), or null when the reading is too old to trust. */
   getDrift(): number | null;
+  /** Seconds this viewer's copy runs ahead of the room's timeline. */
+  setOffset(seconds: number): void;
+  getOffset(): number;
 }
 
 declare global {

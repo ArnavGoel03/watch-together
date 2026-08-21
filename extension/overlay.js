@@ -12,6 +12,14 @@
   let myUserId = null;
   let userName = "";
   let memberCount = 1;
+  // Who is here and what each of them is doing. The count alone answers "is anyone else
+  // there"; it does not answer the question people actually ask when something looks
+  // wrong, which is "is it me, or is it them". Names plus per-person state do.
+  const membersById = new Map(); // id -> { userName, inAd }
+  let iAmHost = false;
+  let iAmLeader = false;
+  let roomMode = "everyone";
+  let syncOffset = 0; // seconds this viewer's copy runs ahead of the room's timeline
   let pendingEnterSend = false; // true if user pressed Enter during IME composition
   const inFlight = new Set();
 
@@ -420,6 +428,164 @@
     document.addEventListener("webkitfullscreenchange", reparentPanel, true);
   }
 
+  // Everything the panel reveals rather than shows. The default surface is deliberately
+  // three things: the code, who is here, and chat. That is the whole job for most people.
+  // Everything else lives one click away and REMEMBERS whether it was opened, so somebody
+  // who wants the detail opens it once and never thinks about it again, while somebody who
+  // does not never sees it.
+  function wireProgressiveDisclosure() {
+    const membersToggle = overlayPanel.querySelector("#wt-members-toggle");
+    const membersList = overlayPanel.querySelector("#wt-members");
+    const advanced = overlayPanel.querySelector("#wt-advanced");
+
+    membersToggle.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const open = membersList.hasAttribute("hidden");
+      membersList.toggleAttribute("hidden", !open);
+      membersToggle.setAttribute("aria-expanded", String(open));
+      membersToggle.classList.toggle("wt-open", open);
+      chrome.storage.local.set({ wtMembersOpen: open });
+      if (open) renderMembers();
+    });
+
+    advanced.addEventListener("toggle", () => {
+      chrome.storage.local.set({ wtAdvancedOpen: advanced.open });
+    });
+
+    chrome.storage.local.get(
+      ["wtMembersOpen", "wtAdvancedOpen", "syncOffset", "overlayHotkey", "serverUrl"],
+      /** @param {any} d */ (d) => {
+        if (d.wtMembersOpen) {
+          membersList.removeAttribute("hidden");
+          membersToggle.setAttribute("aria-expanded", "true");
+          membersToggle.classList.add("wt-open");
+        }
+        if (d.wtAdvancedOpen) advanced.open = true;
+        syncOffset = typeof d.syncOffset === "number" ? d.syncOffset : 0;
+        const offsetInput = overlayPanel.querySelector("#wt-offset");
+        if (offsetInput) offsetInput.value = String(syncOffset);
+        const hotkeyInput = overlayPanel.querySelector("#wt-hotkey");
+        if (hotkeyInput) hotkeyInput.value = describeHotkey(d.overlayHotkey || overlayHotkey);
+        const serverInput = overlayPanel.querySelector("#wt-server");
+        if (serverInput) serverInput.value = d.serverUrl || "";
+        const serverHint = overlayPanel.querySelector("#wt-server .wt-adv-hint");
+        if (serverHint) serverHint.textContent = "";
+      }
+    );
+
+    wireOffsetControls();
+    wireHotkeyCapture();
+    wireServerControls();
+    wireModeControl();
+    renderModeControl();
+  }
+
+  // Only the host can move this, and the buttons say so by being disabled rather than by
+  // silently doing nothing when a guest presses them.
+  function wireModeControl() {
+    const seg = overlayPanel.querySelector("#wt-mode-seg");
+    seg.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const btn = e.target.closest(".wt-seg-btn");
+      if (!btn || btn.disabled) return;
+      const mode = btn.dataset.mode === "host" ? "host" : "everyone";
+      if (mode === roomMode) return;
+      safePost({ type: "set-mode", mode });
+    });
+  }
+
+  function describeHotkey(key) {
+    if (!key) return "";
+    if (key === " ") return "Space";
+    if (key === "\\") return "Backslash";
+    return key.length === 1 ? key.toUpperCase() : key;
+  }
+
+  // A per-viewer offset. Two people watching the same film from different sources have
+  // timelines that do not line up: a different rip, a region cut, a version with the
+  // adverts still in. Without this the room and the viewer simply fight forever, each
+  // dragging the other back. The offset is local: the room's timeline stays canonical and
+  // this viewer is shifted against it.
+  function wireOffsetControls() {
+    const input = overlayPanel.querySelector("#wt-offset");
+    const commit = (value) => {
+      const n = Number(value);
+      syncOffset = Number.isFinite(n) ? Math.max(-600, Math.min(600, n)) : 0;
+      input.value = String(syncOffset);
+      chrome.storage.local.set({ syncOffset });
+      addSystemMsg(
+        syncOffset === 0
+          ? "Offset cleared, following the room exactly"
+          : `Offset set: your video sits ${Math.abs(syncOffset)}s ${syncOffset > 0 ? "ahead of" : "behind"} the room`
+      );
+      window.__wtCore?.setOffset?.(syncOffset);
+      window.__wtCore?.resync?.();
+    };
+
+    input.addEventListener("change", () => commit(input.value));
+    overlayPanel.querySelector("#wt-offset-up").addEventListener("click", (e) => {
+      e.stopPropagation();
+      commit(Number(input.value || 0) + 0.5);
+    });
+    overlayPanel.querySelector("#wt-offset-down").addEventListener("click", (e) => {
+      e.stopPropagation();
+      commit(Number(input.value || 0) - 0.5);
+    });
+    // The most useful way to set this is not to type a number: it is to line the picture up
+    // by hand and then tell the extension that where you are now is correct.
+    overlayPanel.querySelector("#wt-offset-measure").addEventListener("click", (e) => {
+      e.stopPropagation();
+      const drift = window.__wtCore?.getDrift?.();
+      if (typeof drift !== "number") {
+        addSystemMsg("No recent reading from the room yet. Give it a few seconds.");
+        return;
+      }
+      commit(Math.round((syncOffset - drift) * 2) / 2);
+    });
+  }
+
+  function wireHotkeyCapture() {
+    const input = overlayPanel.querySelector("#wt-hotkey");
+    const hint = overlayPanel.querySelector("#wt-hotkey-hint");
+    // Single letters are how video players do their own shortcuts, so taking one means the
+    // viewer's key does two things at once on every site they watch on.
+    const COLLIDES = new Set(["f", "k", "j", "l", "c", "t", "i", "m", " "]);
+    input.addEventListener("keydown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const key = e.key;
+      if (["Shift", "Control", "Alt", "Meta", "Tab", "Escape", "Enter"].includes(key)) return;
+      if (COLLIDES.has(key.toLowerCase())) {
+        hint.textContent = `${describeHotkey(key)} is already a player shortcut. Pick something else.`;
+        return;
+      }
+      hint.textContent = "";
+      overlayHotkey = key;
+      input.value = describeHotkey(key);
+      chrome.storage.local.set({ overlayHotkey: key });
+    });
+  }
+
+  function wireServerControls() {
+    const input = overlayPanel.querySelector("#wt-server");
+    overlayPanel.querySelector("#wt-server-save").addEventListener("click", (e) => {
+      e.stopPropagation();
+      const url = input.value.trim();
+      if (url && !window.__wtConfig.isValidServerUrl(url)) {
+        addSystemMsg("A server address has to start with wss://");
+        return;
+      }
+      safePost({ type: "set-server-url", url });
+      addSystemMsg(url ? "Connecting to that server" : "Back to the default server");
+    });
+    overlayPanel.querySelector("#wt-server-reset").addEventListener("click", (e) => {
+      e.stopPropagation();
+      input.value = "";
+      safePost({ type: "set-server-url", url: "" });
+      addSystemMsg("Back to the default server");
+    });
+  }
+
   function setupHotkeyListeners() {
     document.addEventListener("keydown", (e) => {
       if (!matchesHotkey(e)) return;
@@ -563,20 +729,16 @@
       <div id="wt-view-room" class="wt-view">
         <div class="wt-room-info">
           <span class="wt-room-code" id="wt-room-code"></span>
-          <span class="wt-watchers"><span id="wt-member-count">1</span> watching</span>
+          <button class="wt-watchers" id="wt-members-toggle" aria-expanded="false" title="Who is here">
+            <span id="wt-member-count">1</span> watching
+            <svg class="wt-chev" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
         </div>
         <div class="wt-actions">
           <button class="wt-btn-small" id="wt-copy-code">Copy Code</button>
           <button class="wt-btn-small" id="wt-copy-link">Copy Link</button>
-          <button class="wt-btn-small" id="wt-mic" title="Toggle voice">
-            <span id="wt-mic-label">Voice</span>
-          </button>
-          <button class="wt-btn-small" id="wt-pip" title="Picture-in-picture">PiP</button>
         </div>
-        <div class="wt-sync-row">
-          <span class="wt-sync-health" id="wt-sync-health" title="How far your video is from the room">Sync: checking...</span>
-          <button class="wt-btn-small" id="wt-resync" title="Snap to the room's current position">Resync</button>
-        </div>
+        <div class="wt-members" id="wt-members" hidden></div>
         <div class="wt-voice-active" id="wt-voice-active"></div>
         <div class="wt-chat">
           <div class="wt-chat-messages" id="wt-messages"></div>
@@ -588,12 +750,64 @@
             </button>
           </div>
         </div>
+        <details class="wt-advanced" id="wt-advanced">
+          <summary class="wt-advanced-summary">
+            <svg class="wt-chev" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="9 18 15 12 9 6"/></svg>
+            Advanced
+          </summary>
+          <div class="wt-advanced-body">
+            <div class="wt-sync-row">
+              <span class="wt-sync-health" id="wt-sync-health" title="How far your video is from the room">Sync: checking...</span>
+              <button class="wt-btn-small" id="wt-resync" title="Snap to the room's current position">Resync</button>
+            </div>
+            <div class="wt-adv-field" id="wt-mode-field">
+              <span class="wt-adv-label">Who can control playback</span>
+              <div class="wt-seg" id="wt-mode-seg">
+                <button class="wt-seg-btn" data-mode="everyone">Everyone</button>
+                <button class="wt-seg-btn" data-mode="host">Host only</button>
+              </div>
+              <span class="wt-adv-hint" id="wt-mode-hint"></span>
+            </div>
+            <div class="wt-adv-field">
+              <span class="wt-adv-label">My video runs ahead of the room by</span>
+              <div class="wt-offset">
+                <button class="wt-step" id="wt-offset-down" title="Less">-</button>
+                <input type="number" id="wt-offset" class="wt-input wt-offset-input" step="0.5" value="0">
+                <span class="wt-offset-unit">s</span>
+                <button class="wt-step" id="wt-offset-up" title="More">+</button>
+                <button class="wt-btn-small" id="wt-offset-measure" title="Use the difference the room is showing right now">Use current</button>
+              </div>
+              <span class="wt-adv-hint">For when your copy is not identical to everyone else's: a different rip, a region cut, or a version without the adverts.</span>
+            </div>
+            <div class="wt-adv-field">
+              <span class="wt-adv-label">Show this panel with</span>
+              <input type="text" id="wt-hotkey" class="wt-input wt-hotkey-input" readonly placeholder="Click, then press a key">
+              <span class="wt-adv-hint" id="wt-hotkey-hint"></span>
+            </div>
+            <div class="wt-adv-field">
+              <span class="wt-adv-label">Sync server</span>
+              <input type="text" id="wt-server" class="wt-input" placeholder="wss://..." spellcheck="false">
+              <div class="wt-actions">
+                <button class="wt-btn-small" id="wt-server-save">Save server</button>
+                <button class="wt-btn-small" id="wt-server-reset">Use default</button>
+              </div>
+            </div>
+            <div class="wt-actions">
+              <button class="wt-btn-small" id="wt-pip" title="Picture-in-picture">Picture in picture</button>
+              <button class="wt-btn-small" id="wt-mic" title="Toggle voice">
+                <span id="wt-mic-label">Voice</span>
+              </button>
+            </div>
+          </div>
+        </details>
         <button class="wt-btn-leave" id="wt-leave">Leave</button>
       </div>
     `;
 
     document.body.appendChild(overlayPanel);
     trackFullscreenHost();
+
+    wireProgressiveDisclosure();
 
     // Wire up events
     overlayPanel.querySelector("#wt-close").addEventListener("click", (e) => {
@@ -776,10 +990,98 @@
     statusEl.className = `wt-panel-status ${connected ? "wt-live" : ""}`;
   }
 
+  // Renders the member list. Deliberately shows only what we genuinely know: inventing a
+  // confident-looking status we cannot actually measure would be worse than showing none.
+  function renderMembers() {
+    if (!overlayPanel) return;
+    const list = overlayPanel.querySelector("#wt-members");
+    if (!list) return;
+    list.textContent = "";
+
+    const entries = [...membersById.entries()];
+    // Put yourself first: it is the row people look for.
+    entries.sort(([idA], [idB]) => (idA === myUserId ? -1 : idB === myUserId ? 1 : 0));
+
+    for (const [id, m] of entries) {
+      const isYou = id === myUserId;
+      const row = document.createElement("div");
+      row.className = "wt-member";
+
+      const dot = document.createElement("span");
+      dot.className = "wt-member-dot" + (m.inAd ? " wt-member-away" : "");
+      row.appendChild(dot);
+
+      const name = document.createElement("span");
+      name.className = "wt-member-name";
+      name.textContent = isYou ? `${m.userName || "You"} (you)` : m.userName || "Someone";
+      row.appendChild(name);
+
+      const state = document.createElement("span");
+      state.className = "wt-member-state";
+      if (m.inAd) {
+        state.textContent = "ad break";
+      } else if (isYou) {
+        const drift = window.__wtCore?.getDrift?.();
+        state.textContent =
+          typeof drift !== "number" ? "watching"
+          : Math.abs(drift) < 0.5 ? "in sync"
+          : `${drift > 0 ? "behind" : "ahead"} ${Math.abs(drift).toFixed(1)}s`;
+      } else {
+        state.textContent = "watching";
+      }
+      row.appendChild(state);
+
+      if (isYou && iAmHost) {
+        const badge = document.createElement("span");
+        badge.className = "wt-member-badge";
+        badge.textContent = "host";
+        row.appendChild(badge);
+      }
+      if (isYou && iAmLeader) {
+        const badge = document.createElement("span");
+        badge.className = "wt-member-badge";
+        badge.title = "Your player is the one keeping everyone else in step";
+        badge.textContent = "syncing";
+        row.appendChild(badge);
+      }
+      list.appendChild(row);
+    }
+
+    if (entries.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "wt-member-empty";
+      empty.textContent = "Nobody else yet. Send them the code.";
+      list.appendChild(empty);
+    }
+  }
+
+  // Only the host can change the control mode, so show the rest of the room what the
+  // setting is without pretending they can move it.
+  function renderModeControl() {
+    if (!overlayPanel) return;
+    const seg = overlayPanel.querySelector("#wt-mode-seg");
+    const hint = overlayPanel.querySelector("#wt-mode-hint");
+    if (!seg) return;
+    for (const btn of seg.querySelectorAll(".wt-seg-btn")) {
+      const active = btn.dataset.mode === roomMode;
+      btn.classList.toggle("wt-seg-on", active);
+      btn.disabled = !iAmHost;
+      btn.setAttribute("aria-pressed", String(active));
+    }
+    if (hint) {
+      hint.textContent = iAmHost
+        ? ""
+        : roomMode === "host"
+          ? "The host is driving. You can still chat."
+          : "Anyone here can play, pause and seek.";
+    }
+  }
+
   function syncMemberCountDom() {
     if (!overlayPanel) return;
     const el = overlayPanel.querySelector("#wt-member-count");
     if (el) el.textContent = memberCount;
+    renderMembers();
   }
 
   function hidePanel() {
@@ -995,6 +1297,11 @@
           myUserId = msg.userId || myUserId;
           inRoom = true;
           memberCount = 1;
+          iAmHost = true;
+          roomMode = msg.mode || "everyone";
+          membersById.clear();
+          membersById.set(myUserId, { userName: userName || "You", inAd: false });
+          renderModeControl();
           if (overlayPanel) {
             overlayPanel.querySelector("#wt-room-code").textContent = msg.roomCode;
             syncMemberCountDom();
@@ -1010,6 +1317,12 @@
           myUserId = msg.userId || myUserId;
           inRoom = true;
           memberCount = msg.members?.length || 1;
+          iAmHost = !!msg.isHost;
+          roomMode = msg.mode || "everyone";
+          membersById.clear();
+          for (const m of msg.members || []) membersById.set(m.id, { userName: m.userName, inAd: false });
+          if (!membersById.has(myUserId)) membersById.set(myUserId, { userName: userName || "You", inAd: false });
+          renderModeControl();
           if (overlayPanel) {
             overlayPanel.querySelector("#wt-room-code").textContent = msg.roomCode;
             syncMemberCountDom();
@@ -1021,6 +1334,7 @@
 
         case "member-joined":
           memberCount = typeof msg.memberCount === "number" ? msg.memberCount : memberCount + 1;
+          if (msg.userId) membersById.set(msg.userId, { userName: msg.userName, inAd: false });
           syncMemberCountDom();
           addSystemMsg(`${msg.userName} joined`);
           break;
@@ -1034,6 +1348,9 @@
           inRoom = false;
           currentRoom = null;
           memberCount = 1;
+          membersById.clear();
+          iAmHost = false;
+          iAmLeader = false;
           stopVoice();
           voice.activePeerIds.clear();
           updateVoiceBadge();
@@ -1046,6 +1363,7 @@
 
         case "member-left":
           memberCount = typeof msg.memberCount === "number" ? msg.memberCount : Math.max(1, memberCount - 1);
+          if (msg.userId) membersById.delete(msg.userId);
           syncMemberCountDom();
           addSystemMsg(`${msg.userName} left`);
           // Clean up any lingering peer connection if they were on voice
@@ -1114,6 +1432,48 @@
         // the product feel broken: you typed, it looked sent, nobody ever saw it.
         case "send-failed":
           addSystemMsg(msg.message || "Not sent, still reconnecting.");
+          break;
+
+        // Who is doing what. This is what turns "it looks broken" into "Anshul is in an
+        // ad break and will be back", which is the difference between trusting the thing
+        // and closing it.
+        case "presence": {
+          const entry = membersById.get(msg.userId);
+          const next = {
+            userName: msg.userName || entry?.userName || "Someone",
+            inAd: msg.state === "ad",
+            state: msg.state || "watching",
+            drift: typeof msg.drift === "number" ? msg.drift : null,
+          };
+          membersById.set(msg.userId, next);
+          renderMembers();
+          if (msg.userId !== myUserId) {
+            if (next.inAd) addSystemMsg(`${next.userName} is in an ad break`);
+            else if (entry && entry.inAd) addSystemMsg(`${next.userName} is back`);
+          }
+          break;
+        }
+
+        case "mode-changed":
+          roomMode = msg.mode || "everyone";
+          renderModeControl();
+          addSystemMsg(
+            roomMode === "host"
+              ? "Only the host can control playback now"
+              : "Everyone can control playback now"
+          );
+          break;
+
+        case "host-transferred":
+          iAmHost = !!msg.isHost;
+          renderModeControl();
+          renderMembers();
+          if (iAmHost) addSystemMsg("You are the host now");
+          break;
+
+        case "heartbeat-role":
+          iAmLeader = !!msg.isLeader;
+          renderMembers();
           break;
 
         case "error":
@@ -1224,6 +1584,15 @@
         top: 60px;
         right: 16px;
         width: 300px;
+        /* Zoom robustness. At 200% browser zoom the viewport is half as many CSS pixels
+           wide, so a fixed 300px panel with a fixed offset can end up wider or taller than
+           the screen with no way to reach the bottom of it. Cap against the viewport and
+           let the body scroll instead. Everything here is in px on purpose: rem or em
+           would inherit the host page's root font size, and sites set that to all sorts of
+           things. */
+        max-width: calc(100vw - 32px);
+        max-height: calc(100vh - 76px);
+        flex-direction: column;
         background: #1c1c1e;
         border-radius: 12px;
         box-shadow: 0 12px 48px rgba(0,0,0,0.5);
@@ -1234,7 +1603,10 @@
         display: none;
         -webkit-font-smoothing: antialiased;
       }
-      #wt-overlay-panel.wt-visible { display: block; animation: wt-slide-in 0.2s ease-out; }
+      /* flex, not block: the panel is a column with a header that stays put and a body
+         that scrolls, which is what keeps it usable when the content is long or the
+         viewer is zoomed in and the viewport is short. */
+      #wt-overlay-panel.wt-visible { display: flex; animation: wt-slide-in 0.2s ease-out; }
       @keyframes wt-slide-in {
         from { opacity: 0; transform: translateY(-8px); }
         to { opacity: 1; transform: translateY(0); }
@@ -1313,10 +1685,182 @@
         margin: 10px 0;
       }
 
+      /* The scrolling region, so a tall panel at high zoom stays reachable. */
+      .wt-view {
+        overflow-y: auto;
+        overscroll-behavior: contain;
+      }
+
       .wt-room-info {
         text-align: center;
         margin-bottom: 10px;
       }
+
+      /* ---------- who is here ---------- */
+      /* The member list is the single change that makes this feel trustworthy. A count
+         answers "is anyone else there". It does not answer the question people actually
+         ask when something looks wrong, which is "is it me, or is it them". */
+      .wt-watchers {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        border: none;
+        background: none;
+        padding: 2px 4px;
+        border-radius: 5px;
+        font-family: inherit;
+        font-size: 12px;
+        color: rgba(235,235,245,0.5);
+        cursor: pointer;
+      }
+      .wt-watchers:hover { color: rgba(235,235,245,0.8); background: rgba(120,120,128,0.18); }
+      .wt-watchers .wt-chev { transition: transform 0.15s; }
+      .wt-watchers.wt-open .wt-chev { transform: rotate(180deg); }
+
+      .wt-members {
+        margin: 0 0 10px;
+        padding: 6px;
+        border-radius: 8px;
+        background: rgba(120,120,128,0.12);
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .wt-member {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        padding: 4px 6px;
+        border-radius: 5px;
+        font-size: 12px;
+        line-height: 1.3;
+      }
+      .wt-member-dot {
+        flex: 0 0 auto;
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: #30d158;
+      }
+      .wt-member-away { background: #ff9f0a; }
+      .wt-member-name {
+        flex: 1;
+        color: rgba(235,235,245,0.9);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .wt-member-state {
+        flex: 0 0 auto;
+        font-size: 11px;
+        color: rgba(235,235,245,0.45);
+      }
+      .wt-member-badge {
+        flex: 0 0 auto;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.3px;
+        text-transform: uppercase;
+        padding: 2px 5px;
+        border-radius: 4px;
+        background: rgba(167,139,250,0.18);
+        color: #a78bfa;
+      }
+      .wt-member-empty {
+        padding: 6px;
+        font-size: 11px;
+        color: rgba(235,235,245,0.4);
+        text-align: center;
+      }
+
+      /* ---------- everything else, one click away ---------- */
+      /* Collapsed by default so the ordinary surface stays three things, and it remembers
+         being opened so somebody who wants the detail opens it once and never again. */
+      .wt-advanced {
+        margin-top: 10px;
+        border-top: 1px solid rgba(120,120,128,0.24);
+        padding-top: 8px;
+      }
+      .wt-advanced-summary {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        cursor: pointer;
+        list-style: none;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.4px;
+        text-transform: uppercase;
+        color: rgba(235,235,245,0.45);
+        padding: 4px 2px;
+        user-select: none;
+      }
+      .wt-advanced-summary::-webkit-details-marker { display: none; }
+      .wt-advanced-summary:hover { color: rgba(235,235,245,0.75); }
+      .wt-advanced[open] .wt-advanced-summary .wt-chev { transform: rotate(90deg); }
+      .wt-advanced-summary .wt-chev { transition: transform 0.15s; }
+      .wt-advanced-body {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        padding: 8px 2px 2px;
+      }
+      .wt-adv-field { display: flex; flex-direction: column; gap: 5px; }
+      .wt-adv-label {
+        font-size: 11px;
+        font-weight: 600;
+        color: rgba(235,235,245,0.65);
+      }
+      .wt-adv-hint {
+        font-size: 10px;
+        line-height: 1.45;
+        color: rgba(235,235,245,0.38);
+      }
+
+      .wt-seg {
+        display: flex;
+        gap: 2px;
+        padding: 2px;
+        border-radius: 7px;
+        background: rgba(120,120,128,0.2);
+      }
+      .wt-seg-btn {
+        flex: 1;
+        padding: 5px 8px;
+        border: none;
+        border-radius: 5px;
+        background: none;
+        color: rgba(235,235,245,0.6);
+        font-family: inherit;
+        font-size: 11px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      .wt-seg-btn.wt-seg-on { background: rgba(167,139,250,0.9); color: #fff; }
+      .wt-seg-btn:disabled { cursor: default; opacity: 0.55; }
+
+      .wt-offset { display: flex; align-items: center; gap: 4px; }
+      .wt-offset-input {
+        width: 62px;
+        text-align: center;
+        padding: 5px 4px;
+        margin: 0;
+      }
+      .wt-offset-unit { font-size: 11px; color: rgba(235,235,245,0.45); }
+      .wt-step {
+        width: 24px;
+        height: 26px;
+        border: none;
+        border-radius: 5px;
+        background: rgba(120,120,128,0.24);
+        color: #a78bfa;
+        font-family: inherit;
+        font-size: 14px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      .wt-step:hover { background: rgba(120,120,128,0.36); }
+      .wt-hotkey-input { text-align: center; margin: 0; }
       .wt-room-code {
         display: block;
         font-size: 24px;
@@ -1464,39 +2008,45 @@
     document.head.appendChild(style);
   }
 
-  // Watch for player to load (SPAs load video players dynamically)
+  // Keep the button in the player's controls, for as long as the page lives.
+  //
+  // The button is injected INTO the site's own control bar, which players rebuild from
+  // scratch whenever the viewer changes how they are watching. On YouTube that is theatre
+  // mode, the mini player, and fullscreen, all of which throw the control row away and
+  // build a new one, taking our button with it. The old version gave up retrying after
+  // thirty seconds, so switching to theatre mode ten minutes into a film left no way back
+  // into the party except reloading the page.
+  //
+  // Note that theatre mode fires no fullscreenchange and no navigation: there is no event
+  // to hook. So rather than chase each site's internals, just keep checking cheaply for as
+  // long as the page is open. getElementById on a known id is one hash lookup.
   function watchForPlayer() {
-    let injected = false;
-
-    const tryInject = () => {
-      if (!injected) {
-        injected = injectButton();
-      }
+    const ensureButton = () => {
+      if (document.getElementById("wt-overlay-btn")) return;
+      injectButton();
     };
 
-    // Try immediately
-    tryInject();
+    ensureButton();
 
-    // Watch for DOM changes
+    // YouTube mutates its DOM constantly, so this fires a great deal. Coalesce it: doing
+    // the work on every mutation on a page like that is a real cost for something that
+    // only needs to be true a moment later.
+    let pending = null;
     const observer = new MutationObserver(() => {
-      if (!document.getElementById("wt-overlay-btn")) {
-        injected = false;
-      }
-      tryInject();
+      if (pending) return;
+      pending = setTimeout(() => {
+        pending = null;
+        ensureButton();
+      }, 300);
     });
-
     observer.observe(document.body, { childList: true, subtree: true });
 
-    // Also retry periodically for slow-loading players
-    const retryInterval = setInterval(() => {
-      if (!document.getElementById("wt-overlay-btn")) {
-        injected = false;
-        tryInject();
-      }
-    }, 2000);
-
-    // Stop retrying after 30s
-    setTimeout(() => clearInterval(retryInterval), 30000);
+    // Backstop for players that rebuild their controls without touching anything the
+    // observer is watching, and for the moment right after a fullscreen transition when
+    // the control bar exists but is still being assembled.
+    setInterval(ensureButton, 3000);
+    document.addEventListener("fullscreenchange", () => setTimeout(ensureButton, 150), true);
+    document.addEventListener("webkitfullscreenchange", () => setTimeout(ensureButton, 150), true);
   }
 
   // Init

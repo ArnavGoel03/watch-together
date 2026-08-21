@@ -74,6 +74,41 @@ Consequences, in order of how often they bite:
   them, so a returning member rebuilds theirs from the code. What it must NOT do is grant
   host, which is what the host token fixes.
 
+## How ad breaks work, and why the server has to know
+
+Ads are per-viewer: your pre-roll is not your friend's. So an ad is a "drop out, then catch
+back up" event, not a "pause the room" event. Each viewer sits out their own break and is
+snapped back to the room's position when it ends.
+
+That is fine until EVERY member is in a break at once, which is exactly what a platform
+mid-roll produces, because everyone is at the same timestamp of the same title. The room's
+position is stored as `(currentTime, lastUpdate)` and read by extrapolating forward from
+`lastUpdate`, on the assumption that playback continued. With nobody watching, that
+assumption is false, and a 90-second break used to convince the room that 90 seconds of
+film had gone by. Everyone came back and got hard-seeked past the scene they were about to
+watch: in sync with each other, and a minute and a half into the future.
+
+So clients report their break state (`ad-state`), and the server:
+
+- **holds the room clock** when the last viewer goes dark (`frozenAt`), and restarts it from
+  the held position when the first one returns. While frozen, any position it hands out is
+  stamped with the current time, so the client extrapolates by zero.
+- **keeps the sync-leader role away from anyone in a break**, since that member has
+  deliberately stopped broadcasting position.
+- **stops the stale-leader watchdog policing an ad-dark room**, where nobody can beat.
+
+Two things to keep in mind if you touch this:
+
+1. `ad-state` is in `PLAYBACK_TYPES`, so only the party tab may send it. It has to be: the
+   message can hold the film still for everyone, and the content script runs on every tab.
+2. The client re-asserts its ad state on reconnect and rejoin. The message is only sent on
+   a transition, and a socket that is down at that moment drops it silently, which would
+   leave the server holding a room for a break that ended long ago.
+
+Client-side detection is heuristic (player ad markers, plus a duration-collapse test with a
+warmup after navigation and a three-minute safety valve). It has never been tested against
+a real player, because the automated harness only ever drives a bare `<video>`.
+
 ## Moving the backend (to Cloudflare, Oracle, anywhere)
 
 Neither step needs a store release to reach existing users:
@@ -104,12 +139,22 @@ or the watchdog demotes a leader who is healthy and merely quiet.
 
 1. **Manual smoke on real streaming sites.** Everything automated runs against a bare
    `<video>` element. Real YouTube, Netflix and JioHotstar players, their ad breaks and
-   their DRM are not covered by any test and never have been.
-2. **Decide on the Chrome Web Store upload.** 1.2.0 is packaged and the known review risks
+   their DRM are not covered by any test and never have been. The ad-break logic is now
+   correct by construction on the server side and covered by tests, but whether the client
+   correctly RECOGNISES an ad on each real player is still unverified.
+2. **Buffering is the next real gap.** When a viewer stalls they fall behind, and the room
+   hard-seeks them forward to catch up, which skips exactly the footage they were waiting
+   to load. Then it happens again. The primitives are all here now (drift is measured, and
+   `ad-state` established the per-member status channel); what is missing is a "wait for
+   me" mode that pauses the room while somebody is genuinely stuck.
+3. **Mismatched sources.** Two people on different rips or regions of the same film have
+   timelines offset by seconds or minutes, and sync currently fights that forever instead
+   of letting a viewer say "I am 12 seconds ahead, lock it in".
+4. **Decide on the Chrome Web Store upload.** 1.2.0 is packaged and the known review risks
    are addressed (`activeTab` removed, privacy policy now matches what the code does), but
    `<all_urls>` remains the standing rejection risk.
-3. **Move production to Cloudflare.** The port is fixed and tested; it needs a deploy, a
+5. **Move production to Cloudflare.** The port is fixed and tested; it needs a deploy, a
    `HOST_TOKEN_SECRET`, and then the `SERVER_MOVED_URL` migration above.
-4. **Voice is off, not deleted.** `VOICE_ENABLED = false` in `overlay.js`, WebRTC mesh
+6. **Voice is off, not deleted.** `VOICE_ENABLED = false` in `overlay.js`, WebRTC mesh
    intact behind it, deliberately, per the owner. A mic permission is what got an earlier
    version rejected.

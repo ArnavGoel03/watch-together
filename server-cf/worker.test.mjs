@@ -217,3 +217,113 @@ test("join page: redirects to the room's own video when it has one", async () =>
   assert.equal(res.status, 302);
   assert.match(res.headers.get("location"), /wt_room=ABCDEF/);
 });
+
+// An ad break is precisely the period during which nobody sends anything, so the object is
+// very likely to hibernate in the middle of one. Losing who was in a break there meant the
+// room believed everyone was watching again, unfroze the clock while they were all still
+// in their ads, and delivered the exact over-advance the freeze exists to prevent.
+test("hibernation: who is in an ad break survives a wake", async () => {
+  const state = makeState();
+  const a = fakeSocket({ userId: "u1", userName: "A", currentRoom: "ABCDEF", ip: "1.1.1.1", adActive: true });
+  const b = fakeSocket({ userId: "u2", userName: "B", currentRoom: "ABCDEF", ip: "2.2.2.2", adActive: true });
+  state.sockets.push(a, b);
+  state._store.set("room:ABCDEF", {
+    code: "ABCDEF", hostId: "u1", mode: "everyone", createdAt: Date.now(), lastActivity: Date.now(),
+    playbackState: { playing: true, currentTime: 100, playbackRate: 1, lastUpdate: Date.now(), frozenAt: Date.now() },
+  });
+  const hub = new RoomHubDO(state, { HOST_TOKEN_SECRET: SECRET });
+  await hub.bootPromise;
+  const room = hub.rooms.get("ABCDEF");
+  assert.equal(room.members.get("u1").adActive, true, "a wake must not forget who was mid-break");
+  assert.equal(hub._everyMemberInAd(room), true, "so the room is still correctly dark");
+});
+
+test("ad freeze: the clock holds while every member is in a break and restarts when one returns", async () => {
+  const state = makeState();
+  const a = fakeSocket({ userId: "u1", userName: "A", currentRoom: "ABCDEF", ip: "1.1.1.1" });
+  const b = fakeSocket({ userId: "u2", userName: "B", currentRoom: "ABCDEF", ip: "2.2.2.2" });
+  state.sockets.push(a, b);
+  const start = Date.now() - 5000; // the film has been running five seconds
+  state._store.set("room:ABCDEF", {
+    code: "ABCDEF", hostId: "u1", mode: "everyone", createdAt: start, lastActivity: start,
+    playbackState: { playing: true, currentTime: 100, playbackRate: 1, lastUpdate: start },
+  });
+  const hub = new RoomHubDO(state, { HOST_TOKEN_SECRET: SECRET });
+  await hub.bootPromise;
+  const room = hub.rooms.get("ABCDEF");
+
+  hub._handleAdState(a, hub._meta(a), { active: true });
+  assert.ok(!room.playbackState.frozenAt, "one person in a break must not stop the film");
+
+  hub._handleAdState(b, hub._meta(b), { active: true });
+  assert.ok(room.playbackState.frozenAt, "with nobody watching, the clock holds");
+  // The held position is where the film actually was, not where it started.
+  assert.ok(room.playbackState.currentTime >= 104, "and it holds at the true position, ~105s");
+
+  const heldAt = room.playbackState.currentTime;
+  hub._handleAdState(a, hub._meta(a), { active: false });
+  assert.equal(room.playbackState.frozenAt, null, "somebody is watching again");
+  assert.equal(room.playbackState.currentTime, heldAt, "and it restarts from where it stopped");
+});
+
+// A reaped host used to leave room.hostId pointing at somebody who could never come back,
+// which in a host-only room rejected everyone else's play and pause forever.
+test("liveness: a host whose socket died still hands over the controls", async () => {
+  const state = makeState();
+  const deadHost = fakeSocket({ userId: "u1", userName: "Host", currentRoom: "ABCDEF" }, 3);
+  const alive = fakeSocket({ userId: "u2", userName: "Guest", currentRoom: "ABCDEF" }, 1);
+  state.sockets.push(deadHost, alive);
+  state._store.set("room:ABCDEF", {
+    code: "ABCDEF", hostId: "u1", mode: "host", createdAt: Date.now(), lastActivity: Date.now(),
+    playbackState: { playing: false, currentTime: 0, playbackRate: 1, lastUpdate: Date.now() },
+  });
+  const hub = new RoomHubDO(state, { HOST_TOKEN_SECRET: SECRET });
+  await hub.bootPromise;
+
+  hub._reapDeadSockets();
+
+  const room = hub.rooms.get("ABCDEF");
+  assert.equal(room.hostId, "u2", "the controls go to somebody who is actually here");
+  assert.equal(room.mode, "host", "but the room does not unlock immediately: a reload looks the same from here");
+  assert.ok(room.hostAbsentSince, "the unlock is pending, not skipped");
+});
+
+test("host absence: a room unlocks only after the host has really gone", async () => {
+  const state = makeState();
+  const alive = fakeSocket({ userId: "u2", userName: "Guest", currentRoom: "ABCDEF" }, 1);
+  state.sockets.push(alive);
+  state._store.set("room:ABCDEF", {
+    code: "ABCDEF", hostId: "u2", mode: "host", createdAt: Date.now(), lastActivity: Date.now(),
+    hostAbsentSince: Date.now() - 1000, // gone for a second: still within the grace window
+    playbackState: { playing: false, currentTime: 0, playbackRate: 1, lastUpdate: Date.now() },
+  });
+  const hub = new RoomHubDO(state, { HOST_TOKEN_SECRET: SECRET });
+  await hub.bootPromise;
+
+  hub._sweepHostAbsence();
+  assert.equal(hub.rooms.get("ABCDEF").mode, "host", "a brief absence is a reload, not a departure");
+
+  hub.rooms.get("ABCDEF").hostAbsentSince = Date.now() - 120000; // two minutes gone
+  hub._sweepHostAbsence();
+  assert.equal(hub.rooms.get("ABCDEF").mode, "everyone", "but a real departure must not leave everyone locked out");
+});
+
+test("liveness: a reaped speaker's voice state is torn down for the others", async () => {
+  const state = makeState();
+  const alive = fakeSocket({ userId: "u1", userName: "A", currentRoom: "ABCDEF" }, 1);
+  const dead = fakeSocket({ userId: "u2", userName: "B", currentRoom: "ABCDEF" }, 3);
+  state.sockets.push(alive, dead);
+  state._store.set("room:ABCDEF", {
+    code: "ABCDEF", hostId: "u1", mode: "everyone", createdAt: Date.now(), lastActivity: Date.now(),
+    playbackState: { playing: false, currentTime: 0, playbackRate: 1, lastUpdate: Date.now() },
+  });
+  const hub = new RoomHubDO(state, { HOST_TOKEN_SECRET: SECRET });
+  await hub.bootPromise;
+  hub.rooms.get("ABCDEF").members.get("u2").voiceActive = true;
+
+  hub._reapDeadSockets();
+
+  const voiceMsg = alive.sent.find((m) => m.type === "voice-state" && m.userId === "u2");
+  assert.ok(voiceMsg, "the others are told to tear down the peer connection");
+  assert.equal(voiceMsg.active, false);
+});

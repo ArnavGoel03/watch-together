@@ -141,6 +141,15 @@ export default {
 // ============================================================
 // Three missed beats at a 5s heartbeat.
 const LEADER_STALE_MS = 15000;
+// A host who reloads must keep their locked room; a host who leaves must not leave everyone
+// locked out. Matches HOST_ABSENCE_GRACE_MS on the Node server.
+const HOST_ABSENCE_GRACE_MS = 60000;
+// Generous on purpose: a university or an office behind one NAT address is a single IP to
+// us, and locking those people out of making rooms would be a worse bug than the flood it
+// prevents. Matches the Node server.
+const ROOM_CREATE_WINDOW_MS = 60000;
+const ROOM_CREATE_MAX = 60;
+const MAX_LIVE_ROOMS_PER_IP = 20;
 const LEADER_SWEEP_MS = 5000;
 
 export class RoomHubDO {
@@ -150,6 +159,11 @@ export class RoomHubDO {
     // In-memory caches - rebuilt from storage on cold start.
     this.rooms = null;            // Map<code, room>
     this.connectionsPerIp = new Map();
+    // Rooms outlive the sockets that made them (that is the whole point of the grace
+    // window), so limiting the RATE of creation is not enough on its own: they accumulate.
+    // Limiting how many one address is holding at once is exact. Matches the Node server.
+    this.liveRoomsPerIp = new Map();
+    this.roomCreateHits = new Map(); // ip -> { count, resetAt }
     this.rateLimits = new Map();  // userId -> { count, resetAt }
     this.bootPromise = this._boot();
   }
@@ -186,7 +200,18 @@ export class RoomHubDO {
       if (meta && meta.currentRoom) {
         const room = this.rooms.get(meta.currentRoom);
         if (room) {
-          room.members.set(meta.userId, { ws, userName: meta.userName, voiceActive: !!meta.voiceActive });
+          // adActive rides the socket attachment for the same reason voiceActive does: the
+          // members map is rebuilt from scratch on every wake, and an ad break is precisely
+          // the period during which nobody sends anything, so the object is very likely to
+          // hibernate in the middle of one. Losing it there meant the room believed
+          // everybody was watching again, unfroze the clock while they were all still in
+          // their breaks, and delivered the exact over-advance this feature exists to stop.
+          room.members.set(meta.userId, {
+            ws,
+            userName: meta.userName,
+            voiceActive: !!meta.voiceActive,
+            adActive: !!meta.adActive,
+          });
         }
       }
     }
@@ -213,6 +238,7 @@ export class RoomHubDO {
         try { member.ws.close(4001, "Room expired"); } catch {}
       }
       if (room.emptyDeleteTimer) clearTimeout(room.emptyDeleteTimer);
+      this._releaseRoomSlot(room);
       this.rooms.delete(code);
       this._deleteRoomStorage(code);
     }
@@ -348,6 +374,7 @@ export class RoomHubDO {
   async alarm() {
     await this.bootPromise;
     this._reapDeadSockets();
+    this._sweepHostAbsence();
     this._rotateStaleLeaders();
     this._sweepExpiredRooms();
     await this._scheduleLeaderSweep();
@@ -357,24 +384,84 @@ export class RoomHubDO {
   // that off here, so a member whose laptop lid closed with no clean close frame stayed in
   // the room forever: inflating every member count, holding a slot against the room cap,
   // and sitting in the heartbeat-leader queue as a candidate who can never beat.
+  // There are two ways to stop being in a room: leaving, and dying. They used to be two
+  // separate pieces of code, and the second one did less than the first, so a member whose
+  // laptop lid closed without a clean close frame took a different and worse path than one
+  // who clicked Leave. Most damagingly, a reaped HOST never handed over, which left
+  // room.hostId pointing at somebody who could never come back and, in a host-only room,
+  // permanently rejected everyone else's play and pause. Both paths go through here now.
+  _removeMember(code, room, userId, member, displayName) {
+    const wasHost = room.hostId === userId;
+    const wasVoiceActive = !!(member && member.voiceActive);
+    room.members.delete(userId);
+    // The one person still watching may have just gone, leaving a room that is entirely in
+    // ad breaks, whose clock should stop rather than run on without anybody.
+    this._updateRoomAdFreeze(room);
+
+    this._broadcast(code, {
+      type: "member-left",
+      userId,
+      userName: displayName,
+      memberCount: room.members.size,
+    });
+
+    if (wasVoiceActive) {
+      // Otherwise every remaining peer keeps a WebRTC connection open to somebody who is
+      // gone, and the "who is speaking" list keeps showing them.
+      this._broadcast(code, {
+        type: "voice-state",
+        userId,
+        userName: displayName,
+        active: false,
+        activeUserIds: Array.from(room.members.entries()).filter(([, m]) => m.voiceActive).map(([id]) => id),
+      });
+    }
+
+    if (room.members.size === 0) {
+      this._scheduleEmptyDelete(code);
+      return;
+    }
+
+    this._notifyHeartbeatLeader(room);
+    if (!wasHost) return;
+
+    // Hand the controls to somebody still here, but do not unlock a host-only room yet:
+    // a reload and a departure look identical from here, and unlocking instantly meant a
+    // host-only room fell open to everyone the first time its host refreshed.
+    const nextHostId = room.members.keys().next().value;
+    room.hostId = nextHostId;
+    const newHost = room.members.get(nextHostId);
+    if (newHost) this._sendTo(newHost.ws, { type: "host-transferred", isHost: true });
+    if (room.mode === "host" && !room.hostAbsentSince) {
+      room.hostAbsentSince = Date.now();
+    }
+  }
+
   _reapDeadSockets() {
     for (const [code, room] of this.rooms) {
       let removed = false;
       for (const [uid, member] of Array.from(room.members)) {
         const open = member.ws && member.ws.readyState === 1 /* WebSocket.OPEN */;
         if (open) continue;
-        room.members.delete(uid);
+        this._removeMember(code, room, uid, member, member.userName);
         removed = true;
-        this._broadcast(code, {
-          type: "member-left",
-          userId: uid,
-          userName: member.userName,
-          memberCount: room.members.size,
-        });
       }
-      if (!removed) continue;
-      if (room.members.size > 0) this._notifyHeartbeatLeader(room);
-      else this._scheduleEmptyDelete(code);
+      if (removed) this._persistRoom(code);
+    }
+  }
+
+  // A host who has been gone longer than the grace window really has left, so the room
+  // unlocks. Timestamp rather than a timer, because a setTimeout does not survive
+  // hibernation and this has to still be true when the object wakes up.
+  _sweepHostAbsence() {
+    for (const [code, room] of this.rooms) {
+      if (!room.hostAbsentSince) continue;
+      if (room.mode !== "host") { room.hostAbsentSince = null; continue; }
+      if (Date.now() - room.hostAbsentSince < HOST_ABSENCE_GRACE_MS) continue;
+      room.hostAbsentSince = null;
+      room.mode = "everyone";
+      this._broadcast(code, { type: "mode-changed", mode: "everyone", fromUser: "System" });
+      this._persistRoom(code);
     }
   }
 
@@ -387,6 +474,7 @@ export class RoomHubDO {
     room.emptyDeleteTimer = setTimeout(() => {
       const r = this.rooms.get(code);
       if (r && r.members.size === 0) {
+        this._releaseRoomSlot(r);
         this.rooms.delete(code);
         this._deleteRoomStorage(code);
       }
@@ -603,6 +691,7 @@ export class RoomHubDO {
       createdAt: Date.now(),
       lastActivity: Date.now(),
       emptyDeleteTimer: null,
+      ownerIp: meta.ip,
     };
     this.rooms.set(code, room);
     this._setMeta(ws, { userName, currentRoom: code });
@@ -620,6 +709,9 @@ export class RoomHubDO {
       serverTime: Date.now(),
     });
     this._notifyHeartbeatLeader(room);
+    // Arm the sweep for this room too. Without it a lone creator whose socket dies is
+    // never reaped, because nothing else would wake the object on their behalf.
+    await this._scheduleLeaderSweep();
   }
 
   async _handleJoin(ws, meta, msg) {
@@ -675,7 +767,12 @@ export class RoomHubDO {
         createdAt: Date.now(),
         lastActivity: Date.now(),
         emptyDeleteTimer: null,
+        ownerIp: meta.ip,
       };
+      if (!this._claimRoomSlot(meta.ip)) {
+        this._sendTo(ws, { type: "error", message: "You already have too many rooms open. Close one and try again." });
+        return;
+      }
       this.rooms.set(code, room);
     }
 
@@ -694,7 +791,11 @@ export class RoomHubDO {
     // Same person, new connection: reloading the tab used to make the host a guest in
     // their own party, because every reconnect gets a fresh user id.
     const reclaimsHost = await isValidHostToken(this.env.HOST_TOKEN_SECRET, code, msg.hostToken);
-    if (reclaimsHost) room.hostId = meta.userId;
+    if (reclaimsHost) {
+      room.hostId = meta.userId;
+      // They only reloaded. Call off the pending unlock.
+      room.hostAbsentSince = null;
+    }
     if (room.hostId === null || room.hostId === undefined) room.hostId = meta.userId;
     room.members.set(meta.userId, { ws, userName, voiceActive: false, adActive: false });
     // A new arrival is watching the film, so a room that was entirely in ads is not.
@@ -737,46 +838,9 @@ export class RoomHubDO {
     const room = this.rooms.get(code);
     this._setMeta(ws, { currentRoom: null, voiceActive: false });
     if (!room) return;
-    const wasHost = room.hostId === meta.userId;
-    const wasVoiceActive = !!(room.members.get(meta.userId)?.voiceActive);
-    room.members.delete(meta.userId);
-    // If the one person still watching just left, the rest are all in ads and the clock
-    // should stop rather than run on without them.
-    this._updateRoomAdFreeze(room);
-
-    this._broadcast(code, {
-      type: "member-left",
-      userId: meta.userId,
-      userName: meta.userName,
-      memberCount: room.members.size,
-    });
-
-    if (wasVoiceActive) {
-      this._broadcast(code, {
-        type: "voice-state",
-        userId: meta.userId,
-        userName: meta.userName,
-        active: false,
-        activeUserIds: Array.from(room.members.entries()).filter(([, m]) => m.voiceActive).map(([id]) => id),
-      });
-    }
-
-    if (room.members.size > 0) {
-      this._notifyHeartbeatLeader(room);
-      if (wasHost) {
-        const nextHostId = room.members.keys().next().value;
-        room.hostId = nextHostId;
-        room.mode = "everyone";
-        this._broadcast(code, { type: "mode-changed", mode: "everyone", fromUser: "System" });
-        const newHost = room.members.get(nextHostId);
-        if (newHost) this._sendTo(newHost.ws, { type: "host-transferred", isHost: true });
-      }
-      await this._persistRoom(code);
-    } else {
-      // Empty - schedule grace deletion (don't delete now, allow rejoin)
-      this._scheduleEmptyDelete(code);
-      await this._persistRoom(code);
-    }
+    const member = room.members.get(meta.userId);
+    this._removeMember(code, room, meta.userId, member, meta.userName);
+    await this._persistRoom(code);
   }
 
   _handleSync(ws, meta, msg) {
@@ -799,7 +863,10 @@ export class RoomHubDO {
     room.playbackState = { playing: !!msg.playing, currentTime: ct, playbackRate: pr, lastUpdate: Date.now() };
     // Somebody is demonstrably watching the film, so the clock is running.
     const syncMember = room.members.get(meta.userId);
-    if (syncMember) syncMember.adActive = false;
+    if (syncMember && syncMember.adActive) {
+      syncMember.adActive = false;
+      this._setMeta(ws, { adActive: false });
+    }
     this._updateRoomAdFreeze(room);
     room.lastActivity = Date.now();
     // Throttled: dragging a scrub bar is one of these per frame, and every one was a
@@ -835,7 +902,10 @@ export class RoomHubDO {
 
     room.playbackState = { playing: !!msg.playing, currentTime: ct, playbackRate: pr, lastUpdate: Date.now() };
     const hbMember = room.members.get(meta.userId);
-    if (hbMember) hbMember.adActive = false;
+    if (hbMember && hbMember.adActive) {
+      hbMember.adActive = false;
+      this._setMeta(ws, { adActive: false });
+    }
     this._updateRoomAdFreeze(room);
     room.lastActivity = Date.now();
     room.lastHeartbeatAt = Date.now(); // the leader is alive and watching
@@ -962,6 +1032,29 @@ export class RoomHubDO {
     return st && st.frozenAt ? Date.now() : st.lastUpdate;
   }
 
+  _claimRoomSlot(ip) {
+    if (!ip || ip === "anon") return true;
+    const now = Date.now();
+    const hit = this.roomCreateHits.get(ip);
+    if (!hit || now > hit.resetAt) {
+      this.roomCreateHits.set(ip, { count: 1, resetAt: now + ROOM_CREATE_WINDOW_MS });
+    } else if (++hit.count > ROOM_CREATE_MAX) {
+      return false;
+    }
+    const live = this.liveRoomsPerIp.get(ip) || 0;
+    if (live >= MAX_LIVE_ROOMS_PER_IP) return false;
+    this.liveRoomsPerIp.set(ip, live + 1);
+    return true;
+  }
+
+  _releaseRoomSlot(room) {
+    if (!room || !room.ownerIp || room.slotReleased) return;
+    room.slotReleased = true;
+    const n = (this.liveRoomsPerIp.get(room.ownerIp) || 1) - 1;
+    if (n <= 0) this.liveRoomsPerIp.delete(room.ownerIp);
+    else this.liveRoomsPerIp.set(room.ownerIp, n);
+  }
+
   _handleAdState(ws, meta, msg) {
     const code = meta.currentRoom;
     if (!code) return;
@@ -972,8 +1065,13 @@ export class RoomHubDO {
 
     const wasLeader = this._heartbeatLeader(room);
     member.adActive = !!msg.active;
+    this._setMeta(ws, { adActive: member.adActive });
     room.lastActivity = Date.now();
     this._updateRoomAdFreeze(room);
+    // The freeze itself (frozenAt, and the position it was held at) has to reach storage,
+    // or a wake reloads the pre-freeze playbackState and extrapolates across the whole
+    // break plus the hibernation.
+    this._persistRoom(code);
 
     this._broadcast(code, {
       type: "ad-state",
