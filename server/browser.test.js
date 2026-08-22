@@ -485,6 +485,84 @@ describe("Browser integration", () => {
 // watch) the entire panel was invisible: chat, member count, sync health, the Leave button.
 // The button kept working, because it is injected into the player's own controls, which
 // made it look like clicking it did nothing.
+// The largest untested surface in the product is whether the client RECOGNISES an
+// advert on a real player. Nothing here can answer that: it needs the real sites, real
+// accounts and a human. What it CAN answer is whether the machinery behind the answer
+// works, end to end, in a real browser: a marker appears in the page, the content script
+// notices, the relay is told, and the OTHER person sees it on the member list.
+//
+// So this test pins the mechanism, on every marker the extension claims to know, and the
+// question of whether YouTube still ships `.ad-showing` stays a human one. If a selector
+// is added to config.js and this fails, the plumbing is broken, not the selector.
+describe("Ad recognition", () => {
+  it("every ad marker the extension knows reaches the other person's member list", async () => {
+    const selectors = JSON.parse(
+      fs.readFileSync(path.resolve(EXT_PATH, "config.js"), "utf8")
+        .match(/AD_SELECTORS:\s*(\[[\s\S]*?\])/)[1]
+        .replace(/\/\/.*$/gm, "")
+        .replace(/,(\s*])/, "$1")
+        .replace(/'/g, '"')
+    );
+    expect(selectors.length).toBeGreaterThan(5);
+
+    const hostPage = await openVideoPage(hostBrowser, "ads-host");
+    const hostPopup = await openPopupFor(hostBrowser, "ads-host");
+    await setServerUrl(hostPopup);
+    const code = await createRoom(hostPopup, "Alice");
+    await hostPopup.close();
+
+    const guestPage = await openVideoPage(guestBrowser, "ads-guest");
+    const guestPopup = await openPopupFor(guestBrowser, "ads-guest");
+    await setServerUrl(guestPopup);
+    expect(await joinRoom(guestPopup, "Bob", code)).toBe(code);
+    await guestPopup.close();
+
+    // Watch from the guest's side: what matters is that somebody ELSE can see the break,
+    // because that is what stops the room dragging the person in it back and forth.
+    await guestPage.waitForSelector("#wt-overlay-btn", { timeout: 15000 });
+    await guestPage.evaluate(() => document.getElementById("wt-overlay-btn").click());
+    await guestPage.waitForSelector("#wt-members-toggle", { timeout: 10000 });
+    await guestPage.evaluate(() => {
+      const list = document.getElementById("wt-members");
+      if (list.hasAttribute("hidden")) document.getElementById("wt-members-toggle").click();
+    });
+
+    const statesSeen = () =>
+      guestPage.evaluate(() =>
+        [...document.querySelectorAll("#wt-members .wt-member-state")].map((e) => e.textContent.trim())
+      );
+
+    for (const selector of selectors) {
+      // Build the node the selector describes. `:not(:empty)` means the player left
+      // something inside its ad container, so give it something.
+      await hostPage.evaluate((sel) => {
+        const cls = sel.replace(/^\./, "").replace(/:not\(:empty\)$/, "");
+        const el = document.createElement("div");
+        el.className = cls;
+        if (sel.includes(":not(:empty)")) el.textContent = "ad";
+        el.id = "wt-test-ad-marker";
+        document.body.appendChild(el);
+      }, selector);
+
+      const sawBreak = await waitUntil(async () => (await statesSeen()).some((t) => t === "ad break"), {
+        timeout: 8000,
+      });
+      expect(sawBreak, `no ad break reached the room for ${selector}, states were ${JSON.stringify(await statesSeen())}`).toBe(true);
+
+      // And it has to CLEAR. A marker that never lifts is the failure mode the wedge
+      // timeout exists for, and it takes the whole room's clock with it.
+      await hostPage.evaluate(() => document.getElementById("wt-test-ad-marker")?.remove());
+      const cleared = await waitUntil(async () => !(await statesSeen()).some((t) => t === "ad break"), {
+        timeout: 8000,
+      });
+      expect(cleared, `the ad break never cleared after removing ${selector}`).toBe(true);
+    }
+
+    await hostPage.close();
+    await guestPage.close();
+  }, 180000);
+});
+
 describe("Overlay panel", () => {
   it("opens, and follows the video into fullscreen", async () => {
     const page = await openVideoPage(hostBrowser, "fs");

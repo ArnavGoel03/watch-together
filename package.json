@@ -1,6 +1,6 @@
 {
   "name": "watch-together",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "private": true,
   "description": "Real-time video sync browser extension and its sync server",
   "type": "module",

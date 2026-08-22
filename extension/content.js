@@ -384,20 +384,9 @@
     syncLabelTimer = setTimeout(() => { el.style.opacity = "0"; }, 1500);
   }
 
-  // Ad markers used by the common web players. Cheap to test and covers most of the web
-  // without needing a per-site adapter.
-  const AD_SELECTORS = [
-    ".ad-showing",              // YouTube
-    ".ad-interrupting",         // YouTube
-    ".ytp-ad-player-overlay",   // YouTube
-    ".ytp-ad-module:not(:empty)",
-    ".ima-ad-container",        // Google IMA SDK (very widely embedded)
-    ".videoAdUi",
-    ".jw-flag-ads",             // JW Player
-    ".vjs-ad-playing",          // Video.js
-    ".bitmovinplayer-ad",       // Bitmovin
-    ".plyr--ads",               // Plyr
-  ];
+  // The markers themselves live in config.js, because the YouTube adapter needs the same
+  // list and used to carry its own shorter copy of it.
+  const AD_SELECTORS = window.__wtConfig?.AD_SELECTORS || [];
 
   // The longest stable duration we have seen on this page: our best guess at the actual
   // show's length. Ads reuse the same <video> element with a tiny duration, so a sudden

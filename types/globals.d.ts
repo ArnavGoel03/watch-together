@@ -52,6 +52,8 @@ interface WatchTogetherConfig {
    * A locked-in sync offset belongs to a video, not to a browser. Stored globally it is a
    * silent desync on every OTHER film, forever, so the store is keyed and bounded.
    */
+  /** Ad markers used by the common web players. One list, read by content.js and by the YouTube adapter. */
+  AD_SELECTORS: string[];
   OFFSET_STORE_LIMIT: number;
   OFFSET_KEY_IGNORED_PARAMS: string[];
   offsetKeyFor(url: unknown): string;

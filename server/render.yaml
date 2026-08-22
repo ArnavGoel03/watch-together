@@ -1,5 +1,23 @@
 # One-click deploy to Render (https://render.com)
 # Click "New Web Service" > connect repo > select server/ directory
+#
+# NOT APPLIED TO THE RUNNING SERVICE. Read this before trusting anything below it.
+#
+# The live Render service was created through the dashboard rather than from this
+# blueprint, and its environment was completely empty until HOST_TOKEN_SECRET was set by
+# hand through the API. None of the values declared here have ever been in effect. That
+# broke nothing, because every one of them has a sensible default in code and
+# TRUSTED_PROXY_HOPS defaults to 1, which is correct for Render. It does mean this file
+# is a statement of intent and not a description of what is running, so do not read a
+# value here and conclude the service has it.
+#
+# Two ways to make it true, and either is fine as long as the file stops lying:
+#   1. Recreate the service from this blueprint, at which point these values take effect
+#      and HOST_TOKEN_SECRET is minted fresh, which logs out every host token in flight.
+#   2. Set them by hand on the existing service to match, and delete this notice.
+#
+# Cloudflare is the primary relay either way. Render is the fallback, and it is what every
+# already-installed copy is still talking to, so it does not get to rot.
 services:
   - type: web
     name: watch-together-server

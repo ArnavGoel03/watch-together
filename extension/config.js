@@ -260,6 +260,29 @@
       }
     },
 
+    /**
+     * Ad markers used by the common web players. Cheap to test, and it covers most of the
+     * web without a per-site adapter.
+     *
+     * Here rather than in content.js because it was in two places: the YouTube adapter
+     * carried its own two-selector copy and used it to decide whether to apply a sync,
+     * so a marker added to one list silently did not exist for the other. This is exactly
+     * the kind of value that drifts and then fails quietly, on the one site most people
+     * try first.
+     */
+    AD_SELECTORS: [
+      ".ad-showing",              // YouTube
+      ".ad-interrupting",         // YouTube
+      ".ytp-ad-player-overlay",   // YouTube
+      ".ytp-ad-module:not(:empty)",
+      ".ima-ad-container",        // Google IMA SDK (very widely embedded)
+      ".videoAdUi",
+      ".jw-flag-ads",             // JW Player
+      ".vjs-ad-playing",          // Video.js
+      ".bitmovinplayer-ad",       // Bitmovin
+      ".plyr--ads",               // Plyr
+    ],
+
     // How many videos worth of locked-in offsets to keep. Storage is small and this is a
     // convenience, not a record: past this the least recently used one goes.
     OFFSET_STORE_LIMIT: 40,

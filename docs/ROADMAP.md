@@ -6,94 +6,108 @@ about the present and this file is wrong about the future, so fix this one.
 
 Last reviewed 2026-08-23.
 
-A line moves off this list when the code, its test and its push exist. Nothing is
-"done" because a commit message says so.
+A line moves off this list when the code, its test and its push exist. Nothing is "done"
+because a commit message says so.
 
 ---
 
 ## Now: get 37 users off 1.0.1
 
-Everything in this section is one dependency chain. Nothing else in the project matters
-until the chain clears, because the version the public can install is 1.0.1, and 1.0.1
-broadcasts playback commands to every open tab.
+Everything in this section is one dependency chain, and every remaining step in it is a
+human at a dashboard. The version the public can install is 1.0.1, and 1.0.1 broadcasts
+playback commands to every open tab.
 
-### 1. Resubmit the listing without the platform names
+**The whole chain, in order, in one place:**
 
-**Blocked on: one paste into the dashboard.**
+1. **Upload `dist/watch-together-chrome-v1.2.2.zip`** over the pending 1.2.0 draft.
+   Before the Privacy tab, always: those questions are generated from whichever package
+   is currently uploaded, so writing justifications first means writing them for the
+   wrong version. 1.2.1 was built and never uploaded; 1.2.2 supersedes it and contains
+   the per-video offset fix.
+2. **Replace the item description** with the Detailed Description from `store-listing.md`,
+   verbatim. Check the short description in the same pass.
+3. **Write the permission justifications**, which the upload will have regenerated.
+   `activeTab` is gone, `scripting` appears, and the host question is about the named
+   video sites rather than the whole web. Name the sites the manifest names and stop; a
+   justification that lists what it is justifying is not keyword stuffing, and padding it
+   is how this got rejected twice.
+4. **Submit**, then **smoke the real players by hand** while review runs (see below).
+
+### Why step 2 is a paste and not an edit
 
 The 1.2.0 draft was rejected on 2026-08-22 under "Spam and placement in the Store",
-violation reference Yellow Argon. The quoted text is a list of platform names in the
-item description: YouTube, Netflix, Prime Video, Disney+, JioHotstar and Hotstar. The
-policy is about metadata, not about the extension, and the stated remedy is to remove
-the keywords and resubmit.
+violation reference Yellow Argon, for a list of platform names in the item description:
+YouTube, Netflix, Prime Video, Disney+, JioHotstar and Hotstar.
 
-That string does not exist anywhere in this repository. `store-listing.md` was already
-rewritten to carry no platform names at all, in commit 1e977cc, after the FIRST
-rejection. So the dashboard is holding older text than the repo is, and the fix is to
-make the dashboard match `store-listing.md` rather than to edit anything here.
+That string does not exist anywhere in this repository. `store-listing.md` was rewritten
+to carry no platform names at all in commit 1e977cc, after the FIRST rejection. The
+dashboard is holding older text than the repo is, so the fix is to make the dashboard
+match the repo rather than to change anything here.
 
-The dashboard cannot be automated: Chrome refuses to script, read or screenshot
-`chrome.google.com/webstore`, for extensions and for MCP alike. This step is done by
+The dashboard cannot be automated. Chrome refuses to script, read or screenshot
+`chrome.google.com/webstore` at all, for extensions and for MCP alike. This is done by
 hand or not at all.
 
-Two related fields carry the same risk and want the same read:
+Afterwards, record the description in STATE.md's listing table. The dashboard is the only
+other copy and it is not diffable, which is precisely how it drifted in the first place.
 
-- **Short description.** 132 characters, and the one in `store-listing.md` names no
-  platform.
-- **Host permission justification.** It is generated from the uploaded package, and for
-  1.2.x it legitimately names six sites, because six is what the manifest asks for. A
-  justification that names the sites it is justifying is not keyword stuffing. Leave it
-  factual and do not pad it.
+### Manual smoke on real streaming sites
 
-After the paste, re-record the description in STATE.md's listing table. The dashboard is
-the only other copy and it is not diffable, which is exactly how it drifted.
+The single largest untested surface in the product, and it stays that way: whether the
+client RECOGNISES an advert on each real player needs the real sites, real accounts and a
+human. What is no longer untested is everything behind that question. A real-browser test
+now drives two Chrome profiles through every ad marker the extension knows: the marker
+appears, the content script notices, the relay is told, the other person's member list
+shows the break, and it clears again when the marker lifts. If that fails, the plumbing
+is broken. If the real sites fail while it passes, a selector is out of date, and the fix
+is one line in `AD_SELECTORS` in `config.js`.
 
-### 2. Upload 1.2.1 over the pending submission
+What to check on each of YouTube, Netflix and JioHotstar: a pre-roll, a mid-roll that
+catches one person, a mid-roll that catches everybody, and whether the break clears.
 
-Already true and unchanged from STATE.md: the package is built and verified, and the
-Privacy tab's questions are generated from whichever package is uploaded, so the upload
-comes first and the justifications second.
+### One manual pass on the per-site permission prompt
 
-### 3. Manual smoke on real streaming sites
-
-The single largest untested surface in the product. Every automated test runs against a
-bare `<video>`. Whether the client RECOGNISES an ad on each real player has never been
-verified by anything but a person. Do this before the review lands, not after.
-
-### 4. One manual pass on the per-site permission prompt
-
-Chrome's own permission dialog cannot be driven by a test. The "Enable on this site"
-flow has never been exercised end to end except by hand.
+Chrome's own permission dialog cannot be driven by a test, so "Enable on this site" has
+never been exercised end to end by anything but a person. Open a site outside the
+manifest list, grant it, and confirm two things: the scripts reach the tab you are
+already looking at without a reload, and they still work on that site tomorrow.
 
 ---
 
-## Next: the things a second reviewer would ask about
+## Next
 
-- **Settle the site demo's playback question.** Open `watch.arnavgoel.dev` in an
-  Incognito window, extensions off, and press Play the demo. Playing means the earlier
-  stall was a local content blocker and the demo is fine for visitors. Sticking means
-  something real is wrong, and the honest fallback the page already ships is doing more
-  work than intended. This is a fifteen second test that has been open for a day.
-- **Mismatched sources.** There is a per-viewer offset and a divergence prompt, but no
-  way to say "I am twelve seconds ahead, lock it in" and have it persist for the room.
-  The card on the site now draws this behaviour, which is a promise the product should
-  keep completely rather than nearly.
-- **Firefox.** The build exists and is packaged on every release. It has never been
-  submitted anywhere.
-- **`render.yaml` has never been applied.** The live Render service was created through
-  the dashboard, so the blueprint is documentation of intent, not a description of the
-  running service. Either apply it or say in the file that it is not applied.
+- **Firefox has never been submitted.** The build is packaged on every release and
+  `dist/watch-together-firefox-v1.2.2.zip` exists right now. Submission needs an AMO
+  account, which nothing in this repository has. It is a separate dashboard from Chrome's
+  and it does not block the Chrome chain.
+- **Mismatched sources, the remaining half.** Locking in an offset now persists against
+  the video it was measured on, so a fixed mismatch stays fixed the next night. What is
+  still missing is sharing it: the offset is one viewer's private correction, so the
+  other person is told nothing and has to answer the same prompt themselves. Whether the
+  room should carry a per-member offset is a design question, not a bug.
 
 ---
 
 ## Later
 
-- **Persisted per-room offsets**, so a fixed source mismatch stays fixed the next night.
+- **`render.yaml` still has not been applied.** The file now says so at the top instead
+  of quietly implying otherwise. Either recreate the service from the blueprint, which
+  mints a fresh `HOST_TOKEN_SECRET` and logs out every host token in flight, or set the
+  values by hand on the running service and delete the notice.
 - **Voice.** `VOICE_ENABLED = false` and the WebRTC mesh is intact behind it, on purpose.
   A microphone permission next to a broad host permission is what got an earlier version
   rejected. This turns on when the store relationship is boring, not before.
-- **The site's remaining flat surfaces.** The hero and the six cards now demonstrate
-  rather than describe. The support and privacy pages do not.
+
+---
+
+## Settled, so nobody re-opens it
+
+- **The site demo reaches real playback.** The open question was whether the embeds
+  engage and then hold at buffering forever, which was seen on one profile with several
+  extensions loaded. Checked on 2026-08-23 against the live site in a clean Chrome with
+  no extensions: the fallback never fires, and four screenshots of the picture over five
+  seconds are four different images, which only happens if video is actually decoding. It
+  was a local content blocker. The demo is fine for visitors.
 
 ---
 

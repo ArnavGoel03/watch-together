@@ -46,11 +46,15 @@ Consequences, in order of how often they bite:
 
 ## Current status
 
-- **Version 1.2.1**, both manifests. Built and verified in `dist/`.
+- **Version 1.2.2**, both manifests. Built and verified in `dist/`. 1.2.1 was built and
+  never uploaded; 1.2.2 supersedes it and carries the per-video offset fix.
 - **v1.2.0 was submitted for review on 2026-08-22 and is pending.** It contains a bug
   found straight after submitting: the popup header rendered a blank white square where
-  the logo should be. 1.2.1 fixes it. Upload 1.2.1 over the pending submission rather
-  than letting 1.2.0 through; the review clock restarts either way.
+  the logo should be. 1.2.1 fixed it. **The draft was then REJECTED on 2026-08-22** under
+  "Spam and placement in the Store", for platform names in the item description that no
+  file in this repository contains. See the listing section below and `docs/ROADMAP.md`.
+  Upload 1.2.2 over the pending draft rather than letting 1.2.0 through; the review clock
+  restarts either way.
 - **The live store version is still 1.0.1, with 37 users.** They have the worst bug in
   the project's history: no `partyTabId`, so playback commands are broadcast to every
   open tab. Getting them off it is the reason this release matters.
@@ -514,27 +518,24 @@ is the same set of facts as reference.
    correct by construction on the server side and covered by tests, but whether the
    client correctly RECOGNISES an ad on each real player is still unverified. This is the
    single largest untested surface in the product.
-2. **The site demo does not reach playback in at least one real browser profile.** The
-   players engage and then hold at buffering without ever reaching playing, consistently,
-   over 16 second windows. The embed handshake is healthy, so the page is driving them
-   correctly. A YouTube embed stuck buffering with a healthy handshake is most often a
-   content blocker cutting off the media requests, and that profile has several
-   extensions loaded. The iframe is cross origin so its internal network is not
-   observable from the parent, and this could not be confirmed from here.
+2. **The site demo reaches real playback. Settled 2026-08-23, do not re-open.** The
+   question was whether the embeds engage and then hold at buffering forever, which was
+   seen consistently on one profile with several extensions loaded. Checked against the
+   live site in a clean Chrome with no extensions: the fallback never fires, and four
+   screenshots of the picture over five seconds are four different images, which happens
+   only if video is actually decoding. It was a local content blocker. The demo is fine
+   for visitors.
 
-   **The test that settles it: open the site in an Incognito window, where extensions are
-   off, and press Play the demo.** If it plays, it is a local blocker and the site is fine
-   for visitors. If it also sticks, something real is wrong.
-
-   If it turns out a meaningful share of visitors cannot play it, the demo is worse than
-   the abstract version it replaced, which depended on nothing. That is a product call,
-   not a bug fix.
 3. **One manual pass on the per-site permission prompt.** Chrome's own permission dialog
    cannot be automated, so the "Enable on this site" flow has never been exercised
    end to end by anything but a human.
-4. **Mismatched sources.** Two people on different rips or regions of the same film have
-   timelines offset by seconds or minutes. There is a per-viewer offset and a divergence
-   prompt, but no way to say "I am 12 seconds ahead, lock it in" and have it persist.
+4. **Mismatched sources, the remaining half.** Locking in an offset now persists against
+   the video it was measured on, keyed on the page's identity, bounded at forty entries,
+   and reloaded whenever the tab lands on a different video. Before 1.2.2 it was one
+   global number applied to everything watched afterwards, which is a silent desync on
+   every other film. What is still missing is SHARING it: the offset is one viewer's
+   private correction, so the other person is told nothing and answers the same prompt
+   themselves. Whether the room should carry a per-member offset is a design question.
 5. **Personalised server-side ad insertion (SSAI) is unsolved and probably unsolvable
    here.** The ad is stitched into the stream itself: duration is unchanged, there is no
    DOM marker, and nothing local distinguishes it from the film. Mitigated rather than
@@ -546,4 +547,6 @@ is the same set of facts as reference.
    `window.__wtConfig`, so the flag can never be copied into a local that drifts. If you
    refactor that line into an alias, the test fails on purpose. Leave it inline.
 7. **Firefox has never been submitted.** The build exists and is packaged every release.
-8. **`render.yaml` has never actually been applied**, see the section above.
+8. **`render.yaml` has never actually been applied.** The file now says so in a notice at
+   the top, so it can no longer be read as a description of the running service. See the
+   section above for the two ways to make it true.

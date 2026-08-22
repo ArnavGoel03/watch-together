@@ -2,6 +2,40 @@
 
 All notable changes to Watch Together are documented here.
 
+## [1.2.2] - 2026-08-23
+
+A locked-in sync offset used to be one number applied to everything you ever watched
+afterwards, and the ten ad markers the extension knows lived in two lists that could
+disagree.
+
+### Fixed
+
+- **A locked-in offset belongs to the video it was measured on.** The divergence prompt
+  has always been able to record "my copy runs twelve seconds ahead of the room". It wrote
+  that to a single global key, so every room and every video afterwards was shifted by it
+  until somebody found the control in the panel's advanced settings and typed a zero. Lock
+  it in on a long rip tonight, and tomorrow an unrelated film with different people is
+  twelve seconds out with nothing on screen to account for it. Offsets are now held per
+  video, keyed on the page's identity rather than its address, so the same film reached
+  with a timestamp, a playlist position, a join hint or a campaign tag is one offset.
+  Landing on a different video loads whatever belongs to that one, which is almost always
+  nothing. The store is bounded at forty entries. The old global value is not migrated: it
+  was measured against a film nobody can now identify, and the prompt will offer to measure
+  again on the video it actually applies to.
+- **The YouTube adapter knew two of the ten ad markers.** It carried its own copy of the
+  list and used it to decide whether to apply a sync during a break, so anything added to
+  the real list did not exist for the one site most people try first. There is one list
+  now, in config.js, read by both.
+
+### Added
+
+- **The ad machinery is tested end to end in a real browser.** A marker appears in the
+  page, the content script notices, the relay is told, and the other person's member list
+  shows the break, for every marker the extension claims to know, and it has to clear
+  again when the marker goes. Whether YouTube still ships `.ad-showing` remains a question
+  only a human on the real site can answer; whether the plumbing behind it works no longer
+  is.
+
 ## [1.2.1] - 2026-08-22
 
 The popup header was showing a blank white square where the logo should be, and the
