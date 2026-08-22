@@ -222,11 +222,26 @@ class Member {
       "dot" + (this.state === "ad" ? " ad" : this.state === "buffering" ? " buf" : "");
 
     el.querySelector(".screen-state").textContent =
-      this.state === "ad" ? `ad break ${Math.ceil(this.remaining)}s`
+      this.state === "ad" ? "ad break"
       : this.state === "buffering" ? "buffering"
       : roomDark ? "holding"
       : this.room.playing ? "watching"
       : "paused";
+
+    if (this.state === "ad") {
+      // One full sweep of the hand per second, and a number that restarts its own
+      // entrance on every tick, the way a projection leader does.
+      const count = el.querySelector("[data-ad-count]");
+      const secs = String(Math.ceil(this.remaining));
+      if (count.textContent !== secs) {
+        count.textContent = secs;
+        count.classList.remove("is-tick");
+        void count.offsetWidth; // reflow, or the animation never restarts
+        count.classList.add("is-tick");
+      }
+      const swept = 1 - (this.remaining - Math.floor(this.remaining));
+      el.querySelector("[data-ad-hand]").style.transform = `rotate(${swept * 360}deg)`;
+    }
 
     const pos = this.position;
     const pct = (pos / this.room.duration) * 100;
@@ -341,6 +356,7 @@ function start() {
     // rather than at attach time.
     if (data.event === "onReady") {
       member.player.markReady();
+      member.player.setMuted(member.player.muted);
       member.player.seek(room.position);
       if (room.playing && member.state === "watching") member.player.play();
       return;
@@ -414,7 +430,7 @@ function start() {
   });
 
   soundBtn?.addEventListener("click", () => {
-    if (!live) { goLive(); return; }
+    if (!live) { goLive(); }
     const on = soundBtn.getAttribute("aria-pressed") !== "true";
     soundBtn.setAttribute("aria-pressed", String(on));
     soundBtn.textContent = on ? "Mute" : "Unmute";

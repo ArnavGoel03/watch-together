@@ -147,12 +147,42 @@ h1 .line:nth-child(2) > span { animation-delay: 90ms; }
 
 .pic .vig { position:absolute; inset:0; background: radial-gradient(75% 75% at 50% 45%, transparent 0%, rgba(0,0,0,.55) 100%); }
 .pic .adcard {
-  position:absolute; inset:0; display:grid; place-items:center;
+  position:absolute; inset:0;
+  display:flex; flex-direction:column; align-items:center; justify-content:center; gap:13px;
   background: rgba(8,8,10,.92);
   color: var(--warn); font-size: 13px; font-weight:650; letter-spacing:.02em;
   opacity:0; pointer-events:none; transition: opacity 260ms var(--ease);
 }
 .screen.is-ad .adcard { opacity:1; }
+
+/* The countdown belongs on the picture, where the advert is, not in the status line
+   beside it. A cinema countdown leader: reticle, one sweep of the hand per second, and
+   the number the sweep is counting. Same shape as the CUTROOM opening. */
+.leader { position:relative; width:76px; height:76px; display:grid; place-items:center; }
+.leader-ring { position:absolute; inset:0; border-radius:50%; border:1px solid rgba(255,255,255,.16); }
+.leader-ring-in { inset:10px; border-color: rgba(255,255,255,.09); }
+.leader-cross-v { position:absolute; left:50%; top:0; width:1px; height:100%; margin-left:-.5px; background: rgba(255,255,255,.09); }
+.leader-cross-h { position:absolute; top:50%; left:0; height:1px; width:100%; margin-top:-.5px; background: rgba(255,255,255,.09); }
+.leader-hand {
+  position:absolute; inset:0; border-radius:50%;
+  background: conic-gradient(from 0deg, color-mix(in srgb, var(--warn) 38%, transparent), transparent 34%);
+  -webkit-mask-image: radial-gradient(circle, transparent 55%, #000 56%);
+  mask-image: radial-gradient(circle, transparent 55%, #000 56%);
+}
+.leader-num {
+  position:relative; font-size:27px; font-weight:700; line-height:1; letter-spacing:-.02em;
+  color: var(--text); font-variant-numeric: tabular-nums;
+}
+.leader-num.is-tick { animation: leaderTick 420ms cubic-bezier(.2,.8,.2,1); }
+@keyframes leaderTick {
+  0% { opacity:0; transform: scale(1.35); filter: blur(5px); }
+  22% { opacity:1; filter: blur(0); }
+  100% { opacity:1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .leader-hand { display:none; }
+  .leader-num.is-tick { animation:none; }
+}
 
 .controls { display:flex; align-items:center; gap:11px; padding: 12px 13px; }
 .track { position:relative; flex:1; height:5px; border-radius:3px; background: rgba(255,255,255,.11); cursor:pointer; }
@@ -234,20 +264,10 @@ footer a:hover { color: var(--text); }
 .stage-start:active { scale: .995; }
 .stage.is-live .stage-start { opacity:0; visibility:hidden; pointer-events:none; }
 
-/* Only one side ever carries sound, which is the answer to "will we hear it twice". */
-.sound {
-  font: inherit; font-size:11px; font-weight:600; letter-spacing:.02em;
-  color: var(--faint); background: rgba(255,255,255,.05);
-  border:0; border-radius:999px; padding:3px 9px; margin-left:auto; cursor:pointer;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,.07);
-  transition: color .2s ease, background .2s ease;
-}
-.sound:hover { color: var(--text); background: rgba(255,255,255,.09); }
-.sound[aria-pressed="true"] { color: var(--text); background: rgba(255,255,255,.12); }
-/* Scoped to the sibling, so the screen without a sound button keeps its own
-   margin-left:auto and its status stays pinned right. */
-.sound + .screen-state { margin-left:12px; }
-.stage:not(.is-live) .sound { visibility:hidden; }
+/* Only one side ever carries sound, which is the answer to "will we hear it twice".
+   It sits with the other stage controls rather than inside the picture: a control small
+   enough to read as a caption on the video is a control nobody presses. */
+.sound[aria-pressed="true"] { background: var(--raised); color: var(--text); border-color: var(--line-2); }
 @media (prefers-reduced-motion: reduce) {
   .pic .frame, .pic .poster, .stage-start { transition:none; }
 }
