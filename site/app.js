@@ -463,6 +463,22 @@ function start() {
   const loop = (now) => { room.tick(now); requestAnimationFrame(loop); };
   requestAnimationFrame(loop);
 
+  // The card demonstrations loop forever, so they run only while they are on screen.
+  // Nine paused loops cost nothing; nine running ones off screen are nine compositor
+  // jobs for pictures nobody is looking at.
+  const minis = document.querySelectorAll(".mini, .wire");
+  if (minis.length && "IntersectionObserver" in window) {
+    const watcher = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) e.target.classList.toggle("is-onscreen", e.isIntersecting);
+      },
+      { rootMargin: "80px 0px" },
+    );
+    for (const m of minis) watcher.observe(m);
+  } else {
+    for (const m of minis) m.classList.add("is-onscreen");
+  }
+
   // The sticky nav grows a hairline only once it is actually over content.
   const nav = document.querySelector("nav");
   const sentinel = document.querySelector("[data-top]");

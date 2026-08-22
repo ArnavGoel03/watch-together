@@ -211,6 +211,225 @@ h2 { font-size: clamp(26px,3.6vw,38px); letter-spacing:-.028em; line-height:1.12
 }
 .card:hover { background: var(--raised-2); border-color: var(--line-2); transform: translateY(-2px); }
 .card h3 { font-size:16.5px; font-weight:650; letter-spacing:-.014em; margin-bottom:8px; }
+
+/* ---------- card demonstrations ----------
+ *
+ * A page about watching things together should not be a page of paragraphs. Every card
+ * leads with the behaviour it describes, drawn in the same language as the stage above:
+ * a screen, a dot for state, and a playhead that has to agree with somebody else's.
+ *
+ * Drawn rather than filmed, and animated only on transform and opacity, because six more
+ * video players below the fold would cost more than the whole rest of the page. The loops
+ * are paused until the card is on screen: nothing off screen is allowed to composite.
+ */
+.mini { display:flex; gap:8px; height:78px; margin-bottom:16px; }
+.mini *, .wire * { animation-play-state: paused; }
+.mini.is-onscreen *, .wire.is-onscreen * { animation-play-state: running; }
+
+.mini-s {
+  position:relative; flex:1; border-radius:9px; overflow:hidden;
+  border:1px solid var(--line);
+  background: linear-gradient(180deg, rgba(255,255,255,.055), rgba(255,255,255,.014));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.05);
+}
+.mini-d {
+  position:absolute; z-index:2; top:8px; left:8px; width:6px; height:6px;
+  border-radius:50%; background: var(--good);
+}
+.d-buf { background: var(--info); }
+.d-ad { background: var(--warn); }
+
+.mini-t { position:relative; height:3px; border-radius:2px; background: rgba(255,255,255,.13); }
+.mini-s .mini-t { position:absolute; z-index:2; left:8px; right:8px; bottom:8px; }
+.mini-t i {
+  position:absolute; inset:0; border-radius:2px; background: var(--text);
+  transform-origin:left; transform: scaleX(.1);
+}
+.mini-v {
+  position:absolute; z-index:3; inset:0; display:grid; place-items:center;
+  background: rgba(8,8,10,.9); color: var(--warn);
+  font-size:10.5px; font-weight:650; letter-spacing:.02em; opacity:0;
+}
+/* Drawn, not filmed: a lit frame inside letterbox bars reads as a picture without a
+   single byte of video or anybody's copyright. */
+.mini-pic {
+  position:absolute; inset:0; z-index:0;
+  background:
+    radial-gradient(120% 90% at 30% 22%, rgba(255,255,255,.13) 0%, rgba(255,255,255,0) 55%),
+    linear-gradient(140deg,#2c2c35 0%,#141419 100%);
+}
+.mini-pic::before, .mini-pic::after {
+  content:""; position:absolute; left:0; right:0; height:9px; background:#0a0a0c;
+}
+.mini-pic::before { top:0; }
+.mini-pic::after { bottom:0; }
+.mini-row { display:flex; align-items:center; gap:9px; }
+
+/* The playhead every one of these is measured against. */
+@keyframes miniRun { from { transform: scaleX(.1); } to { transform: scaleX(.88); } }
+
+/* Adverts are personal: one side sits out, the room does not move, and the one that was
+   away lands on the room's position rather than where its own picture stopped. */
+.m-ad .mini-s:nth-child(1) .mini-v { animation: adVeil 7s var(--ease) infinite; }
+.m-ad .mini-s:nth-child(1) .mini-d { animation: adDot 7s step-end infinite; }
+.m-ad .mini-s:nth-child(1) .mini-t i { animation: adRejoin 7s linear infinite; }
+.m-ad .mini-s:nth-child(2) .mini-t i { animation: miniRun 7s linear infinite; }
+@keyframes adVeil { 0%,12% { opacity:0; } 16%,42% { opacity:1; } 46%,100% { opacity:0; } }
+@keyframes adDot {
+  0%,15% { background: var(--good); }
+  15.01%,45% { background: var(--warn); }
+  45.01%,100% { background: var(--good); }
+}
+@keyframes adRejoin {
+  0% { transform: scaleX(.1); }
+  15% { transform: scaleX(.22); }
+  45% { transform: scaleX(.22); }
+  45.01% { transform: scaleX(.451); }
+  100% { transform: scaleX(.88); }
+}
+
+/* A stall holds the room instead of leaving somebody behind, so both playheads stop. */
+.m-buffer .mini-v { color: var(--info); }
+.m-buffer .mini-s:nth-child(2) .mini-v { animation: bufVeil 7s var(--ease) infinite; }
+.m-buffer .mini-s:nth-child(2) .mini-d { animation: bufDot 7s step-end infinite; }
+.m-buffer .mini-t i { animation: miniHold 7s linear infinite; }
+@keyframes bufVeil { 0%,17% { opacity:0; } 21%,47% { opacity:1; } 51%,100% { opacity:0; } }
+@keyframes bufDot {
+  0%,20% { background: var(--good); }
+  20.01%,50% { background: var(--info); }
+  50.01%,100% { background: var(--good); }
+}
+@keyframes miniHold {
+  0% { transform: scaleX(.1); }
+  20% { transform: scaleX(.26); }
+  50% { transform: scaleX(.26); }
+  100% { transform: scaleX(.74); }
+}
+
+/* Three people, three different states, one position. */
+.m-status { flex-direction:column; justify-content:center; gap:10px; }
+.m-status .mini-t { flex:1; }
+.m-status .mini-t i { transform: scaleX(.52); }
+.m-status .mini-d { position:static; flex:0 0 auto; }
+.mini-tag { font-size:10px; line-height:1; color: var(--faint); width:56px; text-align:right; }
+.m-status .mini-row:nth-child(1) .mini-d { animation: pulse 2.6s var(--ease) infinite; }
+.m-status .mini-row:nth-child(2) .mini-d { animation: pulse 2.6s var(--ease) .5s infinite; }
+.m-status .mini-row:nth-child(3) .mini-d { animation: pulse 2.6s var(--ease) 1s infinite; }
+@keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.35; } }
+
+/* Change what is playing and the room comes with you, a beat later. */
+.m-switch .p2 { background: linear-gradient(140deg,#35262c 0%,#17121a 100%); opacity:0; }
+.m-switch .mini-s:nth-child(1) .p2 { animation: swap 7s var(--ease) infinite; }
+.m-switch .mini-s:nth-child(2) .p2 { animation: swap 7s var(--ease) .45s infinite; }
+.m-switch .mini-s:nth-child(1) .mini-t i { animation: swapFill 7s linear infinite; }
+.m-switch .mini-s:nth-child(2) .mini-t i { animation: swapFill 7s linear .45s infinite; }
+@keyframes swap { 0%,32% { opacity:0; } 40%,88% { opacity:1; } 96%,100% { opacity:0; } }
+@keyframes swapFill {
+  0% { transform: scaleX(.14); }
+  34% { transform: scaleX(.62); }
+  36% { transform: scaleX(.06); }
+  100% { transform: scaleX(.7); }
+}
+
+/* Ducking is not pausing: the level drops, the playhead never stops. */
+.m-duck .mini-lvl {
+  position:absolute; z-index:2; inset:0; display:flex; align-items:center; justify-content:center; gap:5px;
+  animation: duck 7s var(--ease) infinite;
+}
+.m-duck .mini-lvl b { width:3px; height:26px; border-radius:2px; background: rgba(244,244,245,.55); transform-origin:center; }
+.m-duck .mini-lvl b:nth-child(1) { animation: bob 1.1s ease-in-out .00s infinite alternate; }
+.m-duck .mini-lvl b:nth-child(2) { animation: bob 1.1s ease-in-out .13s infinite alternate; }
+.m-duck .mini-lvl b:nth-child(3) { animation: bob 1.1s ease-in-out .26s infinite alternate; }
+.m-duck .mini-lvl b:nth-child(4) { animation: bob 1.1s ease-in-out .39s infinite alternate; }
+.m-duck .mini-lvl b:nth-child(5) { animation: bob 1.1s ease-in-out .52s infinite alternate; }
+.m-duck .mini-lvl b:nth-child(6) { animation: bob 1.1s ease-in-out .65s infinite alternate; }
+.m-duck .mini-lvl b:nth-child(7) { animation: bob 1.1s ease-in-out .78s infinite alternate; }
+.m-duck .mini-t i { animation: miniRun 7s linear infinite; }
+@keyframes bob { from { transform: scaleY(.3); } to { transform: scaleY(1); } }
+@keyframes duck { 0%,26% { transform:scaleY(1); opacity:1; } 34%,62% { transform:scaleY(.3); opacity:.5; } 70%,100% { transform:scaleY(1); opacity:1; } }
+
+/* Two copies of the same film, one running behind, then told so once. */
+.m-offset { flex-direction:column; justify-content:center; gap:16px; }
+.m-offset .mini-t { flex:1; }
+.m-offset .mini-t i { animation: miniRun 7s linear infinite; }
+.m-offset .lag { background: var(--warn); animation: lagSnap 7s linear infinite; }
+@keyframes lagSnap {
+  0% { transform: scaleX(.02); }
+  44.99% { transform: scaleX(.35); }
+  45% { transform: scaleX(.451); }
+  100% { transform: scaleX(.88); }
+}
+
+/* The three steps, at a glance rather than in a sentence. */
+.m-open .mini-play {
+  position:absolute; z-index:2; top:50%; left:50%; margin:-9px 0 0 -6px;
+  border-style:solid; border-width:9px 0 9px 15px;
+  border-color: transparent transparent transparent rgba(244,244,245,.85);
+  animation: nudge 2.8s var(--ease) infinite;
+}
+.m-open .mini-t i { animation: miniRun 7s linear infinite; }
+@keyframes nudge { 0%,70%,100% { transform:none; opacity:.85; } 82% { transform: scale(1.14); opacity:1; } }
+.m-code { align-items:center; justify-content:center; }
+.mini-code { display:flex; gap:7px; }
+.mini-code b {
+  width:20px; height:26px; border-radius:5px;
+  border:1px solid var(--line); background: var(--raised);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.05);
+}
+.mini-code b:nth-child(1) { animation: fillKey 4.2s var(--ease) .0s infinite; }
+.mini-code b:nth-child(2) { animation: fillKey 4.2s var(--ease) .2s infinite; }
+.mini-code b:nth-child(3) { animation: fillKey 4.2s var(--ease) .4s infinite; }
+.mini-code b:nth-child(4) { animation: fillKey 4.2s var(--ease) .6s infinite; }
+.mini-code b:nth-child(5) { animation: fillKey 4.2s var(--ease) .8s infinite; }
+.mini-code b:nth-child(6) { animation: fillKey 4.2s var(--ease) 1s infinite; }
+@keyframes fillKey {
+  0%,6% { background: var(--raised); border-color: var(--line); }
+  14%,72% { background: var(--raised-2); border-color: var(--line-2); }
+  84%,100% { background: var(--raised); border-color: var(--line); }
+}
+.m-lock .mini-t i { animation: miniRun 7s linear infinite; }
+
+.m-offset .mini-num { font-size:10px; line-height:1; color: var(--faint); width:10px; }
+
+/* One number crosses the network. This is that number crossing the network. */
+.wire { margin-top:28px; display:flex; align-items:center; gap:14px; max-width:560px; }
+.wire .mini-s {
+  position:relative; flex:0 0 auto; width:132px; height:74px; border-radius:9px; overflow:hidden;
+  border:1px solid var(--line); box-shadow: inset 0 1px 0 rgba(255,255,255,.05);
+}
+.wire .mini-t { position:absolute; z-index:2; left:8px; right:8px; bottom:8px; }
+.wire .mini-t i { transform: scaleX(.46); }
+.wire-line {
+  position:relative; flex:1; height:1px;
+  background: repeating-linear-gradient(90deg, var(--line-2) 0 5px, transparent 5px 11px);
+}
+.wire-pip {
+  position:absolute; top:50%; left:0; transform: translate(-50%,-50%);
+  padding:3px 8px; border-radius:999px; font-size:10.5px; font-weight:650;
+  font-variant-numeric: tabular-nums; color: var(--text);
+  background: var(--bg); border:1px solid var(--line-2);
+  animation: wireCross 3.4s var(--ease) infinite;
+}
+@keyframes wireCross {
+  0%,8% { left:0; opacity:0; }
+  16% { opacity:1; }
+  84% { opacity:1; }
+  92%,100% { left:100%; opacity:0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .wire-pip { animation:none; left:50%; opacity:1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mini * { animation:none !important; }
+  .mini-t i { transform: scaleX(.45); }
+  .m-ad .mini-s:nth-child(1) .mini-v, .m-buffer .mini-s:nth-child(2) .mini-v { opacity:1; }
+  .m-ad .mini-s:nth-child(1) .mini-d { background: var(--warn); }
+  .m-buffer .mini-s:nth-child(2) .mini-d { background: var(--info); }
+  .m-offset .lag { transform: scaleX(.3); }
+  .m-switch .p2 { opacity:1; }
+}
+
 .card p { font-size:14.5px; color:var(--dim); }
 
 /* Reveal on scroll, off the main thread where the browser supports it. */
