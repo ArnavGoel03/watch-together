@@ -534,3 +534,56 @@ footer a:hover { color: var(--text); }
   box-shadow: inset 0 1px 0 rgba(255,255,255,.07);
 }
 .doc-cta p:first-child { margin-top: 0; }
+
+/* An index, because somebody arrives at a support page with a symptom, not with an
+   appetite for eight answers. Pure anchors: :target does the highlight, so finding your
+   problem costs no JavaScript. */
+.doc-index {
+  margin-top: 22px; padding: 0; list-style:none;
+  display:grid; gap:2px 22px; grid-template-columns: repeat(auto-fit, minmax(272px,1fr));
+}
+.doc-index li { margin:0; font-size:14px; }
+.doc-index a[href] {
+  display:block; padding:6px 0; color: var(--dim);
+  text-decoration:none; border-bottom:1px solid transparent;
+  transition: color 180ms var(--ease);
+}
+.doc-index a[href]:hover { color: var(--text); }
+.qa { scroll-margin-top: 84px; transition: background 320ms var(--ease), border-color 320ms var(--ease); }
+.qa:target { background: var(--raised-2); border-color: var(--line-2); }
+/* A support answer is a column of text, so its picture is sized to the text rather than
+   stretched across the card. */
+.qa .mini { margin-bottom: 18px; max-width: 360px; }
+.qa .wire { margin-top: 0; margin-bottom: 18px; max-width: 420px; }
+.qa .wire .mini-s { width: 116px; height: 66px; }
+
+/* The policy's two lists are a ledger: a solid rail for what leaves the machine, a broken
+   one for what never does. The distinction is the whole document, so it should not be two
+   identical bulleted lists. */
+.ledger { list-style:none; padding-left:0; margin-top:16px; }
+.ledger li {
+  position:relative; margin:0 0 2px; padding: 11px 0 11px 18px;
+  border-left: 2px solid transparent;
+}
+.ledger-in li { border-left-color: var(--line-2); }
+.ledger-out li { border-left: 2px dashed rgba(255,255,255,.22); }
+.ledger-perm li { border-left-color: var(--line); }
+.ledger-perm strong { display:block; margin-bottom:2px; }
+
+/* The room that dropped and came back: the link breaks, the position waits, both resume. */
+.w-drop .wire-line { animation: dropLine 5.2s var(--ease) infinite; }
+.w-drop .wire-pip { animation: dropPip 5.2s var(--ease) infinite; }
+.w-drop .mini-d { animation: dropDot 5.2s step-end infinite; }
+@keyframes dropLine { 0%,32% { opacity:1; } 40%,66% { opacity:.22; } 74%,100% { opacity:1; } }
+@keyframes dropPip {
+  0% { left:0; opacity:0; }
+  10%,32% { left:34%; opacity:1; }
+  40%,66% { left:34%; opacity:.3; }
+  76% { left:34%; opacity:1; }
+  92%,100% { left:100%; opacity:0; }
+}
+@keyframes dropDot {
+  0%,35% { background: var(--good); }
+  35.01%,70% { background: var(--info); }
+  70.01%,100% { background: var(--good); }
+}

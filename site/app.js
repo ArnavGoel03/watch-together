@@ -322,6 +322,7 @@ class Room {
 }
 
 function start() {
+  page();
   const stage = document.querySelector("[data-demo]");
   if (!stage) return;
 
@@ -463,9 +464,13 @@ function start() {
   const loop = (now) => { room.tick(now); requestAnimationFrame(loop); };
   requestAnimationFrame(loop);
 
-  // The card demonstrations loop forever, so they run only while they are on screen.
-  // Nine paused loops cost nothing; nine running ones off screen are nine compositor
-  // jobs for pictures nobody is looking at.
+}
+
+/** Everything that is true of every page, demo or not. */
+function page() {
+  // The drawn demonstrations loop forever, so they run only while they are on screen.
+  // A paused loop costs nothing; one running off screen is a compositor job for a
+  // picture nobody is looking at.
   const minis = document.querySelectorAll(".mini, .wire");
   if (minis.length && "IntersectionObserver" in window) {
     const watcher = new IntersectionObserver(

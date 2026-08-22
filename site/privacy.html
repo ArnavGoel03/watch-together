@@ -10,6 +10,7 @@
 <link rel="canonical" href="https://watch.arnavgoel.dev/privacy">
 <meta name="theme-color" content="#0b0b0d">
 <link rel="stylesheet" href="/styles.css">
+<script type="module" src="/app.js"></script>
 </head>
 <body>
 <div class="glow" aria-hidden="true"></div>
@@ -26,7 +27,8 @@
   <p>Watch Together keeps two video players at the same timestamp. To do that it needs to know where the playhead is, and which page the room is watching. It does not need anything else, and it is not built to collect anything else. There is no account, no sign in and no analytics.</p>
 
   <h2>What crosses the network</h2>
-  <ul>
+  <div class="wire" aria-hidden="true"><div class="mini-s"><span class="mini-pic"></span><span class="mini-d"></span><span class="mini-t"><i></i></span></div><div class="wire-line"><span class="wire-pip">0:42</span></div><div class="mini-s"><span class="mini-pic"></span><span class="mini-d"></span><span class="mini-t"><i></i></span></div></div>
+  <ul class="ledger ledger-in">
     <li><strong>The position of the playhead.</strong> Play, pause and seek events, as timestamps, passed between the people in your room while the room is open.</li>
     <li><strong>The address of the one tab you attached a room to.</strong> This is what lets everybody follow when you switch video, and it is what a join link points at. It is held in the relay's memory for the life of the room and never written to a database. It is only ever sent for that one tab.</li>
     <li><strong>The display name you chose.</strong> Shown to the other people in your room. Stored on your own device, not on the relay.</li>
@@ -37,7 +39,7 @@
   </ul>
 
   <h2>What does not</h2>
-  <ul>
+  <ul class="ledger ledger-out">
     <li><strong>Your browsing history.</strong> Only the single tab with a room attached is ever reported, and only while that room is running. Every other tab you have open, and every moment you are not in a room, is never reported anywhere.</li>
     <li><strong>The video itself.</strong> Nothing is recorded, captured or re-streamed. Only the position of the playhead is exchanged.</li>
     <li><strong>Email addresses, accounts, passwords.</strong> There is nothing to sign up for.</li>
@@ -46,7 +48,7 @@
   </ul>
 
   <h2>Permissions, and why each one exists</h2>
-  <ul>
+  <ul class="ledger ledger-perm">
     <li><strong>The supported video sites.</strong> Required to read and set the position of the video element. That is the only way to keep two players at the same timestamp.</li>
     <li><strong>Any other site.</strong> Not requested at install. When you press Enable on this site, your browser asks you to confirm, and access is granted for that site alone.</li>
     <li><strong>Tabs.</strong> Used to identify which tab holds the video the room is bound to, so commands reach that tab and no other.</li>
