@@ -3,7 +3,7 @@
 Read this before doing anything else. It exists so nobody has to re-derive where things
 stand by reading 8,000 lines of source and a year of git log.
 
-Last updated: 2026-08-21, at the end of the v1.2.0 hardening release.
+Last updated: 2026-08-23, at the end of the v1.2.1 release and the first store submission.
 
 ## What it is
 
@@ -46,9 +46,17 @@ Consequences, in order of how often they bite:
 
 ## Current status
 
-- **Version 1.2.0**, both manifests, tagged `v1.2.0`. NOT yet uploaded to the Chrome Web
-  Store. Every store version is re-reviewed, and an earlier version was rejected once for
-  requesting a microphone permission next to `<all_urls>`.
+- **Version 1.2.1**, both manifests. Built and verified in `dist/`.
+- **v1.2.0 was submitted for review on 2026-08-22 and is pending.** It contains a bug
+  found straight after submitting: the popup header rendered a blank white square where
+  the logo should be. 1.2.1 fixes it. Upload 1.2.1 over the pending submission rather
+  than letting 1.2.0 through; the review clock restarts either way.
+- **The live store version is still 1.0.1, with 37 users.** They have the worst bug in
+  the project's history: no `partyTabId`, so playback commands are broadcast to every
+  open tab. Getting them off it is the reason this release matters.
+- **Publisher account is `yashgoel0304@gmail.com`**, item ID
+  `kilmggcpfkcfpkaapillgloabbgmeeoa`. It MUST be published from that account or the 37
+  existing users are stranded on 1.0.1 forever.
 - **Production backend: Cloudflare** (`wss://watch-together-cf.goelhome.workers.dev`),
   deployed 2026-08-21, with `HOST_TOKEN_SECRET` set as a Worker secret. **Render is the
   fallback**, and a real one: if the first relay does not answer, `relay.js` walks to the
@@ -59,8 +67,12 @@ Consequences, in order of how often they bite:
   spin-down, no cold start, and the whole "we paused for dinner and the room was gone" class
   of failure does not exist there. It was safe to switch because v1.2.0 has not shipped, so
   no installed copy had the new list yet.
-- **Tests: 170 green** (97 node, 61 vitest, 12 worker) plus 6 real-browser tests driving
-  two separate Chrome profiles. Lint and typecheck clean. CI runs all of it.
+- **Tests: 155 green in the default gate** (130 node and vitest, 17 worker) plus 8
+  real-browser tests driving two separate Chrome profiles. Lint, typecheck, dash check
+  and version metadata all clean. `npm test` runs everything except the browser suite,
+  which is `npm run test:browser` and is worth running by hand after any popup or overlay
+  change, because it is the only thing that loads the extension for real.
+- **Marketing site is live** at `watch.arnavgoel.dev`, with `/support` and `/privacy`.
 
 ## Things that will trip you up
 
@@ -340,30 +352,185 @@ Cloudflare requests for a three-hour film.
 The 12s ceiling is not arbitrary: it must stay under the server's `LEADER_STALE_MS` (15s),
 or the watchdog demotes a leader who is healthy and merely quiet.
 
+## The store listing, recorded
+
+Filled in on 2026-08-22. Recorded here because the dashboard is the only other copy and
+it is not diffable.
+
+| Field | Value |
+| --- | --- |
+| Homepage URL | `https://watch.arnavgoel.dev` |
+| Support URL | `https://watch.arnavgoel.dev/support` |
+| Privacy policy URL | `https://watch.arnavgoel.dev/privacy` |
+| Official URL | left as None. Needs the domain verified in Search Console; `arnavgoel.dev` already has two `google-site-verification` TXT records, so it can be enabled later |
+| Category | Entertainment |
+| Mature content | off |
+| Google Analytics | opted out, so there is no extra data recipient to declare |
+
+Data usage, ticked: **Personally identifiable information** (the display name),
+**Personal communications** (chat is relayed), **Web history** (the address of the one
+attached tab is transmitted), **User activity** (play, pause and seek are transmitted).
+
+Data usage, deliberately NOT ticked: Health, Financial, Authentication, Location and
+Website content. Location looks like it applies because Google's example text names IP
+address, but the relay only sees the connection address the way any server does, uses it
+solely to cap rooms per address, and logs a one way hash. Website content does not apply
+because the extension reads `currentTime` and `paused`, which is playback state, not
+content. Whatever is ticked must keep matching `/privacy`, because the two are compared.
+
+**The permission justification fields are generated from whichever package is uploaded.**
+Until 1.2.1 is in, the form is still asking about 1.0.1, which had `activeTab` and
+required `<all_urls>`. Upload the package BEFORE writing the justifications, or you will
+write one for a permission the new version does not use. After upload: `activeTab`
+disappears, `scripting` appears, and the host permission question becomes about six named
+video sites instead of every site on the web.
+
+The yellow "may require an in-depth review" banner is triggered by `<all_urls>` appearing
+anywhere in the manifest, optional included. It means slower review, not rejection.
+
+## Appearance: two looks, one attribute (added 2026-08-23)
+
+The default look is near-black surfaces, hairline edges and light from above. That is a
+deliberate house style, and it is not what somebody who lives in Chrome on Windows
+expects, so there is a second one. Settings, Appearance: "Depth" and "Material".
+
+`UI_STYLES` in `config.js` is the source of truth, including the labels; the popup builds
+its `<option>` list from it. The chosen value is stored under `uiStyle` in
+`chrome.storage.local` and applied as a `data-ui` attribute, which the stylesheets key
+off. The popup and the in-page panel both read the same key, so changing it in one place
+updates the other immediately.
+
+Two rules to preserve if you touch this:
+
+**It is a token swap, never a branch.** No code anywhere asks which look is active and no
+element exists in one and not the other. A look with its own code path drifts from the
+other the moment either side changes.
+
+**The attribute goes on the panel and the launcher THEMSELVES, not a shared ancestor.**
+Going fullscreen reparents the panel into the fullscreen element. An attribute set on an
+ancestor is left behind by that move, and the panel silently reverts to the other look
+part way through a film.
+
+## The marketing site, and its demo
+
+`site/` is plain HTML, CSS and one module. No framework and no build step, deliberately:
+it is one document, and a framework would cost more than it returns.
+
+**Deploying it is NOT a git push.** The Vercel project is linked but its Git integration
+does not fire for this directory, so a push builds nothing and the change looks lost. It
+deploys with `vercel deploy --prod --yes` run from inside `site/`. This cost half an hour
+once; do not rediscover it.
+
+`scripts/check-site.mjs` (`npm run check:site`) serves the site under the REAL
+`vercel.json` headers and drives a browser against it. It exists because an earlier CSP
+on this site blocked its own stylesheet and script: every request returned 200, the page
+looked served, and the only symptom was that nothing moved. A check that fetches HTML
+cannot see that. It fails on a blocked asset, a missing embed, or the clock advancing
+during a shared advert.
+
+The hero runs **two real YouTube embeds** driven by one room clock, so the ad freeze and
+the wait-for-slow behaviour are demonstrated rather than asserted. They are driven over
+the frame's own message channel rather than by loading YouTube's API script, which would
+mean widening `script-src` for a page that otherwise runs nothing but its own code.
+
+Two things about that which took a real browser to find, and which will bite again if
+undone:
+
+**The `listening` handshake must be posted on `onReady`, not only on the iframe's
+`load`.** Load fires when the document arrives, not when the widget is listening, so a
+message sent then is discarded and never retried. The symptom is subtle and misleading:
+the video plays perfectly while the page believes it never started, and the page's own
+fallback hides a working player. Commands are applied on `onReady` for the same reason.
+
+**The fallback waits on ENGAGEMENT, not on playback, and it is reversible.** An earlier
+version gave up after six and a half seconds if no player had reached "playing" and
+marked both players failed permanently, so nothing could bring them back. Buffering
+already proves the command landed. Two streams starting at once on one connection can sit
+in that state for a while.
+
+## Where the artwork comes from
+
+Nothing is drawn by hand and nothing is drawn in code. Two source files, three scripts:
+
+```
+assets/logo-source.jpg    -> scripts/make-master.py  -> assets/logo-master.png
+assets/logo-master.png    -> scripts/make-icons.py   -> every icon size, favicon, site copies
+assets/banner-source.jpg  -> scripts/make-promo.py   -> promo tiles, social card, posters
+```
+
+An earlier `make-icons.py` DREW the icon from a hardcoded gradient, which meant the
+artwork lived in a Python file and re-running it would silently reinstate a design that
+had been deliberately replaced. Deriving from a master image makes a logo change a
+one-file change.
+
+Two size rules that look like mistakes and are not:
+
+**16 and 32 use a tighter crop of the same artwork than 48 and up.** At those sizes the
+ring around the play mark falls below one pixel of stroke and dissolves into noise,
+taking the triangle's edge with it, so the toolbar showed a coloured smudge. Shipping
+different artwork per size is what Apple and Google both do.
+
+**The 128 is not full bleed.** It carries 16px of transparent padding around 96px of art,
+because the store draws its own container behind it and full bleed artwork collides with
+that container's corners.
+
+`~/Desktop/Watch Together store assets/` holds everything at final size, numbered in
+upload order, with a text file saying which field each file belongs in.
+
+## watch@arnavgoel.dev
+
+Support email, forwarded to the owner's Gmail. Set up on Vercel DNS with Forward Email's
+free tier, which is configured entirely in DNS with no account: two MX records at the
+apex plus a TXT record carrying the rule.
+
+The TXT value is **encrypted** (via Forward Email's `/v1/encrypt` endpoint) so the
+destination address is not sitting in public DNS for scrapers. If the forwarding ever
+needs changing, re-encrypt the new rule rather than pasting a plaintext one.
+
+There were no MX records on the apex before this, so nothing was displaced.
+
 ## Open, in rough priority order
 
-0. **Nothing is blocking a store upload except your decision and one manual pass.** The
-   packages are built and verified in `dist/`, the permission breadth that caused the earlier
-   rejection is fixed, and the privacy policy matches the code.
+0. **Upload 1.2.1 over the pending 1.2.0 submission.** The zip is built and verified and
+   sits in `~/Desktop/Watch Together store assets/0 - Upload this package first/`. Upload
+   it BEFORE touching the Privacy tab, because those fields are generated from whichever
+   package is currently uploaded.
 1. **Manual smoke on real streaming sites.** Everything automated runs against a bare
    `<video>` element. Real YouTube, Netflix and JioHotstar players, their ad breaks and
-   their DRM are not covered by any test and never have been. The ad-break logic is now
-   correct by construction on the server side and covered by tests, but whether the client
-   correctly RECOGNISES an ad on each real player is still unverified.
-2. **Buffering is the next real gap.** When a viewer stalls they fall behind, and the room
-   hard-seeks them forward to catch up, which skips exactly the footage they were waiting
-   to load. Then it happens again. The primitives are all here now (drift is measured, and
-   `ad-state` established the per-member status channel); what is missing is a "wait for
-   me" mode that pauses the room while somebody is genuinely stuck.
-3. **Mismatched sources.** Two people on different rips or regions of the same film have
-   timelines offset by seconds or minutes, and sync currently fights that forever instead
-   of letting a viewer say "I am 12 seconds ahead, lock it in".
-4. **Decide on the Chrome Web Store upload.** 1.2.0 is packaged and the known review risks
-   are addressed (`activeTab` removed, privacy policy now matches what the code does), but
-   `<all_urls>` remains the standing rejection risk.
-5. ~~Set `HOST_TOKEN_SECRET` on Render~~ **Done 2026-08-22.** Set on both backends and
-   verified by actually reconnecting: the host reclaims their own room, a host-only room
-   stays locked through a reload, and a forged token is refused.
+   their DRM are not covered by any test and never have been. The ad-break logic is
+   correct by construction on the server side and covered by tests, but whether the
+   client correctly RECOGNISES an ad on each real player is still unverified. This is the
+   single largest untested surface in the product.
+2. **The site demo does not reach playback in at least one real browser profile.** The
+   players engage and then hold at buffering without ever reaching playing, consistently,
+   over 16 second windows. The embed handshake is healthy, so the page is driving them
+   correctly. A YouTube embed stuck buffering with a healthy handshake is most often a
+   content blocker cutting off the media requests, and that profile has several
+   extensions loaded. The iframe is cross origin so its internal network is not
+   observable from the parent, and this could not be confirmed from here.
+
+   **The test that settles it: open the site in an Incognito window, where extensions are
+   off, and press Play the demo.** If it plays, it is a local blocker and the site is fine
+   for visitors. If it also sticks, something real is wrong.
+
+   If it turns out a meaningful share of visitors cannot play it, the demo is worse than
+   the abstract version it replaced, which depended on nothing. That is a product call,
+   not a bug fix.
+3. **One manual pass on the per-site permission prompt.** Chrome's own permission dialog
+   cannot be automated, so the "Enable on this site" flow has never been exercised
+   end to end by anything but a human.
+4. **Mismatched sources.** Two people on different rips or regions of the same film have
+   timelines offset by seconds or minutes. There is a per-viewer offset and a divergence
+   prompt, but no way to say "I am 12 seconds ahead, lock it in" and have it persist.
+5. **Personalised server-side ad insertion (SSAI) is unsolved and probably unsolvable
+   here.** The ad is stitched into the stream itself: duration is unchanged, there is no
+   DOM marker, and nothing local distinguishes it from the film. Mitigated rather than
+   solved, by the timeline-divergence prompt and the per-viewer offset. Do not spend days
+   on a heuristic for this.
 6. **Voice is off, not deleted.** `VOICE_ENABLED = false` in `overlay.js`, WebRTC mesh
    intact behind it, deliberately, per the owner. A mic permission is what got an earlier
-   version rejected.
+   version rejected. A test pins the exact line by which the overlay reads that flag from
+   `window.__wtConfig`, so the flag can never be copied into a local that drifts. If you
+   refactor that line into an alias, the test fails on purpose. Leave it inline.
+7. **Firefox has never been submitted.** The build exists and is packaged every release.
+8. **`render.yaml` has never actually been applied**, see the section above.
