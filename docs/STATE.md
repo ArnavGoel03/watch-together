@@ -357,6 +357,16 @@ or the watchdog demotes a leader who is healthy and merely quiet.
 Filled in on 2026-08-22. Recorded here because the dashboard is the only other copy and
 it is not diffable.
 
+**Rejected on 2026-08-22**, "Spam and placement in the Store", reference Yellow Argon,
+for a list of platform names in the item description: YouTube, Netflix, Prime Video,
+Disney+, JioHotstar and Hotstar. That string is in no file in this repository.
+`store-listing.md` was rewritten to carry no platform names at all in commit 1e977cc,
+after the FIRST rejection, so the dashboard is holding older text than the repo is and
+the fix is to make the dashboard match `store-listing.md`. It cannot be automated:
+Chrome refuses to script, read or screenshot `chrome.google.com/webstore` at all. Record
+the description here once it is pasted, because not doing that is how it drifted. See
+`docs/ROADMAP.md`.
+
 | Field | Value |
 | --- | --- |
 | Homepage URL | `https://watch.arnavgoel.dev` |
@@ -490,6 +500,9 @@ needs changing, re-encrypt the new rule rather than pasting a plaintext one.
 There were no MX records on the apex before this, so nothing was displaced.
 
 ## Open, in rough priority order
+
+The ordered plan, with what each item is blocked on, is `docs/ROADMAP.md`. What follows
+is the same set of facts as reference.
 
 0. **Upload 1.2.1 over the pending 1.2.0 submission.** The zip is built and verified and
    sits in `~/Desktop/Watch Together store assets/0 - Upload this package first/`. Upload
