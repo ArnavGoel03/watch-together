@@ -21,11 +21,16 @@ const DRIFT_TOLERANCE = 0.55;
 // A seek takes a moment to land, and reading the old position in the meantime would
 // trigger another seek, and another. One correction, then wait.
 const SEEK_COOLDOWN_MS = 1400;
-// How long to give the embeds before deciding they are not going to play. Some browsers
-// and some networks refuse YouTube embeds outright, and a visitor must never be shown
-// YouTube's "video unavailable" card where the demo should be. When this runs out the
-// screens go back to their posters and the clock demo carries on without them.
-const EMBED_TIMEOUT_MS = 6500;
+// How long to give the embeds before deciding they are not coming. Some browsers and
+// some networks refuse YouTube embeds outright, and a visitor must never be shown
+// YouTube's "video unavailable" card where the demo should be.
+//
+// The test is whether the player ENGAGED, not whether it reached playing. Two streams
+// starting at once on one connection can sit in the buffering state for a while, and an
+// earlier version of this gave up at six and a half seconds and marked both players
+// permanently failed, which hid a video that was seconds from playing. Buffering means
+// the command landed and the player is working, so it counts.
+const EMBED_TIMEOUT_MS = 11000;
 
 const fmt = (t) => {
   const m = Math.floor(t / 60);
@@ -46,6 +51,10 @@ class Player {
     this.duration = FALLBACK_DURATION;
     this.ready = false;
     this.started = false;
+    // Engaged means the player answered: playing, or buffering on its way there. It is
+    // the signal the fallback watches, because reaching "playing" can take a while and
+    // reaching "buffering" already proves the embed is alive.
+    this.engaged = false;
     this.failed = false;
     this.lastSeek = 0;
     this.muted = muted;
@@ -70,12 +79,30 @@ class Player {
     this.frame.allow = "autoplay; encrypted-media";
     this.frame.setAttribute("tabindex", "-1");
     this.frame.addEventListener("load", () => this.listen());
+    this.wanted = null;
     mount.appendChild(this.frame);
   }
 
+  /* The handshake that starts the position stream.
+   *
+   * Posted on the frame's load event AND again on onReady, because load fires when the
+   * document arrives, not when the widget is listening. Sent only on load it is dropped,
+   * never retried, and no infoDelivery ever arrives: the player then plays perfectly
+   * while this page believes it never started, and the fallback hides a working video.
+   * That is exactly what happened, and it was only visible in a real browser. */
   listen() {
-    this.ready = true;
     this.post({ event: "listening", id: 1, channel: "widget" });
+  }
+
+  /** The widget is now listening, so queued intent can be applied for real. */
+  markReady() {
+    if (this.ready) return;
+    this.ready = true;
+    // Anything said before now was discarded by the widget, so the record of what was
+    // asked for has to be cleared or the guard below would suppress the real command as
+    // a duplicate of one that was never delivered.
+    this.wanted = null;
+    this.listen();
   }
 
   post(payload) {
@@ -87,8 +114,20 @@ class Player {
     this.post({ event: "command", func, args, id: 1, channel: "widget" });
   }
 
-  play() { this.send("playVideo"); }
-  pause() { this.send("pauseVideo"); }
+  /* Only speak when the intent actually changes. reconcile() runs every animation frame,
+   * so an unguarded play() was posting sixty messages a second across a frame boundary
+   * for no benefit. */
+  play() {
+    if (this.wanted === "play") return;
+    this.wanted = "play";
+    this.send("playVideo");
+  }
+
+  pause() {
+    if (this.wanted === "pause") return;
+    this.wanted = "pause";
+    this.send("pauseVideo");
+  }
 
   setMuted(muted) {
     this.muted = muted;
@@ -105,7 +144,11 @@ class Player {
   get settling() { return performance.now() - this.lastSeek < SEEK_COOLDOWN_MS; }
 
   accept(info) {
-    if (info.playerState === 1 || info.currentTime > 0) this.started = true;
+    if (info.playerState === 1 || info.playerState === 3) this.engaged = true;
+    if (info.playerState === 1 || info.currentTime > 0) {
+      this.started = true;
+      this.engaged = true;
+    }
     if (typeof info.currentTime === "number") this.time = info.currentTime;
     if (typeof info.duration === "number" && info.duration > 0) this.duration = info.duration;
   }
@@ -290,10 +333,19 @@ function start() {
     if (e.origin !== EMBED_ORIGIN) return;
     let data;
     try { data = JSON.parse(e.data); } catch { return; }
-    if (data?.event !== "infoDelivery" || !data.info) return;
-    for (const m of room.members) {
-      if (m.owns(e.source)) m.player.accept(data.info);
+    const member = room.members.find((m) => m.owns(e.source));
+    if (!member) return;
+
+    // onReady is the only reliable signal that the widget will now hear us. Commands sent
+    // before it are silently discarded, so the room's current state is applied here
+    // rather than at attach time.
+    if (data.event === "onReady") {
+      member.player.markReady();
+      member.player.seek(room.position);
+      if (room.playing && member.state === "watching") member.player.play();
+      return;
     }
+    if (data.event === "infoDelivery" && data.info) member.player.accept(data.info);
   });
 
   let live = false;
@@ -310,13 +362,26 @@ function start() {
     // sitting where the product demo should be. Everything else still works: the room
     // clock, the adverts, the stall, the scrubbers.
     setTimeout(() => {
-      if (room.members.some((m) => m.player?.started)) return;
+      if (room.members.some((m) => m.player?.engaged)) return;
       for (const m of room.members) {
         if (m.player) m.player.failed = true;
       }
       stage.classList.remove("is-live");
       stage.classList.add("is-fallback");
       say("The embeds are blocked here, so this is the room clock on its own. Everything below still holds.");
+
+      // Giving up is not final. A slow embed that arrives late is put back rather than
+      // left hidden behind a poster for the rest of the visit.
+      const recover = setInterval(() => {
+        if (!room.members.some((m) => m.player?.engaged)) return;
+        clearInterval(recover);
+        for (const m of room.members) {
+          if (m.player) m.player.failed = false;
+        }
+        stage.classList.remove("is-fallback");
+        stage.classList.add("is-live");
+        say("Two separate players, one room. Interrupt either one.");
+      }, 1000);
     }, EMBED_TIMEOUT_MS);
   };
 
