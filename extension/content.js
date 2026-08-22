@@ -67,8 +67,39 @@
   let lastLocalSeekAt = 0;
   let divergenceAskedAt = 0;
   let divergencePending = false;
-  chrome.storage.local.get(["syncOffset"], /** @param {any} d */ (d) => {
-    if (typeof d.syncOffset === "number") syncOffset = d.syncOffset;
+  // Which video the current offset is FOR. Recomputed whenever the tab lands on a
+  // genuinely different one, because an offset carried across films is a silent desync
+  // with nothing on screen to explain it.
+  let offsetKey = "";
+  let offsetStore = {};
+
+  function loadOffsetForCurrentVideo() {
+    const cfg = window.__wtConfig;
+    if (!cfg) return;
+    offsetKey = cfg.offsetKeyFor(location.href);
+    const next = cfg.readOffset(offsetStore, offsetKey);
+    if (next === syncOffset) return;
+    syncOffset = next;
+    // The panel may be open with the old number in it.
+    document.dispatchEvent(new CustomEvent("wt-offset-changed", { detail: { seconds: syncOffset } }));
+  }
+
+  function persistOffset(seconds) {
+    const cfg = window.__wtConfig;
+    if (!cfg) return;
+    if (!offsetKey) offsetKey = cfg.offsetKeyFor(location.href);
+    offsetStore = cfg.writeOffset(offsetStore, offsetKey, seconds, Date.now());
+    chrome.storage.local.set({ syncOffsets: offsetStore });
+  }
+
+  chrome.storage.local.get(["syncOffsets", "syncOffset"], /** @param {any} d */ (d) => {
+    offsetStore = d && typeof d.syncOffsets === "object" && d.syncOffsets ? d.syncOffsets : {};
+    // The old global scalar is deliberately NOT migrated. It was measured against one
+    // film and there is no way to know which, so carrying it into a keyed store would
+    // just relabel a wrong number as a right one. It is dropped, and the divergence
+    // prompt offers to measure again on the video it actually applies to.
+    if (typeof d.syncOffset === "number") chrome.storage.local.remove("syncOffset");
+    loadOffsetForCurrentVideo();
   });
 
   function isLiveStream(video) {
@@ -834,7 +865,7 @@
       dismissActionCard(DIVERGENCE_CARD_ID);
       if (absorb) {
         syncOffset = window.__wtConfig.offsetAbsorbing(syncOffset, drift);
-        chrome.storage.local.set({ syncOffset });
+        persistOffset(syncOffset);
         showNotification(`Locked in: your copy runs ${Math.abs(syncOffset)}s ${syncOffset > 0 ? "ahead of" : "behind"} the room`);
       } else {
         const video = activeVideo || findVideo();
@@ -1268,6 +1299,11 @@
     // New video, new content length. Carrying the old one over would make a short clip
     // that follows a long film look like a permanent ad. Relearn it from scratch.
     contentDuration = 0;
+    // Same argument, and it used to be missed here: a locked-in offset describes the film
+    // it was measured on. Carried into the next one it is a silent twelve second desync
+    // that nobody can account for. Look up whatever belongs to THIS video, which is
+    // usually nothing.
+    loadOffsetForCurrentVideo();
     if (!inRoom) return;
     // If we just received and applied a remote navigate, don't echo it back.
     if (Date.now() < suppressNextNavigateUntil) return;
@@ -1447,6 +1483,7 @@
     setOffset: (seconds) => {
       const n = Number(seconds);
       syncOffset = Number.isFinite(n) ? n : 0;
+      persistOffset(syncOffset);
     },
     getOffset: () => syncOffset,
     // Drift goes stale fast: report null rather than a number the user would misread.

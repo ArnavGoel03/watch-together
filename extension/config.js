@@ -260,6 +260,83 @@
       }
     },
 
+    // How many videos worth of locked-in offsets to keep. Storage is small and this is a
+    // convenience, not a record: past this the least recently used one goes.
+    OFFSET_STORE_LIMIT: 40,
+
+    // Query parameters that say WHERE you are in a video, or how you got to it, rather
+    // than WHICH video it is. Two URLs differing only by these are the same film, and an
+    // offset measured on one has to be found again from the other.
+    OFFSET_KEY_IGNORED_PARAMS: [
+      "wt_room", "t", "start", "time_continue", "si", "feature", "pp",
+      "list", "index", "ab_channel", "utm_source", "utm_medium", "utm_campaign",
+    ],
+
+    /**
+     * The identity a locked-in offset belongs to.
+     *
+     * An offset says "my copy of THIS film runs N seconds against whatever the room is
+     * holding". That is a fact about a video, not about a browser, so it is stored per
+     * video. Stored globally, as it once was, it is a trap: the number is correct for the
+     * film it was measured on and silently wrong for every other one, forever, with
+     * nothing on screen to explain why two people are twelve seconds apart tomorrow.
+     */
+    offsetKeyFor(url) {
+      if (typeof url !== "string" || !url) return "";
+      try {
+        const u = new URL(url);
+        if (!/^https?:$/.test(u.protocol)) return "";
+        for (const p of root.__wtConfig.OFFSET_KEY_IGNORED_PARAMS) u.searchParams.delete(p);
+        // Sorted, so the same video reached with its parameters in a different order is
+        // still the same key.
+        u.searchParams.sort();
+        const q = u.searchParams.toString();
+        return u.host.toLowerCase() + u.pathname.replace(/\/$/, "") + (q ? "?" + q : "");
+      } catch {
+        return "";
+      }
+    },
+
+    /** The offset held for one video, and zero for anything unknown or malformed. */
+    readOffset(store, key) {
+      if (!store || !key || typeof store !== "object") return 0;
+      const entry = store[key];
+      const seconds = entry && typeof entry === "object" ? entry.seconds : entry;
+      if (typeof seconds !== "number" || !isFinite(seconds)) return 0;
+      return Math.max(-600, Math.min(600, seconds));
+    },
+
+    /**
+     * The store with one video's offset recorded, as a NEW object. Zero deletes the entry
+     * rather than writing a zero, because "no offset" and "an offset that happens to be
+     * none" are the same thing and only one of them should take up a slot.
+     */
+    writeOffset(store, key, seconds, nowMs) {
+      const next = {};
+      if (store && typeof store === "object") {
+        for (const k of Object.keys(store)) {
+          const e = store[k];
+          if (e && typeof e === "object" && typeof e.seconds === "number") next[k] = e;
+          else if (typeof e === "number" && isFinite(e)) next[k] = { seconds: e, at: 0 };
+        }
+      }
+      if (!key) return next;
+      const n = Number(seconds);
+      const clamped = isFinite(n) ? Math.max(-600, Math.min(600, n)) : 0;
+      if (clamped === 0) delete next[key];
+      else next[key] = { seconds: clamped, at: typeof nowMs === "number" ? nowMs : 0 };
+
+      const keys = Object.keys(next);
+      const limit = root.__wtConfig.OFFSET_STORE_LIMIT;
+      if (keys.length > limit) {
+        keys
+          .sort((a, b) => (next[a].at || 0) - (next[b].at || 0))
+          .slice(0, keys.length - limit)
+          .forEach((k) => delete next[k]);
+      }
+      return next;
+    },
+
     // True only for a URL it is safe to send someone's tab to.
     isSafeNavigateUrl(raw) {
       if (typeof raw !== "string" || !raw) return false;

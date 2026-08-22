@@ -47,6 +47,16 @@ interface WatchTogetherConfig {
   ROOM_CODE_REGEX: RegExp;
   CUSTOM_NAME_REGEX: RegExp;
   isJoinableCode(code: unknown): boolean;
+
+  /**
+   * A locked-in sync offset belongs to a video, not to a browser. Stored globally it is a
+   * silent desync on every OTHER film, forever, so the store is keyed and bounded.
+   */
+  OFFSET_STORE_LIMIT: number;
+  OFFSET_KEY_IGNORED_PARAMS: string[];
+  offsetKeyFor(url: unknown): string;
+  readOffset(store: unknown, key: string): number;
+  writeOffset(store: unknown, key: string, seconds: unknown, nowMs?: number): Record<string, { seconds: number; at: number }>;
   isSafeNavigateUrl(raw: unknown): boolean;
   /** A relay we are willing to talk to: wss only, never plaintext. */
   isValidServerUrl(raw: unknown): boolean;

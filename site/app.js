@@ -424,11 +424,22 @@ function start() {
     track.addEventListener("pointercancel", () => { dragging = false; });
   }
 
-  playBtn.addEventListener("click", () => {
+  const togglePlaying = () => {
     if (!live) { goLive(); return; }
     room.setPlaying(!room.playing);
     say(room.playing ? "Playing, for both of you." : "Paused, for both of you.");
-  });
+  };
+
+  playBtn.addEventListener("click", togglePlaying);
+
+  // The embeds are pointer-events:none, so that a click cannot land on YouTube's own
+  // controls and take somebody off the page. That left the most obvious gesture on any
+  // video, pressing the picture to stop it, doing nothing at all, which reads as a
+  // broken player rather than as a demo with its own controls. The picture is a control
+  // now: either one pauses the room, because there is only one room to pause.
+  for (const pic of stage.querySelectorAll(".screen .pic")) {
+    pic.addEventListener("click", togglePlaying);
+  }
 
   soundBtn?.addEventListener("click", () => {
     if (!live) { goLive(); }

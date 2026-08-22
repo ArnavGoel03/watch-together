@@ -266,3 +266,86 @@ test("divergence: absorbing then applying leaves zero gap", () => {
   const offsetAfter = config.offsetAbsorbing(offsetBefore, drift);
   assert.equal(roomPosition + offsetAfter - myPosition, 0, "the viewer is left exactly where they were");
 });
+
+// ---------- offsets belong to a video, not to a browser ----------
+//
+// The regression these pin: a locked-in offset used to be one number in storage, applied
+// to every room and every video until somebody found the control and cleared it. Lock in
+// twelve seconds on a long rip tonight, and tomorrow an unrelated film is silently twelve
+// seconds out with nothing on screen to explain it.
+
+test("offset key: the same film reached different ways is one key", () => {
+  const base = config.offsetKeyFor("https://www.youtube.com/watch?v=abc123");
+  assert.equal(config.offsetKeyFor("https://www.youtube.com/watch?v=abc123&t=42s"), base, "a timestamp is where you are, not what you are watching");
+  assert.equal(config.offsetKeyFor("https://www.youtube.com/watch?v=abc123&wt_room=ABCDEF"), base, "our own join hint");
+  assert.equal(config.offsetKeyFor("https://www.youtube.com/watch?v=abc123#t=90"), base, "a hash");
+  assert.equal(config.offsetKeyFor("https://www.youtube.com/watch?v=abc123&list=PL9&index=4"), base, "playlist context");
+  assert.equal(config.offsetKeyFor("https://www.youtube.com/watch?v=abc123&utm_source=x"), base, "campaign tagging");
+});
+
+test("offset key: a different film is a different key", () => {
+  const a = config.offsetKeyFor("https://www.youtube.com/watch?v=abc123");
+  assert.notEqual(config.offsetKeyFor("https://www.youtube.com/watch?v=zzz999"), a);
+  assert.notEqual(config.offsetKeyFor("https://www.netflix.com/watch/80100172"), a);
+  assert.notEqual(config.offsetKeyFor("https://www.youtube.com/watch"), a);
+});
+
+test("offset key: anything that is not an ordinary web page has no key", () => {
+  assert.equal(config.offsetKeyFor("javascript:alert(1)"), "");
+  assert.equal(config.offsetKeyFor("file:///film.mkv"), "");
+  assert.equal(config.offsetKeyFor("not a url"), "");
+  assert.equal(config.offsetKeyFor(""), "");
+  assert.equal(config.offsetKeyFor(null), "");
+});
+
+test("offset store: an unknown video has no offset", () => {
+  const key = config.offsetKeyFor("https://www.youtube.com/watch?v=abc123");
+  const store = config.writeOffset({}, key, 12, 1000);
+  assert.equal(config.readOffset(store, key), 12);
+  assert.equal(config.readOffset(store, config.offsetKeyFor("https://www.youtube.com/watch?v=other")), 0,
+    "the whole point: a different film starts from nothing");
+  assert.equal(config.readOffset(store, ""), 0);
+  assert.equal(config.readOffset(null, key), 0);
+  assert.equal(config.readOffset({ [key]: "twelve" }, key), 0, "a malformed entry is no entry");
+});
+
+test("offset store: zero clears rather than recording a zero", () => {
+  const key = config.offsetKeyFor("https://www.youtube.com/watch?v=abc123");
+  let store = config.writeOffset({}, key, 12, 1000);
+  store = config.writeOffset(store, key, 0, 2000);
+  assert.equal(Object.keys(store).length, 0);
+});
+
+test("offset store: writing never mutates what it was given", () => {
+  const key = config.offsetKeyFor("https://www.youtube.com/watch?v=abc123");
+  const before = {};
+  const after = config.writeOffset(before, key, 5, 1000);
+  assert.equal(Object.keys(before).length, 0);
+  assert.equal(config.readOffset(after, key), 5);
+});
+
+test("offset store: clamped to the same range as the manual control", () => {
+  const key = config.offsetKeyFor("https://www.youtube.com/watch?v=abc123");
+  assert.equal(config.readOffset(config.writeOffset({}, key, 9999, 1), key), 600);
+  assert.equal(config.readOffset(config.writeOffset({}, key, -9999, 1), key), -600);
+  assert.equal(config.readOffset(config.writeOffset({}, key, Number.NaN, 1), key), 0);
+});
+
+test("offset store: it is bounded, and the oldest entry is the one that goes", () => {
+  let store = {};
+  const limit = config.OFFSET_STORE_LIMIT;
+  for (let i = 0; i < limit + 5; i++) {
+    store = config.writeOffset(store, `site.example/v${i}`, i + 1, i + 1);
+  }
+  assert.equal(Object.keys(store).length, limit);
+  assert.equal(config.readOffset(store, "site.example/v0"), 0, "the least recently written is gone");
+  assert.equal(config.readOffset(store, `site.example/v${limit + 4}`), limit + 5, "the newest is kept");
+});
+
+test("offset store: a legacy bare number is readable and upgraded on write", () => {
+  const key = "site.example/v1";
+  assert.equal(config.readOffset({ [key]: 8 }, key), 8, "read what an older build wrote");
+  const store = config.writeOffset({ [key]: 8 }, "site.example/v2", 3, 500);
+  assert.equal(config.readOffset(store, key), 8, "and keep it");
+  assert.equal(typeof store[key], "object", "in the shape the current build writes");
+});

@@ -472,7 +472,7 @@
     });
 
     chrome.storage.local.get(
-      ["wtMembersOpen", "wtAdvancedOpen", "syncOffset", "overlayHotkey", "serverUrl"],
+      ["wtMembersOpen", "wtAdvancedOpen", "syncOffsets", "overlayHotkey", "serverUrl"],
       /** @param {any} d */ (d) => {
         if (d.wtMembersOpen) {
           membersList.removeAttribute("hidden");
@@ -480,7 +480,11 @@
           membersToggle.classList.add("wt-open");
         }
         if (d.wtAdvancedOpen) advanced.open = true;
-        syncOffset = typeof d.syncOffset === "number" ? d.syncOffset : 0;
+        // Offsets are held per video, so read the one belonging to this page rather
+        // than a single number that would be wrong on every film but one.
+        syncOffset = window.__wtConfig
+          ? window.__wtConfig.readOffset(d.syncOffsets, window.__wtConfig.offsetKeyFor(location.href))
+          : 0;
         const offsetInput = overlayPanel.querySelector("#wt-offset");
         if (offsetInput) offsetInput.value = String(syncOffset);
         const hotkeyInput = overlayPanel.querySelector("#wt-hotkey");
@@ -685,15 +689,24 @@
       const n = Number(value);
       syncOffset = Number.isFinite(n) ? Math.max(-600, Math.min(600, n)) : 0;
       input.value = String(syncOffset);
-      chrome.storage.local.set({ syncOffset });
       addSystemMsg(
         syncOffset === 0
           ? "Offset cleared, following the room exactly"
           : `Offset set: your video sits ${Math.abs(syncOffset)}s ${syncOffset > 0 ? "ahead of" : "behind"} the room`
       );
+      // The core owns both applying and storing it, so there is one writer and the
+      // stored value can never disagree with the one being applied.
       window.__wtCore?.setOffset?.(syncOffset);
       window.__wtCore?.resync?.();
     };
+
+    // Changing video changes which offset applies, and the panel can be open while it
+    // happens. Follow the core rather than showing the number for a film nobody is on.
+    document.addEventListener("wt-offset-changed", (/** @type {any} */ e) => {
+      const n = Number(e.detail?.seconds);
+      syncOffset = Number.isFinite(n) ? n : 0;
+      input.value = String(syncOffset);
+    });
 
     input.addEventListener("change", () => commit(input.value));
     overlayPanel.querySelector("#wt-offset-up").addEventListener("click", (e) => {
