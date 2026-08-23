@@ -643,10 +643,70 @@ test("rebuild: rejoining a vanished room with recreateIfMissing restores it and 
   });
   const m = await waitFor(ws, "room-joined");
   assert.equal(m.roomCode, "GHOST1");
-  assert.equal(m.isHost, true, "first one back steers the rebuilt room");
+  // Not host. Rebuilding a room proves you know its code, which is the same thing joining
+  // proves, so it cannot be what promotes you. This assertion used to read isHost === true,
+  // which is the hole below: the rebuilder is always the room's first arrival, so the
+  // "an unsteered room goes to whoever turns up first" rule handed host to them anyway and
+  // made the host-token check two lines above it decorative.
+  assert.equal(m.isHost, false, "a rebuild without a host token does not make you host");
+  assert.equal(m.mode, "everyone", "and the rebuilt room stays open, so the party can still drive it");
   assert.equal(m.playbackState.currentTime, 421.25, "rebuilt room resumes where the party actually was");
   assert.equal(m.playbackState.playing, true);
   closeAll({ ws });
+});
+
+test("rebuild: a stranger cannot rebuild a quiet room and lock everybody out of it", async () => {
+  // The attack this closes: wait for a party to fall quiet (a free-tier spin-down does it
+  // for you), rebuild their room from the code alone, be handed host, then set-mode host.
+  // The real members reconnect into a room only the attacker can drive, and navigate can
+  // send every one of their tabs anywhere.
+  const attacker = await createClient();
+  send(attacker, {
+    type: "join-room",
+    roomCode: "GHOST9",
+    userName: "Stranger",
+    recreateIfMissing: true,
+    mode: "host",
+    hostToken: "f".repeat(64),
+    resumeState: { playing: true, currentTime: 10, playbackRate: 1 },
+  });
+  const joined = await waitFor(attacker, "room-joined");
+  assert.equal(joined.isHost, false, "a forged token is not a token");
+  assert.equal(joined.mode, "everyone", "and mode:host on the rebuild is not honoured either");
+
+  // set-mode is host-only, so it must do nothing at all for them.
+  send(attacker, { type: "set-mode", mode: "host" });
+  await assertNoMessage(attacker, "mode-changed", 250);
+
+  // A real member arriving afterwards can still drive their own film.
+  const member = await guest("GHOST9", "Member");
+  assert.equal(member.msg.mode, "everyone", "the room the party comes back to is not locked");
+  closeAll({ ws: attacker }, member);
+});
+
+test("rebuild: the real host reclaims their room with the token the server issued", async () => {
+  const host = await createClient();
+  send(host, { type: "create-room", userName: "Host", mode: "host" });
+  const created = await waitFor(host, "room-created");
+  assert.equal(typeof created.hostToken, "string", "a room's creator is given a token");
+  closeAll({ ws: host });
+
+  // Same person, new connection, new user id: exactly what a reload or a dropped socket
+  // looks like from here, and the room may be gone entirely after a restart.
+  const back = await createClient();
+  send(back, {
+    type: "join-room",
+    roomCode: created.roomCode,
+    userName: "Host",
+    recreateIfMissing: true,
+    mode: "host",
+    hostToken: created.hostToken,
+    resumeState: { playing: false, currentTime: 12, playbackRate: 1 },
+  });
+  const rejoined = await waitFor(back, "room-joined");
+  assert.equal(rejoined.isHost, true, "the token this server minted still identifies its host");
+  assert.equal(rejoined.mode, "host", "and their locked room comes back locked");
+  closeAll({ ws: back });
 });
 
 test("rebuild: a plain join to an unknown room still fails cleanly", async () => {

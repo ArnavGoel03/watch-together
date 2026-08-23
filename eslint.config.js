@@ -53,6 +53,20 @@ export default [
     rules: sharedRules,
   },
 
+  // The protocol both relays share. CommonJS, because it has to be requireable from the
+  // Node server on Node 20 and importable by the Worker bundler, and only one format is
+  // both. Its globals are the intersection of the two runtimes: Node's, plus the web
+  // platform names (URL, crypto, TextEncoder) that Workers and Node 20 both provide.
+  {
+    files: ["shared/*.cjs"],
+    languageOptions: {
+      ecmaVersion: 2023,
+      sourceType: "commonjs",
+      globals: { ...globals.node, ...globals.browser },
+    },
+    rules: sharedRules,
+  },
+
   // Node sync server: CommonJS.
   {
     files: ["server/*.js"],

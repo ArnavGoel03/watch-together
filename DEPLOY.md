@@ -33,10 +33,13 @@ fly deploy
 ### Option D: Docker (any VPS)
 
 ```bash
-cd server
-docker build -t watch-together .
+docker build -f server/Dockerfile -t watch-together .
 docker run -p 3000:3000 watch-together
 ```
+
+Built from the repository root, not from `server/`. The server requires
+`shared/protocol.cjs`, the protocol definition it shares with the Cloudflare relay, so
+the build context has to contain both directories.
 
 ### Keeping a free-tier server awake
 

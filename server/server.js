@@ -1,31 +1,39 @@
 const http = require("http");
 const crypto = require("crypto");
 const { WebSocketServer } = require("ws");
+// The protocol both relays implement, defined once. Every limit, regex and validator in
+// here used to exist twice, once here and once in server-cf/src/worker.js, and the copies
+// drifted: the Cloudflare port, which is what production runs, was missing guards this
+// file has. See the header of that file.
+const P = require("../shared/protocol.cjs");
 
 // --- Configuration ---
 const PORT = process.env.PORT || 3000;
-const MAX_ROOM_MEMBERS = parseInt(process.env.MAX_ROOM_MEMBERS) || 50;
-const MAX_ROOMS = parseInt(process.env.MAX_ROOMS) || 10000;
+const MAX_ROOM_MEMBERS = parseInt(process.env.MAX_ROOM_MEMBERS) || P.LIMITS.MAX_ROOM_MEMBERS;
+const MAX_ROOMS = parseInt(process.env.MAX_ROOMS) || P.LIMITS.MAX_ROOMS;
 const ROOM_TTL_MS = (parseInt(process.env.ROOM_TTL_HOURS, 10) || 12) * 3600000; // 12h default
-const ROOM_CLEANUP_INTERVAL = 60000; // check every minute
-const WS_PING_INTERVAL = 30000; // ping every 30s to detect dead connections
-const MAX_MESSAGE_SIZE = 4096; // bytes
-const RATE_LIMIT_WINDOW = 1000; // 1 second
-const RATE_LIMIT_MAX = parseInt(process.env.RATE_LIMIT_MAX, 10) || 20;
-const MAX_CHAT_LENGTH = 500;
-const MAX_USERNAME_LENGTH = 30;
-const MAX_CONNECTIONS_PER_IP = 10;
-const MAX_VIDEO_URL_LENGTH = 2000;
+const ROOM_CLEANUP_INTERVAL = P.TIMEOUTS.ROOM_CLEANUP_INTERVAL; // check every minute
+const WS_PING_INTERVAL = P.TIMEOUTS.WS_PING_INTERVAL; // ping every 30s to detect dead connections
+const MAX_MESSAGE_SIZE = P.LIMITS.MAX_MESSAGE_SIZE; // bytes
+const RATE_LIMIT_WINDOW = P.TIMEOUTS.RATE_LIMIT_WINDOW; // 1 second
+const RATE_LIMIT_MAX = parseInt(process.env.RATE_LIMIT_MAX, 10) || P.LIMITS.RATE_LIMIT_MAX;
+const MAX_CHAT_LENGTH = P.LIMITS.MAX_CHAT_LENGTH;
+const MAX_USERNAME_LENGTH = P.LIMITS.MAX_USERNAME_LENGTH;
+// Env-configurable because the e2e suite has always set it and it has never had any
+// effect: the harness opens every socket from loopback, so a hardcoded ten was a ceiling
+// the tests believed they had raised. A value the test suite sets and the server ignores
+// is worse than no knob at all.
+const MAX_CONNECTIONS_PER_IP = parseInt(process.env.MAX_CONNECTIONS_PER_IP, 10) || P.LIMITS.MAX_CONNECTIONS_PER_IP;
 // Empty rooms linger for this long so a solo leaver / disconnect can rejoin
 // the same code. Override via env for tests.
 // 30 minutes, not 60 seconds: closing the tab, restarting the browser, rebooting, or
 // riding out a dead wifi stretch all used to destroy the room inside the old window,
 // and the party would come back to "Room not found". An empty room costs a Map entry.
-const EMPTY_ROOM_GRACE_MS = parseInt(process.env.EMPTY_ROOM_GRACE_MS, 10) || 30 * 60000;
+const EMPTY_ROOM_GRACE_MS = parseInt(process.env.EMPTY_ROOM_GRACE_MS, 10) || P.TIMEOUTS.EMPTY_ROOM_GRACE_MS;
 // Persistent (custom-named) rooms get longer TTLs so friends can keep reusing
 // the same name for days.
 const PERSISTENT_ROOM_TTL_MS = (parseInt(process.env.PERSISTENT_ROOM_TTL_HOURS, 10) || 24 * 30) * 3600000; // 30 days
-const PERSISTENT_ROOM_EMPTY_GRACE_MS = parseInt(process.env.PERSISTENT_EMPTY_GRACE_MS, 10) || 7 * 24 * 3600000; // 7 days
+const PERSISTENT_ROOM_EMPTY_GRACE_MS = parseInt(process.env.PERSISTENT_EMPTY_GRACE_MS, 10) || P.TIMEOUTS.PERSISTENT_ROOM_EMPTY_GRACE_MS;
 // Set this to the new relay's wss:// URL and every client that connects is told to move
 // there, permanently, and reconnects on its own. That is the whole migration story: the
 // extension cannot be redeployed quickly (Chrome Web Store review, then auto-update), so
@@ -40,16 +48,26 @@ if (SERVER_MOVED_URL && !/^wss:\/\/[^\s]+$/i.test(SERVER_MOVED_URL)) {
 }
 const SERVER_MOVED_VALID = /^wss:\/\/[^\s]+$/i.test(SERVER_MOVED_URL);
 
-const CUSTOM_NAME_REGEX = /^[a-zA-Z0-9-]{4,32}$/;
+const CUSTOM_NAME_REGEX = P.CUSTOM_NAME_REGEX;
 // The shape generateRoomCode() hands out (no I, O, 0 or 1: they read the same out loud).
-const ROOM_CODE_REGEX = /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{6}$/;
+const ROOM_CODE_REGEX = P.ROOM_CODE_REGEX;
 
 // Host tokens are an HMAC of the room code, not a stored value, so a room that has to be
 // rebuilt after a restart can still prove who its host was without the server having
 // remembered anything. Set HOST_TOKEN_SECRET to a fixed string in the environment to make
-// that survive deploys. Without one we mint a per-boot secret and simply stop granting
-// host on a rebuild: a party that comes back as a room everyone can drive is a small
-// annoyance, a stranger silently inheriting control of it is not.
+// that survive deploys.
+//
+// In production a missing secret is fatal, and deliberately so. This is the only thing
+// standing between a stranger who knows a room code and exclusive control of somebody
+// else's party, so it is not a value to infer, default, or quietly work around: a relay
+// that cannot verify host tokens should refuse to be a relay. Off production we mint a
+// per-boot secret instead, because the test suite and local development need host reclaim
+// to work and neither is reachable from the internet. That is a random secret, never a
+// fixed fallback: a hardcoded default would be a published key.
+const IS_PRODUCTION = process.env.NODE_ENV === "production";
+if (IS_PRODUCTION && !process.env.HOST_TOKEN_SECRET) {
+  throw new Error("HOST_TOKEN_SECRET must be set in production. Refusing to start: host tokens cannot be verified without it.");
+}
 const HOST_TOKEN_SECRET = process.env.HOST_TOKEN_SECRET || crypto.randomBytes(32).toString("hex");
 if (!process.env.HOST_TOKEN_SECRET) {
   console.warn("[start] HOST_TOKEN_SECRET is not set. Host status will not survive a server restart.");
@@ -77,72 +95,28 @@ const connectionsPerIp = new Map(); // ip -> count
 
 // --- Utilities ---
 
+// Both drawn from a CSPRNG rather than Math.random. The room code is the only credential
+// this system has: holding one lets you read a party's chat, see the address of what they
+// are watching, and in a default-mode room seek their film and send every member's tab to
+// any address you like. Math.random's internal state is recoverable from a handful of its
+// outputs, so an attacker who made a few rooms of their own could predict the codes handed
+// to strangers on the same process. See shared/protocol.cjs.
 function generateRoomCode() {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  let code;
-  // Ensure uniqueness
-  do {
-    code = "";
-    for (let i = 0; i < 6; i++) {
-      code += chars[Math.floor(Math.random() * chars.length)];
-    }
-  } while (rooms.has(code));
-  return code;
+  return P.generateRoomCode((code) => rooms.has(code));
 }
 
-function generateUserId() {
-  return Math.random().toString(36).substring(2, 10);
-}
-
-function sanitize(str, maxLen) {
-  if (typeof str !== "string") return "";
-  return str.substring(0, maxLen).trim();
-}
-
-function escapeHtml(str) {
-  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
-}
+const generateUserId = P.generateUserId;
+const sanitize = P.sanitize;
+const escapeHtml = P.escapeHtml;
 
 // A video-call link the room can share, so people watching together can also talk. This
 // is deliberately an allowlist of the platforms people actually use rather than "any https
 // URL": the link is handed to every member and rendered as a button, so a free-text field
-// would be a convenient way to get a room full of strangers to click on anything. Kept in
-// step with CALL_HOSTS in extension/config.js, and validated on both sides.
-const CALL_HOSTS = [
-  "zoom.us",
-  "zoomgov.com",
-  "meet.google.com",
-  "teams.microsoft.com",
-  "teams.live.com",
-  "discord.gg",
-  "discord.com",
-  "whereby.com",
-  "meet.jit.si",
-];
-const MAX_CALL_URL_LENGTH = 500;
-
-function validateCallUrl(str) {
-  if (typeof str !== "string") return "";
-  const trimmed = str.trim().substring(0, MAX_CALL_URL_LENGTH);
-  if (!trimmed) return "";
-  try {
-    const u = new URL(trimmed);
-    // Zoom's own scheme, which opens the installed client straight into the meeting.
-    if (u.protocol === "zoommtg:" || u.protocol === "zoomus:") return trimmed;
-    if (u.protocol !== "https:") return "";
-    const host = u.hostname.toLowerCase();
-    return CALL_HOSTS.some((d) => host === d || host.endsWith("." + d)) ? trimmed : "";
-  } catch {
-    return "";
-  }
-}
-
-function validateUrl(str) {
-  if (typeof str !== "string") return "";
-  const trimmed = str.substring(0, MAX_VIDEO_URL_LENGTH).trim();
-  if (trimmed.startsWith("https://") || trimmed.startsWith("http://")) return trimmed;
-  return "";
-}
+// would be a convenient way to get a room full of strangers to click on anything. The list
+// and both validators live in shared/protocol.cjs, so this relay, the Cloudflare one and
+// extension/config.js cannot disagree about what is allowed.
+const validateCallUrl = P.validateCallUrl;
+const validateUrl = P.validateUrl;
 
 function broadcastToRoom(roomCode, message, excludeWs = null) {
   const room = rooms.get(roomCode);
@@ -203,7 +177,7 @@ function cleanupRoom(roomCode) {
 // What a member can be doing. "buffering" is not the same as an ad break: it does not stop
 // the room's clock, because the film genuinely is playing for everybody else, but it does
 // disqualify that member from driving everyone's position while their own is stalled.
-const PRESENCE_STATES = ["watching", "ad", "buffering"];
+const PRESENCE_STATES = P.PRESENCE_STATES;
 
 // When somebody's connection stalls they fall behind, and the room's drift correction
 // then hard-seeks them FORWARD to catch up, skipping exactly the footage they were waiting
@@ -217,7 +191,7 @@ const PRESENCE_STATES = ["watching", "ad", "buffering"];
 // The ceiling matters as much as the feature. A connection that never recovers must not
 // hold four other people hostage indefinitely, so after this long the room gives up waiting
 // and carries on without them.
-const WAIT_FOR_SLOW_MAX_MS = parseInt(process.env.WAIT_FOR_SLOW_MAX_MS, 10) || 60000;
+const WAIT_FOR_SLOW_MAX_MS = parseInt(process.env.WAIT_FOR_SLOW_MAX_MS, 10) || P.TIMEOUTS.WAIT_FOR_SLOW_MAX_MS;
 
 function membersBuffering(room) {
   const names = [];
@@ -390,10 +364,14 @@ function getHeartbeatLeader(room) {
 // stay silent through our own ads), their page never loaded a video, their tab froze.
 // Nobody notices, because nothing errors. So take the job away and give it to someone who
 // is actually watching.
-// Three missed beats at a 5s heartbeat. Configurable so tests do not have to sit
-// through fifteen real seconds to prove the handoff happens.
-const LEADER_STALE_MS = parseInt(process.env.LEADER_STALE_MS, 10) || 15000;
-const LEADER_SWEEP_MS = parseInt(process.env.LEADER_SWEEP_MS, 10) || 5000;
+// Configurable so tests do not have to sit through the real window to prove the handoff.
+// The value is not "three missed beats" any more: the client's heartbeat now eases out to
+// a 12s ceiling while a room is in sync, so a 15s window left three seconds of slack, and
+// ordinary jitter on one beat near that ceiling was enough to demote a leader who was
+// perfectly healthy and merely quiet. The default lives in shared/protocol.cjs alongside
+// the ceiling it has to clear.
+const LEADER_STALE_MS = parseInt(process.env.LEADER_STALE_MS, 10) || P.TIMEOUTS.LEADER_STALE_MS;
+const LEADER_SWEEP_MS = parseInt(process.env.LEADER_SWEEP_MS, 10) || P.TIMEOUTS.LEADER_SWEEP_MS;
 
 function rotateStaleLeaders() {
   const now = Date.now();
@@ -438,32 +416,9 @@ function notifyHeartbeatLeader(room) {
 }
 
 // --- Rate Limiter ---
-class RateLimiter {
-  constructor(windowMs, max) {
-    this.windowMs = windowMs;
-    this.max = max;
-    this.hits = new Map(); // usedId -> { count, resetAt }
-  }
-
-  check(id) {
-    const now = Date.now();
-    const entry = this.hits.get(id);
-    if (!entry || now > entry.resetAt) {
-      this.hits.set(id, { count: 1, resetAt: now + this.windowMs });
-      return true;
-    }
-    entry.count++;
-    return entry.count <= this.max;
-  }
-
-  // Periodic cleanup of expired entries
-  cleanup() {
-    const now = Date.now();
-    for (const [id, entry] of this.hits) {
-      if (now > entry.resetAt) this.hits.delete(id);
-    }
-  }
-}
+// One implementation, shared with the Cloudflare relay. Both had their own copy and only
+// one of them ever pruned itself, which makes a map keyed by every address ever seen.
+const RateLimiter = P.WindowedLimiter;
 
 const rateLimiter = new RateLimiter(RATE_LIMIT_WINDOW, RATE_LIMIT_MAX);
 
@@ -479,9 +434,19 @@ const rateLimiter = new RateLimiter(RATE_LIMIT_WINDOW, RATE_LIMIT_MAX);
 // of legitimate traffic: a university or an office behind one NAT address is a single IP
 // to us, and locking those people out of making rooms would be a worse bug than the one
 // it prevents.
-const ROOM_CREATE_WINDOW_MS = parseInt(process.env.ROOM_CREATE_WINDOW_MS, 10) || 60000;
-const ROOM_CREATE_MAX = parseInt(process.env.ROOM_CREATE_MAX, 10) || 60;
+const ROOM_CREATE_WINDOW_MS = parseInt(process.env.ROOM_CREATE_WINDOW_MS, 10) || P.TIMEOUTS.ROOM_CREATE_WINDOW_MS;
+const ROOM_CREATE_MAX = parseInt(process.env.ROOM_CREATE_MAX, 10) || P.LIMITS.ROOM_CREATE_MAX;
 const roomCreateLimiter = new RateLimiter(ROOM_CREATE_WINDOW_MS, ROOM_CREATE_MAX);
+
+// Joining a room you cannot name is guessing, and a wrong code costs nothing to send while
+// the reply says whether that room exists. Without a ceiling, one socket can walk the code
+// space hunting for somebody else's party, and named rooms ("FILM-CLUB") are a much smaller
+// space than the generated ones. Keyed by address rather than by connection, or reconnecting
+// would hand out a fresh allowance. A real person mistypes a six character code once or
+// twice, never thirty times a minute.
+const FAILED_JOIN_WINDOW_MS = parseInt(process.env.FAILED_JOIN_WINDOW_MS, 10) || P.TIMEOUTS.FAILED_JOIN_WINDOW_MS;
+const FAILED_JOIN_MAX = parseInt(process.env.FAILED_JOIN_MAX, 10) || P.LIMITS.FAILED_JOIN_MAX;
+const failedJoinLimiter = new RateLimiter(FAILED_JOIN_WINDOW_MS, FAILED_JOIN_MAX);
 
 // Loopback is this machine talking to itself: local development and the test suite. It is
 // not an address an attacker can arrive from, because anything crossing the network shows
@@ -502,9 +467,9 @@ function isLoopback(ip) {
 // everyone the first time its host hit refresh, permanently. Wait a little; if the host
 // comes back with their token inside the window nothing ever changed, and if they do not,
 // the room unlocks exactly as it always did.
-const HOST_ABSENCE_GRACE_MS = parseInt(process.env.HOST_ABSENCE_GRACE_MS, 10) || 60000;
+const HOST_ABSENCE_GRACE_MS = parseInt(process.env.HOST_ABSENCE_GRACE_MS, 10) || P.TIMEOUTS.HOST_ABSENCE_GRACE_MS;
 
-const MAX_LIVE_ROOMS_PER_IP = parseInt(process.env.MAX_LIVE_ROOMS_PER_IP, 10) || 20;
+const MAX_LIVE_ROOMS_PER_IP = parseInt(process.env.MAX_LIVE_ROOMS_PER_IP, 10) || P.LIMITS.MAX_LIVE_ROOMS_PER_IP;
 const liveRoomsPerIp = new Map(); // ip -> count
 
 function claimRoomSlot(ip) {
@@ -560,7 +525,12 @@ setInterval(() => {
   if (cleaned > 0) {
     console.log(`[cleanup] Removed ${cleaned} stale rooms. Active rooms: ${rooms.size}`);
   }
+  // Every windowed budget, not just the message one. The room-creation limiter was
+  // never pruned, so its map grew by one entry for every address that ever made a room
+  // and never shrank again.
   rateLimiter.cleanup();
+  roomCreateLimiter.cleanup();
+  failedJoinLimiter.cleanup();
 }, ROOM_CLEANUP_INTERVAL);
 
 // --- Join Page (fallback when no video URL or bad URL) ---
@@ -823,7 +793,7 @@ wss.on("connection", (ws, req) => {
     // A ping says "we are still here", not "I am watching the film", so it must not be
     // taken as proof an ad break ended: doing that would unfreeze the room's clock during
     // the very break the freeze exists for.
-    if (msg.type !== "ad-state" && msg.type !== "presence" && msg.type !== "ping" && currentRoom) {
+    if (P.provesWatching(msg.type) && currentRoom) {
       const self = rooms.get(currentRoom)?.members.get(userId);
       if (self && self.adActive) {
         self.adActive = false;
@@ -837,11 +807,6 @@ wss.on("connection", (ws, req) => {
           sendTo(ws, { type: "error", message: "Too many rooms created. Wait a minute and try again." });
           return;
         }
-        if (!claimRoomSlot(clientIp)) {
-          sendTo(ws, { type: "error", message: "You already have too many rooms open. Close one and try again." });
-          return;
-        }
-
         // Leave current room if in one
         if (currentRoom) leaveCurrentRoom();
 
@@ -869,6 +834,17 @@ wss.on("connection", (ws, req) => {
           persistent = true;
         } else {
           roomCode = generateRoomCode();
+        }
+
+        // Claimed here, and not one line earlier, because the slot is only released when a
+        // room is DELETED. Claiming before the checks above meant every rejected attempt
+        // (server full, malformed name, name already taken) permanently burned one of this
+        // address's twenty slots with nothing that could ever give it back, so twenty
+        // typos of a taken room name locked that person out of making rooms until the
+        // process restarted.
+        if (!claimRoomSlot(clientIp)) {
+          sendTo(ws, { type: "error", message: "You already have too many rooms open. Close one and try again." });
+          return;
         }
 
         userName = sanitize(msg.userName, MAX_USERNAME_LENGTH) || "User";
@@ -946,8 +922,6 @@ wss.on("connection", (ws, req) => {
           }
 
           const seed = msg.resumeState && typeof msg.resumeState === "object" ? msg.resumeState : {};
-          const seedTime = parseFloat(seed.currentTime);
-          const seedRate = parseFloat(seed.playbackRate);
 
           // Rebuilding is not the same as being the host. Anyone who knows the code can
           // ask for a rebuild, and the room is gone, so there is nothing to check them
@@ -959,16 +933,23 @@ wss.on("connection", (ws, req) => {
           room = {
             code,
             hostId: rebuildIsHost ? userId : null,
+            // Whether the "a room with nobody steering is taken by its first arrival" rule
+            // below is allowed to fire for this room. It must not be, here: the rebuilder
+            // IS the first arrival, always, so that rule handed host to whoever rebuilt the
+            // room and made the token check above decorative. A stranger who waited for a
+            // party to go quiet could rebuild it, be handed host, and lock everyone out
+            // with set-mode when the real members came back. A rebuilt room with no valid
+            // token simply has no host: everybody can drive playback, nobody can lock it,
+            // and the real host reclaims the moment they reconnect with their token.
+            hostClaimable: rebuildIsHost,
             mode: rebuildIsHost && msg.mode === "host" ? "host" : "everyone",
             persistent: CUSTOM_NAME_REGEX.test(code),
             members: new Map(),
             videoUrl: validateUrl(msg.videoUrl),
             playbackState: {
               playing: !!seed.playing,
-              // isFinite, not isNaN: parseFloat("Infinity") is a number, and handing that
-              // back to a real client would set video.currentTime = Infinity.
-              currentTime: !isFinite(seedTime) || seedTime < 0 ? 0 : seedTime,
-              playbackRate: !isFinite(seedRate) || seedRate < 0.1 || seedRate > 16 ? 1 : seedRate,
+              currentTime: P.validPlaybackTime(seed.currentTime) ?? 0,
+              playbackRate: P.validPlaybackRate(seed.playbackRate) ?? 1,
               lastUpdate: Date.now(),
             },
             createdAt: Date.now(),
@@ -984,6 +965,14 @@ wss.on("connection", (ws, req) => {
         }
 
         if (!room) {
+          // A wrong code is cheap to send and the answer says whether that room is real, so
+          // an unbounded stream of them is a search of the code space for somebody else's
+          // party. Counted per address, and only ever on a MISS, so no legitimate join is
+          // ever affected by how often anybody else is guessing.
+          if (!isLoopback(clientIp) && !failedJoinLimiter.check(clientIp)) {
+            sendTo(ws, { type: "error", message: "Rate limited - slow down" });
+            return;
+          }
           sendTo(ws, { type: "error", message: "Room not found" });
           return;
         }
@@ -1019,7 +1008,11 @@ wss.on("connection", (ws, req) => {
           }
         }
         // A room whose host never came back has nobody steering; the first arrival takes it.
-        if (room.hostId === null) room.hostId = userId;
+        // Not for a room rebuilt without a valid host token: see hostClaimable above.
+        if (room.hostId === null && room.hostClaimable !== false) {
+          room.hostId = userId;
+          room.hostClaimable = true;
+        }
 
         room.members.set(userId, { ws, userName, adActive: false });
         room.peakMembers = Math.max(room.peakMembers || 0, room.members.size);
@@ -1083,14 +1076,13 @@ wss.on("connection", (ws, req) => {
           return;
         }
 
-        const currentTime = parseFloat(msg.currentTime);
-        const playbackRate = parseFloat(msg.playbackRate) || 1;
-        // isFinite, not isNaN. parseFloat("Infinity") is a number and isNaN(Infinity) is
-        // false, so an isNaN guard passes it straight through to every peer, where
-        // video.currentTime = Infinity breaks the player. The rebuild path already
-        // guarded this; the live path is the one that actually gets used.
-        if (!isFinite(currentTime) || currentTime < 0) return;
-        if (!isFinite(playbackRate) || playbackRate < 0.1 || playbackRate > 16) return;
+        // Both bounds, both ends, in one place shared with the Cloudflare relay. Infinity
+        // is not the only value that survives a naive guard: isFinite(1e308) is true and
+        // 1e308 is not negative, so it became the room's authoritative position and went
+        // out to every member.
+        const currentTime = P.validPlaybackTime(msg.currentTime);
+        const playbackRate = P.validPlaybackRate(msg.playbackRate);
+        if (currentTime === null || playbackRate === null) return;
 
         room.playbackState = {
           playing: !!msg.playing,
@@ -1142,10 +1134,9 @@ wss.on("connection", (ws, req) => {
         // video. That is exactly what host-only mode exists to prevent.
         if (rm.mode === "host" && rm.hostId !== userId) return;
 
-        const ct = parseFloat(msg.currentTime);
-        const pr = parseFloat(msg.playbackRate) || 1;
-        if (!isFinite(ct) || ct < 0) return;
-        if (!isFinite(pr) || pr < 0.1 || pr > 16) return;
+        const ct = P.validPlaybackTime(msg.currentTime);
+        const pr = P.validPlaybackRate(msg.playbackRate);
+        if (ct === null || pr === null) return;
 
         rm.playbackState = {
           playing: !!msg.playing,
@@ -1485,6 +1476,17 @@ wss.on("connection", (ws, req) => {
             .filter(([, m]) => m.voiceActive)
             .map(([id]) => id),
         });
+      }
+
+      if (room.members.size === 0 && wasHost) {
+        // The room outlives its last member by the grace window, so it is very much still
+        // joinable. Leaving hostId pointing at somebody who has gone meant the "first
+        // arrival takes an unsteered room" rule never fired (the id was stale, not null),
+        // and in a host-only room the first friend back could not play, pause or seek
+        // anything, with no way to find out why. Only the departed host's own token could
+        // have unlocked it, and guests never had one.
+        room.hostId = null;
+        room.hostClaimable = true;
       }
 
       if (room.members.size > 0) {
