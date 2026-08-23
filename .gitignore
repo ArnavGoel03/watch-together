@@ -3,3 +3,8 @@ node_modules/
 *.zip
 dist/
 .DS_Store
+
+# The Safari app is built from safari/, but its build output is not source.
+safari/build/
+safari/**/xcuserdata/
+safari/**/*.xcuserstate

@@ -76,6 +76,12 @@ already looking at without a reload, and they still work on that site tomorrow.
 
 ## Next
 
+- **Safari is built but cannot be submitted.** Blocked on the Apple Developer Program,
+  ninety nine dollars a year, and on nothing else. Before that money is spent, run it in
+  Safari and use it from both sides of a room: the "Enable on this site" flow calls
+  `chrome.permissions.request()`, which Safari answers differently from Chrome, and it is
+  the one thing likely to need Safari-specific code. `docs/SAFARI.md` has the build and
+  run steps, which need no account at all.
 - **Firefox has never been submitted.** The build is packaged on every release and
   `dist/watch-together-firefox-v1.2.2.zip` exists right now. Submission needs an AMO
   account, which nothing in this repository has. It is a separate dashboard from Chrome's

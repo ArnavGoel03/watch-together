@@ -13,11 +13,36 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (p) => readFileSync(join(root, p), "utf8");
 const readJson = (p) => JSON.parse(read(p));
 
+// The Safari app carries the version too, in eight build configurations rather than one
+// field, and the converter seeds it at 1.0 rather than reading the manifest. Left alone
+// it silently ships an app called 1.0 wrapping an extension called 1.2.2, and the App
+// Store rejects an upload whose version is not strictly greater than the last.
+const SAFARI_PBXPROJ = "safari/Watch Together/Watch Together.xcodeproj/project.pbxproj";
+function safariVersions() {
+  let raw;
+  try {
+    raw = read(SAFARI_PBXPROJ);
+  } catch {
+    return null; // The Xcode project is optional; nothing else here depends on it.
+  }
+  const found = [...raw.matchAll(/MARKETING_VERSION = ([^;]+);/g)].map((m) => m[1].trim());
+  return found.length ? [...new Set(found)] : null;
+}
+
 const sources = {
   "package.json": readJson("package.json").version,
   "extension/manifest.json": readJson("extension/manifest.json").version,
   "extension/manifest.firefox.json": readJson("extension/manifest.firefox.json").version,
 };
+
+const safari = safariVersions();
+if (safari) {
+  if (safari.length !== 1) {
+    sources[SAFARI_PBXPROJ] = `disagrees internally: ${safari.join(", ")}`;
+  } else {
+    sources[SAFARI_PBXPROJ] = safari[0];
+  }
+}
 
 const versions = [...new Set(Object.values(sources))];
 const problems = [];

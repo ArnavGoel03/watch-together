@@ -14,7 +14,10 @@
     "test": "npm run lint && npm run typecheck && npm run check:dashes && node scripts/check-version.mjs && npm run test:server && npm run test:cf",
     "check:dashes": "node scripts/check-dashes.mjs",
     "check:site": "node scripts/check-site.mjs",
-    "package": "node scripts/package.mjs"
+    "package": "node scripts/package.mjs",
+    "safari:build": "xcodebuild -project \"safari/Watch Together/Watch Together.xcodeproj\" -scheme \"Watch Together (macOS)\" -configuration Release -destination platform=macOS CODE_SIGN_IDENTITY=- -derivedDataPath safari/build build",
+    "safari:register": "pluginkit -a \"safari/build/Build/Products/Release/Watch Together.app/Contents/PlugIns/Watch Together Extension.appex\"",
+    "safari:open": "open \"safari/Watch Together/Watch Together.xcodeproj\""
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260821.1",

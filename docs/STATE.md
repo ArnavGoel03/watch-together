@@ -77,6 +77,13 @@ Consequences, in order of how often they bite:
   which is `npm run test:browser` and is worth running by hand after any popup or overlay
   change, because it is the only thing that loads the extension for real.
 - **Marketing site is live** at `watch.arnavgoel.dev`, with `/support` and `/privacy`.
+- **Safari exists and builds, and is not submitted.** `safari/` is an Xcode project whose
+  paths reference `extension/` relatively, so it is not a fourth copy of the source. Both
+  macOS and iOS targets compile, the macOS appex registers with the system as
+  `dev.arnavgoel.watchtogether.Extension(1.2.2)`, and no human has yet run it inside
+  Safari. It cannot ship without the Apple Developer Program at ninety nine dollars a
+  year. Read `docs/SAFARI.md` before touching it, particularly the part about per-site
+  permissions, which is the one place Safari genuinely differs.
 - **Edge: submitted 2026-08-23, version 1.2.2, in review, seven business days quoted.**
   Enrolled as an individual in the Microsoft Edge program, which is free. The identifiers
   Edge assigned, none of which are the Chrome ones:

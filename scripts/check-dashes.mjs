@@ -10,7 +10,13 @@ import { fileURLToPath } from "node:url";
 import { dirname, join, relative } from "node:path";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const SKIP = new Set(["node_modules", ".git", "dist", ".DS_Store", "icons"]);
+// Build output is not source. `dist` was always here for that reason; `build` and
+// `xcuserdata` joined it when Safari arrived, because Xcode's module cache is full of
+// binary .pcm files whose bytes contain the same sequence an em dash does. Skipping
+// generated artefacts is not weakening the rule, it is pointing it at authored text.
+const SKIP = new Set([
+  "node_modules", ".git", "dist", ".DS_Store", "icons", "build", "xcuserdata",
+]);
 const BINARY = /\.(png|jpg|jpeg|gif|webm|mp4|zip|ico|woff2?)$/i;
 // Built from code points rather than written out, because this file would otherwise be the
 // one place in the repo that legitimately contains the characters it bans, and it would
