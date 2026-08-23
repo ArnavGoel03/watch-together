@@ -402,7 +402,7 @@ function rotateStaleLeaders() {
   }
 }
 setInterval(rotateStaleLeaders, LEADER_SWEEP_MS);
-setInterval(sweepStuckWaits, 2000);
+setInterval(sweepStuckWaits, P.TIMEOUTS.WAIT_FOR_SLOW_SWEEP_MS);
 
 function notifyHeartbeatLeader(room) {
   const leaderId = getHeartbeatLeader(room);
@@ -447,6 +447,10 @@ const roomCreateLimiter = new RateLimiter(ROOM_CREATE_WINDOW_MS, ROOM_CREATE_MAX
 const FAILED_JOIN_WINDOW_MS = parseInt(process.env.FAILED_JOIN_WINDOW_MS, 10) || P.TIMEOUTS.FAILED_JOIN_WINDOW_MS;
 const FAILED_JOIN_MAX = parseInt(process.env.FAILED_JOIN_MAX, 10) || P.LIMITS.FAILED_JOIN_MAX;
 const failedJoinLimiter = new RateLimiter(FAILED_JOIN_WINDOW_MS, FAILED_JOIN_MAX);
+
+// Chat is the only message a member sends that this relay multiplies by the size of the
+// room, so it gets its own budget rather than riding the generic one.
+const chatLimiter = new RateLimiter(P.TIMEOUTS.CHAT_WINDOW_MS, P.LIMITS.CHAT_MAX);
 
 // Loopback is this machine talking to itself: local development and the test suite. It is
 // not an address an attacker can arrive from, because anything crossing the network shows
@@ -531,6 +535,7 @@ setInterval(() => {
   rateLimiter.cleanup();
   roomCreateLimiter.cleanup();
   failedJoinLimiter.cleanup();
+  chatLimiter.cleanup();
 }, ROOM_CLEANUP_INTERVAL);
 
 // --- Join Page (fallback when no video URL or bad URL) ---
@@ -571,6 +576,15 @@ h1{font-size:20px;font-weight:700;margin-bottom:4px}
 </div></body></html>`);
 }
 
+// A miss on either public room endpoint costs the same as a miss on the socket. Declared
+// before the server because both handlers reach for it, and defined after resolveClientIp
+// is hoisted (it is a function declaration, so it is).
+function rateLimitHttp(req) {
+  const ip = resolveClientIp(req);
+  if (isLoopback(ip)) return true;
+  return failedJoinLimiter.check(ip);
+}
+
 // --- HTTP Server ---
 const server = http.createServer((req, res) => {
   const headers = {
@@ -608,6 +622,15 @@ const server = http.createServer((req, res) => {
     // Only expose minimal info - no videoUrl, no exact member count
     const code = req.url.split("/room/")[1]?.split("?")[0]?.toUpperCase();
     const room = rooms.get(code);
+    // The same ceiling the socket path has. Without it this endpoint answers "does this
+    // room exist" at whatever rate an attacker can ask, which is the enumeration the
+    // socket-side limiter was built to stop, reachable over plain HTTP and, because of
+    // the wildcard CORS header above, from any page in anybody's browser.
+    if (!room && !rateLimitHttp(req)) {
+      res.writeHead(429, headers);
+      res.end(JSON.stringify({ error: "Rate limited - slow down" }));
+      return;
+    }
     res.writeHead(200, headers);
     res.end(JSON.stringify({ exists: !!room, code }));
     return;
@@ -628,6 +651,11 @@ const server = http.createServer((req, res) => {
       return;
     }
     const room = rooms.get(code);
+    if (!room && !rateLimitHttp(req)) {
+      res.writeHead(429, { "Content-Type": "text/plain", "X-Frame-Options": "DENY" });
+      res.end("Rate limited - slow down");
+      return;
+    }
     const memberCount = room ? room.members.size : 0;
     const roomExists = !!room;
     // Only ever redirect to the URL the ROOM itself is on. Honouring a ?url= from the
@@ -803,10 +831,6 @@ wss.on("connection", (ws, req) => {
 
     switch (msg.type) {
       case "create-room": {
-        if (!isLoopback(clientIp) && !roomCreateLimiter.check(clientIp)) {
-          sendTo(ws, { type: "error", message: "Too many rooms created. Wait a minute and try again." });
-          return;
-        }
         // Leave current room if in one
         if (currentRoom) leaveCurrentRoom();
 
@@ -836,6 +860,14 @@ wss.on("connection", (ws, req) => {
           roomCode = generateRoomCode();
         }
 
+        // Spent here, with the slot, and not at the top of the handler: a malformed or
+        // already-taken name is not a room created, and charging one against this budget
+        // meant a run of typos could lock somebody out of making a room for a minute.
+        if (!isLoopback(clientIp) && !roomCreateLimiter.check(clientIp)) {
+          sendTo(ws, { type: "error", message: "Too many rooms created. Wait a minute and try again." });
+          return;
+        }
+
         // Claimed here, and not one line earlier, because the slot is only released when a
         // room is DELETED. Claiming before the checks above meant every rejected attempt
         // (server full, malformed name, name already taken) permanently burned one of this
@@ -852,7 +884,7 @@ wss.on("connection", (ws, req) => {
         const videoUrl = validateUrl(msg.videoUrl);
 
         // mode: "everyone" (default) or "host" (only creator controls)
-        const mode = msg.mode === "host" ? "host" : "everyone";
+        const mode = P.normalizeRoomMode(msg.mode);
 
         const room = {
           code: roomCode,
@@ -942,7 +974,7 @@ wss.on("connection", (ws, req) => {
             // token simply has no host: everybody can drive playback, nobody can lock it,
             // and the real host reclaims the moment they reconnect with their token.
             hostClaimable: rebuildIsHost,
-            mode: rebuildIsHost && msg.mode === "host" ? "host" : "everyone",
+            mode: rebuildIsHost ? P.normalizeRoomMode(msg.mode) : P.ROOM_MODE_DEFAULT,
             persistent: CUSTOM_NAME_REGEX.test(code),
             members: new Map(),
             videoUrl: validateUrl(msg.videoUrl),
@@ -1105,7 +1137,7 @@ wss.on("connection", (ws, req) => {
             playing: !!msg.playing,
             currentTime,
             playbackRate,
-            action: sanitize(msg.action || "", 20),
+            action: sanitize(msg.action || "", P.LIMITS.MAX_ACTION_LENGTH),
             fromUser: userName,
             fromUserId: userId,
             timestamp: now,
@@ -1233,6 +1265,11 @@ wss.on("connection", (ws, req) => {
         const chatRoom = rooms.get(currentRoom);
         if (!chatRoom) return;
 
+        if (!chatLimiter.check(userId)) {
+          sendTo(ws, { type: "error", message: "Rate limited - slow down" });
+          return;
+        }
+
         const message = sanitize(msg.message, MAX_CHAT_LENGTH);
         if (!message) return;
 
@@ -1358,7 +1395,7 @@ wss.on("connection", (ws, req) => {
         if (!modeRoom) return;
         // Only the host can change mode
         if (modeRoom.hostId !== userId) return;
-        const newMode = msg.mode === "host" ? "host" : "everyone";
+        const newMode = P.normalizeRoomMode(msg.mode);
         modeRoom.mode = newMode;
         // Sent alongside the mode by the same control panel, and host-only for the same
         // reason: it decides whether one person's connection can stop everyone's film.
@@ -1433,7 +1470,7 @@ wss.on("connection", (ws, req) => {
         if (!target) return;
         // Cap signal payload size - SDP is small, ICE smaller, anything huge is malformed
         const signal = msg.signal;
-        if (!signal || JSON.stringify(signal).length > 8192) return;
+        if (!signal || JSON.stringify(signal).length > P.LIMITS.MAX_VOICE_SIGNAL_BYTES) return;
         sendTo(target.ws, {
           type: "voice-signal",
           fromUserId: userId,

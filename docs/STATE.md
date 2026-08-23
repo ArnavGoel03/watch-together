@@ -41,8 +41,15 @@ Consequences, in order of how often they bite:
   logic and drifting apart.
 - `types/protocol.d.ts` defines the wire protocol once. `npm run typecheck` checks every
   surface against it.
+- `shared/protocol.cjs` is the single definition of everything BOTH relays need to agree
+  on: message types, presence and mode enums, every limit and timeout, the room-code and
+  custom-name shapes, the call-link allowlist, and every validator. Both servers read it.
+  CommonJS because Render runs `node server.js` on Node 20, where a CommonJS entry point
+  cannot require an ES module, and wrangler bundles CommonJS for the Worker without
+  complaint. `server/protocol.test.mjs` is the gate that keeps them honest.
 - `server/server.js` is the reference implementation. `server-cf/src/worker.js` is a
-  Durable Objects port of the same protocol and must match it.
+  Durable Objects port of the same protocol and must match it. **It did not match it.**
+  See "The relays had drifted" below.
 
 ## Current status
 
@@ -79,7 +86,7 @@ Consequences, in order of how often they bite:
   spin-down, no cold start, and the whole "we paused for dinner and the room was gone" class
   of failure does not exist there. It was safe to switch because v1.2.0 has not shipped, so
   no installed copy had the new list yet.
-- **Tests: 155 green in the default gate** (130 node and vitest, 17 worker) plus 8
+- **Tests: 260 green in the default gate** (165 node, 64 vitest, 31 worker) plus 8
   real-browser tests driving two separate Chrome profiles. Lint, typecheck, dash check
   and version metadata all clean. `npm test` runs everything except the browser suite,
   which is `npm run test:browser` and is worth running by hand after any popup or overlay
@@ -126,6 +133,11 @@ Consequences, in order of how often they bite:
   explicitly and asserts the extension reacts correctly, which is the part we own.
 - **A paused room deliberately stops heartbeating.** If you make the stale-leader watchdog
   stricter, do not treat that silence as a frozen tab. Both servers skip paused rooms.
+- **`LEADER_STALE_MS` is 20s, not 15s.** It was 15s, described as three missed beats at a
+  5s heartbeat, and that description stopped being true when the client grew an adaptive
+  cadence easing out to a 12s ceiling: three seconds of slack is a quarter of one beat, so
+  ordinary jitter demoted leaders who were healthy and merely quiet. A test now reads the
+  ceiling out of `content.js` and fails if the margin closes again.
 - **`recreateIfMissing` is not a bug.** Rooms live in memory and a free-tier restart wipes
   them, so a returning member rebuilds theirs from the code. What it must NOT do is grant
   host, which is what the host token fixes.
@@ -536,6 +548,63 @@ destination address is not sitting in public DNS for scrapers. If the forwarding
 needs changing, re-encrypt the new rule rather than pasting a plaintext one.
 
 There were no MX records on the apex before this, so nothing was displaced.
+
+## The relays had drifted, and the one that had drifted is the one in production
+
+`server-cf/src/worker.js` carried a comment saying it was kept in lockstep with the Node
+twin by hand. It was not, and nothing anywhere could have said so. Every one of these was
+correct in `server/server.js` and absent from the relay that actually serves users:
+
+- `create-room` never claimed a room slot, so neither the per-address room budget nor the
+  creation rate limit applied to the path that makes rooms. One address could fill the
+  global room cap for everybody in under a minute, and the rooms then sit in Durable
+  Object storage for their whole grace window.
+- Host-only mode was bypassable through the heartbeat channel. The leader role steps over
+  anybody in an ad break, so the host hitting a routine advert handed a guest the role and
+  that guest's position drove the host's own video.
+- Nothing cleared a member's ad flag except `sync` and `heartbeat`, both behind checks a
+  guest in a locked room can never pass. One lost "my break ended" held the room's clock
+  still for everyone, permanently.
+- `_everyMemberInAd` counted members whose sockets had died, alone among that file's
+  member scans, so a ghost vetoed the freeze on behalf of somebody who was not there.
+
+Two more that were wrong in BOTH, and one that was only possible in the Worker:
+
+- **A room rebuilt without a valid host token was handed host anyway.** `hostId` was
+  correctly left null and then "an unsteered room goes to whoever arrives first" fired one
+  screen later, and the rebuilder is always the first arrival. A stranger who knew a code
+  could rebuild a quiet room, take host, and lock the party out with `set-mode`. An e2e
+  test asserted the hole as if it were the feature.
+- **The last member out left `hostId` pointing at somebody gone**, so that same rule could
+  never fire (a stale id is not null) and the first friend back to a host-only room could
+  not play, pause or seek, with nothing on screen to say why.
+- Two members reconnecting at once could both rebuild the same room. The host-token check
+  is a Web Crypto call, and a Durable Object's input gate only holds events across STORAGE
+  operations, so both could publish a room and the second replaced the first. The loser's
+  socket then sat in the real room able to inject `sync`, `navigate` and `chat` while
+  appearing in no member list and no reap.
+
+The empty-room grace window was a `setTimeout`, which does not survive hibernation, and
+the object hibernates exactly when a room is empty and quiet. It is a persisted deadline
+swept by the alarm now, like `hostAbsentSince` already was.
+
+## What is deliberately NOT fixed, and why
+
+**`navigate` still accepts any http(s) URL from any member in a default-mode room.** A
+review flagged it as the worst remaining item, and applying that recommendation would
+break two documented features: watching something on a different site entirely, and
+anybody being able to move the room in the default mode. The real mitigation is that a
+room code is now unguessable and expensive to search for, not a narrower navigate.
+
+**Host tokens are still `HMAC(secret, roomCode)` with no expiry**, so somebody who once
+held a persistent room's token holds it for as long as that name is reused. Binding it to
+a per-room nonce was suggested and would defeat the whole point: the token exists to
+survive the room object being destroyed, so it cannot depend on state that dies with it.
+
+**The Cloudflare relay still has no ping/pong.** The client already sends a keepalive once
+a minute and the alarm reaps dead sockets, and Cloudflare bills incoming WebSocket
+messages, so adding server-initiated pings would cost the one thing the cost model says
+to protect.
 
 ## Open, in rough priority order
 

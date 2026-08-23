@@ -165,6 +165,9 @@ export class RoomHubDO {
     // so an unbounded stream of them is a search of the code space for other people's
     // parties. Counted per address and only ever on a miss.
     this.failedJoinLimiter = new P.WindowedLimiter(FAILED_JOIN_WINDOW_MS, FAILED_JOIN_MAX);
+    // Chat is the one message a member sends that this relay multiplies by the size of the
+    // room, so it does not ride the generic budget.
+    this.chatLimiter = new P.WindowedLimiter(P.TIMEOUTS.CHAT_WINDOW_MS, P.LIMITS.CHAT_MAX);
     this.bootPromise = this._boot();
   }
 
@@ -392,6 +395,7 @@ export class RoomHubDO {
     this.rateLimiter.cleanup();
     this.roomCreateLimiter.cleanup();
     this.failedJoinLimiter.cleanup();
+    this.chatLimiter.cleanup();
     await this._scheduleLeaderSweep();
   }
 
@@ -406,6 +410,11 @@ export class RoomHubDO {
   // room.hostId pointing at somebody who could never come back and, in a host-only room,
   // permanently rejected everyone else's play and pause. Both paths go through here now.
   _removeMember(code, room, userId, member, displayName) {
+    // Idempotent. A socket reaped for being dead was removed from the room but kept
+    // pointing at it in its own attachment, so the close event that eventually followed
+    // ran the whole departure a second time: another member-left for somebody who had
+    // already gone, and another host handover on a room that had already had one.
+    if (!room.members.has(userId)) return;
     const wasHost = room.hostId === userId;
     const wasVoiceActive = !!(member && member.voiceActive);
     room.members.delete(userId);
@@ -469,6 +478,8 @@ export class RoomHubDO {
         const open = member.ws && member.ws.readyState === 1 /* WebSocket.OPEN */;
         if (open) continue;
         this._removeMember(code, room, uid, member, member.userName);
+        // So the close event that follows does not replay the departure.
+        if (member.ws) this._setMeta(member.ws, { currentRoom: null });
         removed = true;
       }
       if (removed) this._persistRoom(code);
@@ -544,6 +555,11 @@ export class RoomHubDO {
     return soonest;
   }
 
+  /** The address our own edge saw, never one the caller wrote. */
+  _requestIp(request) {
+    return request.headers.get("cf-connecting-ip") || "unattributed";
+  }
+
   // -------- HTTP fetch entry --------
   async fetch(request) {
     await this.bootPromise;
@@ -563,6 +579,16 @@ export class RoomHubDO {
     if (url.pathname.startsWith("/room/")) {
       const code = url.pathname.slice("/room/".length).split("?")[0]?.toUpperCase() || "";
       const room = this.rooms.get(code);
+      // The same ceiling the socket path has. Without it this endpoint answers "does this
+      // room exist" as fast as anybody can ask, which is the enumeration the socket-side
+      // limiter exists to stop, over plain HTTP and, thanks to the wildcard CORS header,
+      // from any page in any visitor's browser.
+      if (!room && !this.failedJoinLimiter.check(this._requestIp(request))) {
+        return new Response(JSON.stringify({ error: "Rate limited - slow down" }), {
+          status: 429,
+          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+        });
+      }
       return new Response(JSON.stringify({ exists: !!room, code }), {
         headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
       });
@@ -583,6 +609,12 @@ export class RoomHubDO {
         );
       }
       const room = this.rooms.get(code);
+      if (!room && !this.failedJoinLimiter.check(this._requestIp(request))) {
+        return new Response("Rate limited - slow down", {
+          status: 429,
+          headers: { "Content-Type": "text/plain", "X-Frame-Options": "DENY" },
+        });
+      }
       const memberCount = room ? room.members.size : 0;
       // Only ever redirect to the URL the ROOM is on. Honouring ?url= made this an open
       // redirect on our own origin: a link that sends someone to an attacker's page with
@@ -599,7 +631,7 @@ export class RoomHubDO {
       return new Response(`<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>Join Watch Together - ${safeCode}</title>
-<style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,sans-serif;background:#0d0d0f;color:#fff;min-height:100vh;display:flex;align-items:center;justify-content:center}.card{background:#141417;border-radius:16px;padding:44px 36px;max-width:400px;width:90%;text-align:center}h1{font-size:20px;font-weight:700;margin-bottom:4px}.sub{color:rgba(235,235,245,.5);font-size:14px;margin-bottom:24px}.code{font-size:38px;font-weight:800;color:#f2f2f4;letter-spacing:8px;margin:12px 0 8px}.st{font-size:13px;font-weight:500;margin-bottom:24px;color:${room ? "#4ade80" : "rgba(235,235,245,.4)"}}.err{color:#f87171;font-size:14px;margin-bottom:20px}.btn{display:block;padding:14px;background:#f2f2f4;color:#0d0d0f;text-decoration:none;border-radius:10px;font-size:16px;font-weight:600;cursor:pointer;border:none;width:100%;margin-bottom:10px}.hint{font-size:12px;color:rgba(235,235,245,.3);margin-top:16px;line-height:1.6}</style>
+<style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0d0d0f;color:#fff;min-height:100vh;display:flex;align-items:center;justify-content:center;-webkit-font-smoothing:antialiased}.card{background:#141417;border-radius:16px;padding:44px 36px;max-width:400px;width:90%;text-align:center}h1{font-size:20px;font-weight:700;margin-bottom:4px}.sub{color:rgba(235,235,245,.5);font-size:14px;margin-bottom:24px}.code{font-size:38px;font-weight:800;color:#f2f2f4;letter-spacing:8px;margin:12px 0 8px}.st{font-size:13px;font-weight:500;margin-bottom:24px;color:${room ? "#4ade80" : "rgba(235,235,245,.4)"}}.err{color:#f87171;font-size:14px;margin-bottom:20px}.btn{display:block;padding:14px;background:#f2f2f4;color:#0d0d0f;text-decoration:none;border-radius:10px;font-size:16px;font-weight:600;cursor:pointer;border:none;width:100%;margin-bottom:10px}.btn:hover{opacity:.9}.hint{font-size:12px;color:rgba(235,235,245,.3);margin-top:16px;line-height:1.6}</style>
 </head><body><div class="card"><h1>Watch Together</h1><p class="sub">You've been invited to watch together</p><div class="code">${safeCode}</div><div class="st">${room ? memberCount + " watching now" : "Waiting for host"}</div>${!room ? '<p class="err">Room not found - the host may have left.</p>' : ""}<p class="hint">Select the code above, then open your video, click Watch Together in the toolbar, and paste it in.</p></div></body></html>`,
         {
           headers: {
@@ -616,7 +648,13 @@ export class RoomHubDO {
 
     // WebSocket upgrade
     if (request.headers.get("Upgrade") === "websocket") {
-      const ip = request.headers.get("cf-connecting-ip") || request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "anon";
+      // cf-connecting-ip only. It is written by our own edge and a client cannot forge it,
+      // whereas x-forwarded-for is a header the client sends: honouring it as a fallback
+      // let any non-browser socket mint a fresh address per connection and walk straight
+      // past every per-address budget in this file. When the edge gives us nothing, that
+      // is not a licence to skip the budgets either, so those connections share one bucket
+      // rather than being exempt from counting.
+      const ip = request.headers.get("cf-connecting-ip") || "unattributed";
       const ipCount = (this.connectionsPerIp.get(ip) || 0) + 1;
       if (ipCount > MAX_CONNECTIONS_PER_IP) {
         return new Response("Too many connections", { status: 429 });
@@ -653,7 +691,14 @@ export class RoomHubDO {
   // -------- Hibernation handlers --------
   async webSocketMessage(ws, raw) {
     await this.bootPromise;
-    if (typeof raw !== "string") raw = String(raw);
+
+    // This protocol is JSON text and nothing else, so a binary frame is refused rather
+    // than coerced. The coercion was the bug: String() on an ArrayBuffer produces
+    // "[object ArrayBuffer]", twenty characters whatever the frame actually weighed, so
+    // the size cap below inspected that instead of the payload and never engaged at all
+    // for binary. The parse failed afterwards and the message was dropped, which is why
+    // it looked harmless: the cap simply was not a cap.
+    if (typeof raw !== "string") return;
     if (raw.length > MAX_MESSAGE_SIZE) return;
 
     let msg;
@@ -688,6 +733,19 @@ export class RoomHubDO {
       }
     }
 
+    // Every room in the service lives in this one object, so an unhandled throw here is
+    // not one member's problem: it is every party on the relay at once, and it can leave
+    // the shared room map half mutated on the way out. The Node twin has capped this blast
+    // radius at the one socket that caused it since the beginning; this one never did.
+    try {
+      return await this._dispatch(ws, meta, msg);
+    } catch (err) {
+      console.error(`[error] message handler threw for ${meta.userId}: ${err && err.stack ? err.stack : String(err)}`);
+      this._sendTo(ws, { type: "error", message: "Something went wrong handling that. Try again." });
+    }
+  }
+
+  async _dispatch(ws, meta, msg) {
     switch (msg.type) {
       case "create-room": return this._handleCreate(ws, meta, msg);
       case "join-room": return this._handleJoin(ws, meta, msg);
@@ -760,7 +818,7 @@ export class RoomHubDO {
     }
 
     const userName = sanitize(msg.userName, MAX_USERNAME_LENGTH) || "User";
-    const mode = msg.mode === "host" ? "host" : "everyone";
+    const mode = P.normalizeRoomMode(msg.mode);
     const videoUrl = validateUrl(msg.videoUrl);
 
     // The whole reason this exists. This call was simply absent, so on the primary relay
@@ -1000,7 +1058,7 @@ export class RoomHubDO {
       playing: !!msg.playing,
       currentTime: ct,
       playbackRate: pr,
-      action: sanitize(msg.action || "", 20),
+      action: sanitize(msg.action || "", P.LIMITS.MAX_ACTION_LENGTH),
       fromUser: meta.userName,
       fromUserId: meta.userId,
       timestamp: now,
@@ -1084,6 +1142,10 @@ export class RoomHubDO {
     if (!code) return;
     const room = this.rooms.get(code);
     if (!room) return;
+    if (!this.chatLimiter.check(meta.userId)) {
+      this._sendTo(ws, { type: "error", message: "Rate limited - slow down" });
+      return;
+    }
     const message = sanitize(msg.message, MAX_CHAT_LENGTH);
     if (!message) return;
     room.lastActivity = Date.now();
@@ -1177,7 +1239,9 @@ export class RoomHubDO {
   // Only ever called once a room is CERTAIN to exist. A slot is released when a room is
   // deleted, so claiming it before a check that can still reject the room burns it forever.
   _claimRoomSlot(ip) {
-    if (!ip || ip === "anon") return true;
+    // No exemption for an address we could not read. It used to return true here, which
+    // meant anybody who arrived without one had no room budget at all.
+    if (!ip) ip = "unattributed";
     if (!this.roomCreateLimiter.check(ip)) return false;
     const live = this.liveRoomsPerIp.get(ip) || 0;
     if (live >= MAX_LIVE_ROOMS_PER_IP) return false;
@@ -1336,7 +1400,7 @@ export class RoomHubDO {
     if (!code) return;
     const room = this.rooms.get(code);
     if (!room || room.hostId !== meta.userId) return;
-    const newMode = msg.mode === "host" ? "host" : "everyone";
+    const newMode = P.normalizeRoomMode(msg.mode);
     room.mode = newMode;
     if (typeof msg.waitForSlow === "boolean") {
       room.waitForSlow = msg.waitForSlow;

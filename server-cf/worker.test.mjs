@@ -363,3 +363,247 @@ test("liveness: a reaped speaker's voice state is torn down for the others", asy
   assert.ok(voiceMsg, "the others are told to tear down the peer connection");
   assert.equal(voiceMsg.active, false);
 });
+
+// ============================================================================
+// The guards this relay was missing that its Node twin had.
+//
+// Every test below covers something that was correct in server/server.js and absent here,
+// which is why none of it was noticed: the file said it was kept in lockstep by hand, and
+// nothing anywhere disagreed. This is the relay production runs.
+// ============================================================================
+
+/** A hub with one socket already connected, ready to send messages. */
+async function hubWithSocket(meta = {}) {
+  const state = makeState();
+  const hub = new RoomHubDO(state, { HOST_TOKEN_SECRET: SECRET });
+  await hub.bootPromise;
+  const attachment = { userId: "u1", userName: "A", currentRoom: null, ip: "1.2.3.4", voiceActive: false, ...meta };
+  const ws = fakeSocket(attachment);
+  state.sockets.push(ws);
+  return { hub, state, ws, attachment };
+}
+
+test("create-room: the per-address room budget is actually enforced on the path that makes rooms", async () => {
+  // _claimRoomSlot was simply never called here. One address could mint rooms as fast as
+  // the generic message limiter allowed, and each one then sits in storage for its whole
+  // grace window, so the global cap filled for every real user everywhere.
+  const { hub, ws } = await hubWithSocket();
+  let made = 0;
+  for (let i = 0; i < 40; i++) {
+    ws.serializeAttachment({ currentRoom: null });
+    await hub.webSocketMessage(ws, JSON.stringify({ type: "create-room", userName: "A" }));
+    made = hub.rooms.size;
+  }
+  assert.ok(made <= 20, `one address minted ${made} rooms, past the twenty it is allowed to hold`);
+  const refusals = ws.sent.filter((m) => m.type === "error");
+  assert.ok(refusals.length > 0, "and it was told why, rather than silently failing");
+});
+
+test("heartbeat: host-only mode is not bypassable through the heartbeat channel", async () => {
+  const { hub, state } = await hubWithSocket();
+  const hostMeta = { userId: "host", userName: "Host", currentRoom: "ABCDEF", ip: "1.1.1.1" };
+  const guestMeta = { userId: "guest", userName: "Guest", currentRoom: "ABCDEF", ip: "2.2.2.2" };
+  const hostWs = fakeSocket(hostMeta);
+  const guestWs = fakeSocket(guestMeta);
+  state.sockets.push(hostWs, guestWs);
+  hub.rooms.set("ABCDEF", {
+    code: "ABCDEF", hostId: "host", mode: "host", createdAt: Date.now(), lastActivity: Date.now(),
+    playbackState: { playing: true, currentTime: 100, playbackRate: 1, lastUpdate: Date.now() },
+    members: new Map([
+      // The host is sitting out a routine advert, which is exactly when the leader role
+      // deliberately steps over them and lands on a guest.
+      ["host", { ws: hostWs, userName: "Host", adActive: true }],
+      ["guest", { ws: guestWs, userName: "Guest", adActive: false }],
+    ]),
+  });
+
+  await hub.webSocketMessage(guestWs, JSON.stringify({ type: "heartbeat", playing: true, currentTime: 9999, playbackRate: 1 }));
+  assert.equal(
+    hub.rooms.get("ABCDEF").playbackState.currentTime,
+    100,
+    "a guest's position drove the host's own video in a room locked to the host"
+  );
+  assert.equal(hostWs.sent.some((m) => m.type === "heartbeat"), false, "and it was not relayed either");
+});
+
+test("ad flag: any message that proves someone is watching clears their break", async () => {
+  // ad-state is edge triggered. A "my break ended" lost to a socket that was down at that
+  // moment left the member marked dark, and the only paths that could clear it here were
+  // sync and heartbeat, both behind checks a guest in a locked room can never pass.
+  const { hub, state } = await hubWithSocket();
+  const meta = { userId: "u1", userName: "A", currentRoom: "ABCDEF", ip: "1.1.1.1", adActive: true };
+  const ws = fakeSocket(meta);
+  state.sockets.push(ws);
+  hub.rooms.set("ABCDEF", {
+    code: "ABCDEF", hostId: "other", mode: "host", createdAt: Date.now(), lastActivity: Date.now(),
+    playbackState: { playing: true, currentTime: 10, playbackRate: 1, lastUpdate: Date.now(), frozenAt: Date.now() },
+    members: new Map([["u1", { ws, userName: "A", adActive: true }]]),
+  });
+
+  await hub.webSocketMessage(ws, JSON.stringify({ type: "chat", message: "still here" }));
+  assert.equal(hub.rooms.get("ABCDEF").members.get("u1").adActive, false, "chatting proves you are not in an ad break");
+  assert.equal(hub.rooms.get("ABCDEF").playbackState.frozenAt, null, "so the room's clock starts again");
+});
+
+test("ad flag: a ping does not count as proof anybody is watching", async () => {
+  // The exception that matters. A ping says the party is still there, not that anyone is
+  // looking at the film, and treating it as proof would unfreeze the clock during the very
+  // break the freeze exists for.
+  const { hub, state } = await hubWithSocket();
+  const meta = { userId: "u1", userName: "A", currentRoom: "ABCDEF", ip: "1.1.1.1", adActive: true };
+  const ws = fakeSocket(meta);
+  state.sockets.push(ws);
+  const frozenAt = Date.now();
+  hub.rooms.set("ABCDEF", {
+    code: "ABCDEF", hostId: "u1", mode: "everyone", createdAt: Date.now(), lastActivity: Date.now(),
+    playbackState: { playing: true, currentTime: 10, playbackRate: 1, lastUpdate: frozenAt, frozenAt },
+    members: new Map([["u1", { ws, userName: "A", adActive: true }]]),
+  });
+
+  await hub.webSocketMessage(ws, JSON.stringify({ type: "ping" }));
+  assert.equal(hub.rooms.get("ABCDEF").members.get("u1").adActive, true, "a keepalive is not a viewing");
+  assert.equal(hub.rooms.get("ABCDEF").playbackState.frozenAt, frozenAt, "and the clock stays held");
+});
+
+test("ad freeze: a member whose socket died does not get a vote on whether the room is dark", async () => {
+  // A ghost marked "watching" vetoed the freeze on behalf of somebody who is not there,
+  // and the room ran on through an ad break exactly as it did before the freeze existed.
+  const { hub, state } = await hubWithSocket();
+  const liveWs = fakeSocket({ userId: "live", userName: "Live", currentRoom: "ABCDEF", ip: "1.1.1.1" });
+  const deadWs = fakeSocket({ userId: "dead", userName: "Dead", currentRoom: "ABCDEF", ip: "2.2.2.2" }, 3);
+  state.sockets.push(liveWs);
+  const room = {
+    code: "ABCDEF", hostId: "live", mode: "everyone", createdAt: Date.now(), lastActivity: Date.now(),
+    playbackState: { playing: true, currentTime: 10, playbackRate: 1, lastUpdate: Date.now() },
+    members: new Map([
+      ["live", { ws: liveWs, userName: "Live", adActive: true }],
+      ["dead", { ws: deadWs, userName: "Dead", adActive: false }],
+    ]),
+  };
+  hub.rooms.set("ABCDEF", room);
+
+  assert.equal(hub._everyMemberInAd(room), true, "the only member actually connected is in a break");
+  hub._updateRoomAdFreeze(room);
+  assert.ok(room.playbackState.frozenAt, "so the clock holds instead of running on without anybody");
+});
+
+test("rebuild: a stranger who knows a code cannot rebuild the room and lock it", async () => {
+  const { hub, ws } = await hubWithSocket();
+  await hub.webSocketMessage(ws, JSON.stringify({
+    type: "join-room",
+    roomCode: "GHOST1",
+    userName: "Stranger",
+    recreateIfMissing: true,
+    mode: "host",
+    hostToken: "f".repeat(64),
+    resumeState: { playing: true, currentTime: 30, playbackRate: 1 },
+  }));
+  const joined = ws.sent.find((m) => m.type === "room-joined");
+  assert.ok(joined, "the rebuild itself is allowed: knowing the code is what joining proves too");
+  assert.equal(joined.isHost, false, "but a forged token is not a token");
+  assert.equal(joined.mode, "everyone", "and mode:host on a rebuild request is not honoured");
+  assert.equal(hub.rooms.get("GHOST1").hostId, null, "nobody holds the room");
+});
+
+test("rebuild: the real host reclaims with the token this worker issued", async () => {
+  const { hub, ws } = await hubWithSocket();
+  const token = await mintHostToken(SECRET, "GHOST2");
+  await hub.webSocketMessage(ws, JSON.stringify({
+    type: "join-room",
+    roomCode: "GHOST2",
+    userName: "Host",
+    recreateIfMissing: true,
+    mode: "host",
+    hostToken: token,
+    resumeState: { playing: false, currentTime: 12, playbackRate: 1 },
+  }));
+  const joined = ws.sent.find((m) => m.type === "room-joined");
+  assert.equal(joined.isHost, true, "the token this worker minted still identifies its host");
+  assert.equal(joined.mode, "host", "and their locked room comes back locked");
+});
+
+test("rebuild: two members reconnecting at once land in the same room, not two", async () => {
+  // The host-token check is a Web Crypto call, and a Durable Object's input gate only holds
+  // events back across storage operations. Both callers could find the room missing, both
+  // build one, and the second replaced the first: the loser then sat in the real room able
+  // to inject sync, navigate and chat while appearing in no member list and no reap.
+  const { hub, state } = await hubWithSocket();
+  const a = fakeSocket({ userId: "ua", userName: "A", currentRoom: null, ip: "1.1.1.1" });
+  const b = fakeSocket({ userId: "ub", userName: "B", currentRoom: null, ip: "2.2.2.2" });
+  state.sockets.push(a, b);
+  const rebuild = { type: "join-room", roomCode: "GHOST3", userName: "X", recreateIfMissing: true, resumeState: { playing: false, currentTime: 5, playbackRate: 1 } };
+
+  await Promise.all([
+    hub.webSocketMessage(a, JSON.stringify(rebuild)),
+    hub.webSocketMessage(b, JSON.stringify(rebuild)),
+  ]);
+
+  const room = hub.rooms.get("GHOST3");
+  assert.equal(hub.rooms.size, 1);
+  assert.equal(room.members.size, 2, "both reconnecting members are in the one room that survived");
+  assert.ok(room.members.has("ua") && room.members.has("ub"));
+});
+
+test("join: guessing room codes has a ceiling", async () => {
+  // A miss is free to send and its answer is informative, which together make an unbounded
+  // stream of them a search of the code space for other people's parties.
+  const { hub, ws } = await hubWithSocket();
+  for (let i = 0; i < 40; i++) {
+    await hub.webSocketMessage(ws, JSON.stringify({ type: "join-room", roomCode: "AAAA" + String(i).padStart(2, "0") }));
+  }
+  const limited = ws.sent.filter((m) => m.type === "error" && m.message === "Rate limited - slow down");
+  assert.ok(limited.length > 0, "an address may guess forever");
+});
+
+test("join: a real room is never refused because somebody else was guessing", async () => {
+  const { hub, state, ws } = await hubWithSocket();
+  await hub.webSocketMessage(ws, JSON.stringify({ type: "create-room", userName: "Host" }));
+  const created = ws.sent.find((m) => m.type === "room-created");
+
+  const guesser = fakeSocket({ userId: "bad", userName: "Bad", currentRoom: null, ip: "9.9.9.9" });
+  state.sockets.push(guesser);
+  for (let i = 0; i < 40; i++) {
+    await hub.webSocketMessage(guesser, JSON.stringify({ type: "join-room", roomCode: "ZZZZ" + String(i).padStart(2, "0") }));
+  }
+
+  const friend = fakeSocket({ userId: "good", userName: "Good", currentRoom: null, ip: "8.8.8.8" });
+  state.sockets.push(friend);
+  await hub.webSocketMessage(friend, JSON.stringify({ type: "join-room", roomCode: created.roomCode, userName: "Good" }));
+  assert.ok(friend.sent.find((m) => m.type === "room-joined"), "only misses count, and only against the address making them");
+});
+
+test("playback: an absurd position is refused rather than becoming the room's own", async () => {
+  const { hub, state } = await hubWithSocket();
+  const ws = fakeSocket({ userId: "u1", userName: "A", currentRoom: "ABCDEF", ip: "1.1.1.1" });
+  state.sockets.push(ws);
+  hub.rooms.set("ABCDEF", {
+    code: "ABCDEF", hostId: "u1", mode: "everyone", createdAt: Date.now(), lastActivity: Date.now(),
+    playbackState: { playing: true, currentTime: 42, playbackRate: 1, lastUpdate: Date.now() },
+    members: new Map([["u1", { ws, userName: "A", adActive: false }]]),
+  });
+
+  for (const bad of [1e308, Infinity, -1, "nonsense", null]) {
+    await hub.webSocketMessage(ws, JSON.stringify({ type: "sync", playing: true, currentTime: bad, playbackRate: 1 }));
+    assert.equal(hub.rooms.get("ABCDEF").playbackState.currentTime, 42, `currentTime ${bad} was accepted`);
+  }
+});
+
+test("host: the last member out of a locked room does not leave it locked to a ghost", async () => {
+  // hostId pointed at somebody gone, so the "an unsteered room goes to whoever arrives
+  // first" rule could never fire, and the first friend back to a host-only room could not
+  // play, pause or seek anything, with nothing on screen to say why.
+  const { hub, state, ws } = await hubWithSocket();
+  await hub.webSocketMessage(ws, JSON.stringify({ type: "create-room", userName: "Host", mode: "host" }));
+  const created = ws.sent.find((m) => m.type === "room-created");
+  await hub.webSocketClose(ws);
+
+  const room = hub.rooms.get(created.roomCode);
+  assert.ok(room, "the room outlives its last member by the grace window, so it is still joinable");
+  assert.equal(room.hostId, null, "and it is steerable by whoever comes back");
+
+  const friend = fakeSocket({ userId: "friend", userName: "Friend", currentRoom: null, ip: "5.5.5.5" });
+  state.sockets.push(friend);
+  await hub.webSocketMessage(friend, JSON.stringify({ type: "join-room", roomCode: created.roomCode, userName: "Friend" }));
+  const joined = friend.sent.find((m) => m.type === "room-joined");
+  assert.equal(joined.isHost, true, "the first friend back can drive the film");
+});

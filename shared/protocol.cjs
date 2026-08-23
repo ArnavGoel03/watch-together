@@ -118,6 +118,15 @@ const LIMITS = Object.freeze({
   MAX_LIVE_ROOMS_PER_IP: 20,
   RATE_LIMIT_MAX: 20,
   ROOM_CREATE_MAX: 60,
+  // Chat is the one message a member sends that this relay multiplies: one of these goes
+  // out to up to fifty sockets. The generic budget is twenty a second, which for a chat
+  // line means a single connection turning one message into a thousand, times ten
+  // connections per address. A person types a few lines a minute, so this costs nobody
+  // anything and takes the multiplier away.
+  CHAT_MAX: 10,
+  // The label a sync carries saying what caused it ("seek", "play", "resync"). Capped
+  // because it is relayed to every member and nothing downstream needs it to be long.
+  MAX_ACTION_LENGTH: 20,
   // Joining a room you cannot name is guessing. A wrong code is free to send and the reply
   // says whether the room exists, so without a ceiling one socket can walk the code space
   // looking for somebody else's party. Well clear of any real person: a human mistypes a
@@ -150,6 +159,12 @@ const TIMEOUTS = Object.freeze({
   HOST_ABSENCE_GRACE_MS: 60000,
   // A connection that never recovers must not hold four other people hostage.
   WAIT_FOR_SLOW_MAX_MS: 60000,
+  // How often the cap above is actually checked. The Node relay runs this on its own
+  // interval; the Worker rides its alarm, which cannot beat LEADER_SWEEP_MS without paying
+  // for a wake it does not otherwise need, so a room there can be held up to one sweep
+  // longer than the cap. Written down because the two cadences genuinely differ.
+  WAIT_FOR_SLOW_SWEEP_MS: 2000,
+  CHAT_WINDOW_MS: 5000,
   ROOM_CLEANUP_INTERVAL: 60000,
   WS_PING_INTERVAL: 30000,
 });

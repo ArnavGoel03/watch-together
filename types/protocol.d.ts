@@ -126,7 +126,13 @@ export type ClientMessage =
   | ChatMessage
   | { type: "leave-room"; v?: ProtocolVersion }
   | { type: "request-state"; v?: ProtocolVersion }
-  | { type: "set-mode"; mode: RoomMode; v?: ProtocolVersion }
+  | {
+      type: "set-mode";
+      mode: RoomMode;
+      /** Host-only, sent alongside mode by the same control panel. Omitted leaves it unchanged. */
+      waitForSlow?: boolean;
+      v?: ProtocolVersion;
+    }
   | { type: "chat-typing"; isTyping: boolean; v?: ProtocolVersion }
   | { type: "cc-state"; active: boolean; v?: ProtocolVersion }
   /**
@@ -150,7 +156,13 @@ export type ClientMessage =
   | { type: "presence"; state: "watching" | "ad" | "buffering"; v?: ProtocolVersion }
   | { type: "set-call-url"; url: string; v?: ProtocolVersion }
   | { type: "voice-state"; active: boolean; v?: ProtocolVersion }
-  | { type: "voice-signal"; toUserId: string; signal: unknown; v?: ProtocolVersion };
+  | { type: "voice-signal"; toUserId: string; signal: unknown; v?: ProtocolVersion }
+  /**
+   * Sent once a minute while in a room, to mark it alive. A paused room legitimately sends
+   * no other playback traffic, so without this a party that pauses for dinner looks
+   * identical to a party that ended.
+   */
+  | { type: "ping"; v?: ProtocolVersion };
 
 // ---------- server to client ----------
 
@@ -173,6 +185,10 @@ export interface RoomJoinedMessage extends ServerStamped {
   persistent?: boolean;
   isHost: boolean;
   videoUrl?: string;
+  /** The host's pinned call link, if any. */
+  callUrl?: string;
+  /** Whether the room currently holds the clock for anyone stuck buffering. */
+  waitForSlow?: boolean;
   playbackState?: PlaybackState;
   members?: RoomMember[];
   /** Only ever returned to someone who already proved they hold it. */
@@ -188,6 +204,10 @@ export interface ServerSyncMessage extends ServerStamped, PlaybackState {
   fromUserId?: string;
   isLive?: boolean;
   videoUrl?: string;
+  /** Names of members the room paused itself for, on the auto-pause that action: "pause" sends. */
+  waitingFor?: string[];
+  /** True on the action: "play" that ends a wait-for-slow hold, once everyone caught up. */
+  resumedAfterWait?: boolean;
 }
 
 export type ServerMessage =
@@ -198,7 +218,7 @@ export type ServerMessage =
   | ({ type: "heartbeat-role"; isLeader: boolean } & ServerStamped)
   | ({ type: "member-joined"; userId: string; userName: string; memberCount: number } & ServerStamped)
   | ({ type: "member-left"; userId: string; userName: string; memberCount: number } & ServerStamped)
-  | ({ type: "mode-changed"; mode: RoomMode; fromUser: string } & ServerStamped)
+  | ({ type: "mode-changed"; mode: RoomMode; waitForSlow?: boolean; fromUser: string } & ServerStamped)
   | ({ type: "host-transferred"; isHost: boolean } & ServerStamped)
   | ({ type: "navigate"; url: string; fromUser?: string; fromUserId?: string } & ServerStamped)
   | ({ type: "chat"; message: string; userName: string; userId: string; timestamp: number } & ServerStamped)
@@ -215,18 +235,11 @@ export type ServerMessage =
       memberCount: number;
     } & ServerStamped)
   | ({ type: "call-url"; callUrl: string; fromUser: string } & ServerStamped)
-  | ({
-      type: "ad-state";
-      userId: string;
-      userName: string;
-      active: boolean;
-      /** How many members are watching the film rather than an advert. Zero means held. */
-      watchingCount: number;
-      memberCount: number;
-    } & ServerStamped)
   | ({ type: "voice-state"; userId: string; userName: string; active: boolean; activeUserIds: string[] } & ServerStamped)
   | ({ type: "voice-signal"; fromUserId: string; fromUserName: string; signal: unknown } & ServerStamped)
-  | ({ type: "error"; message: string } & ServerStamped);
+  | ({ type: "error"; message: string } & ServerStamped)
+  /** Sent first, before anything else, so a migrating client spends no time on the old relay. */
+  | ({ type: "server-moved"; url: string } & ServerStamped);
 
 // ---------- background to extension surfaces ----------
 // Not on the wire: these only travel over chrome.runtime ports inside the browser.
