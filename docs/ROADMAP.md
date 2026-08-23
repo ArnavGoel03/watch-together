@@ -11,29 +11,26 @@ because a commit message says so.
 
 ---
 
-## Now: get 37 users off 1.0.1
+## Now: both stores are in review
 
-Everything in this section is one dependency chain, and every remaining step in it is a
-human at a dashboard. The version the public can install is 1.0.1, and 1.0.1 broadcasts
-playback commands to every open tab.
+**Chrome 1.2.2 submitted 2026-08-23. Edge 1.2.2 submitted 2026-08-23, seven business
+days quoted.** The submission chain that used to live here is done. What is left is the
+work that should happen WHILE review runs, because if either store comes back with a
+question, the answer wants to already exist.
 
-**The whole chain, in order, in one place:**
+1. **Smoke the real players by hand** (below). This is the largest untested surface in
+   the product and it does not need a dashboard.
+2. **One manual pass on the per-site permission prompt** (below).
+3. **Record what was actually pasted** into the Chrome description back into STATE.md's
+   listing table, so the dashboard stops being the only copy.
+4. **Reconcile the category.** `store-listing.md` says Social & Communication; the Chrome
+   dashboard says Entertainment, and Edge was set to Entertainment to match it. One of
+   the two is wrong and the repo should say whichever is right.
 
-1. **Upload `dist/watch-together-chrome-v1.2.2.zip`** over the pending 1.2.0 draft.
-   Before the Privacy tab, always: those questions are generated from whichever package
-   is currently uploaded, so writing justifications first means writing them for the
-   wrong version. 1.2.1 was built and never uploaded; 1.2.2 supersedes it and contains
-   the per-video offset fix.
-2. **Replace the item description** with the Detailed Description from `store-listing.md`,
-   verbatim. Check the short description in the same pass.
-3. **Write the permission justifications**, which the upload will have regenerated.
-   `activeTab` is gone, `scripting` appears, and the host question is about the named
-   video sites rather than the whole web. Name the sites the manifest names and stop; a
-   justification that lists what it is justifying is not keyword stuffing, and padding it
-   is how this got rejected twice.
-4. **Submit**, then **smoke the real players by hand** while review runs (see below).
+The version the public can install is still 1.0.1, and 1.0.1 broadcasts playback commands
+to every open tab. That does not change until a review clears.
 
-### Why step 2 is a paste and not an edit
+### Why the description was a paste and not an edit
 
 The 1.2.0 draft was rejected on 2026-08-22 under "Spam and placement in the Store",
 violation reference Yellow Argon, for a list of platform names in the item description:

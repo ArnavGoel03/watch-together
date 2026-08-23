@@ -48,7 +48,11 @@ Consequences, in order of how often they bite:
 
 - **Version 1.2.2**, both manifests. Built and verified in `dist/`. 1.2.1 was built and
   never uploaded; 1.2.2 supersedes it and carries the per-video offset fix.
-- **v1.2.0 was submitted for review on 2026-08-22 and is pending.** It contains a bug
+- **Chrome: 1.2.2 submitted for review on 2026-08-23.** Uploaded over the rejected 1.2.0
+  draft, with the description replaced from `store-listing.md` and the permission
+  justifications written against the 1.2.x manifest. Both stores are now in review at the
+  same version. History below, kept because the rejections are the reason for the care.
+- **v1.2.0 was submitted for review on 2026-08-22 and was rejected.** It contains a bug
   found straight after submitting: the popup header rendered a blank white square where
   the logo should be. 1.2.1 fixed it. **The draft was then REJECTED on 2026-08-22** under
   "Spam and placement in the Store", for platform names in the item description that no
