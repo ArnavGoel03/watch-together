@@ -57,6 +57,8 @@ watch-together/
 │   ├── Dockerfile
 │   └── render.yaml
 │
+├── safari/                    # Xcode project. REFERENCES extension/, never copies it
+│
 ├── server-cf/                 # Cloudflare Workers + Durable Objects port
 │   ├── src/worker.js          # One Durable Object holds the rooms
 │   └── worker.test.mjs        # Hibernation, liveness, expiry, the join page
@@ -94,7 +96,8 @@ extension ship on completely different timescales.
 | | Ships via | Live after |
 |---|---|---|
 | `server/`, `server-cf/` | You deploy it | Seconds |
-| `extension/` | Chrome Web Store | Days of review, then auto-update |
+| `extension/` | Chrome Web Store, Edge Add-ons | Days of review, then auto-update |
+| `safari/` | Nowhere yet | Needs the Apple Developer Program, which is unbought |
 
 So a bug fixable on the server reaches every existing user tonight, and one fixable only in
 the extension does not. When a fix is possible on either side, do it server-side. And
@@ -267,18 +270,24 @@ Self-ping keep-alive every 13 minutes prevents Render free tier sleep.
 
 ### Extension
 
-**Chrome/Edge/Brave/Opera:**
-```bash
-cd extension && zip -r ../watch-together.zip . -x "manifest.firefox.json" "background-firefox.js"
-```
-Upload to [Chrome Web Store Developer Console](https://chrome.google.com/webstore/devconsole).
+Never hand-zip. `npm run package` builds both zips into `dist/` and verifies each one:
+every file the manifest names is present, and nothing excluded leaked in.
 
-**Firefox:**
-Rename `manifest.firefox.json` → `manifest.json`, `background-firefox.js` → `background.js`, zip, upload to [Firefox Add-ons](https://addons.mozilla.org/developers/).
+**Chrome/Edge/Brave/Opera:** upload `dist/watch-together-chrome-vX.Y.Z.zip` to the
+[Chrome Web Store Developer Console](https://chrome.google.com/webstore/devconsole) and to
+[Microsoft Edge Add-ons](https://microsoftedge.microsoft.com/addons/developer/). Both take
+the same Chromium package.
+
+**Firefox:** upload `dist/watch-together-firefox-vX.Y.Z.zip` to
+[Firefox Add-ons](https://addons.mozilla.org/developers/). Nothing to rename; the packager
+already swapped the manifest.
+
+**Safari:** not yet possible. See `docs/SAFARI.md`, which covers the local run, the test
+that decides whether it works, and everything between here and the App Store.
 
 ### Privacy Policy
 
-Hosted at: https://arnavgoel03.github.io/watch-together/privacy-policy.html
+Hosted at: https://watch.arnavgoel.dev/privacy
 
 ## Browser Support
 
@@ -289,7 +298,7 @@ Hosted at: https://arnavgoel03.github.io/watch-together/privacy-policy.html
 | Brave | Same extension (Chromium) |
 | Opera | Same extension (Chromium) |
 | Firefox | Separate MV2 manifest |
-| Safari | Safari Web Extension wrapper (same codebase) |
+| Safari | Safari Web Extension wrapper (same codebase). Builds, never yet run: see `docs/SAFARI.md` |
 
 ## Supported Sites
 
