@@ -42,6 +42,43 @@ PRIVACY
 - Room data is temporary and deleted when everyone leaves
 - Open source
 
+## Search terms
+
+Edge allows 7 terms, 30 characters each, 21 words in total. These seven fit and are the
+same set Chrome should carry. No platform names, ever: metadata stuffed with streaming
+brands is what rejected this item twice.
+
+watch together / watch party / sync video / group watch / synchronized playback /
+movie night / remote viewing
+
+## Notes for certification, and Chrome's test instructions
+
+Both stores ask how to test this, and Edge requires notes on EVERY submission. The
+paragraph that matters is the two-profile one: without it a reviewer testing with two
+tabs in one profile watches the second evict the first and concludes the extension is
+broken. That is not a bug, it is one background worker per profile.
+
+```
+No account, password or credentials of any kind are needed. There is nothing to sign in to.
+
+One thing does need saying, because without it the extension will look broken:
+
+TWO SEPARATE BROWSER PROFILES ARE REQUIRED. Two tabs in one profile is not two participants. One profile runs one background service worker, so it holds one connection and one identity, and a second tab joining from the same profile replaces the first rather than joining alongside it. Please test with two profiles, two browsers, or two machines.
+
+To test:
+1. In profile A, open a video on a supported site, for example https://www.youtube.com/watch?v=dQw4w9WgXcQ
+2. Click the toolbar icon, enter any display name, press Create Room. A six character room code appears.
+3. In profile B, open the same video, click the toolbar icon, enter a different name, type that code and press Join Room.
+4. Press play, pause, or drag the position in either browser. The other follows within about a second.
+5. The in-page panel, bottom right or Alt+W, lists both members, carries a text chat, and shows who is watching, buffering, or in an ad break.
+
+Supported sites are the ones named in the manifest. On any other site, click the toolbar icon and press "Enable on this site", accept the browser's own permission prompt, then reload the tab. Nothing beyond those sites plus loopback is requested at install.
+
+The relay is wss://watch-together-cf.goelhome.workers.dev, with a second relay as a fallback. Only playback position, room membership and chat messages cross it, and none of it is stored.
+
+To see the expected behaviour without installing anything, https://watch.arnavgoel.dev runs two live players in one room on the page itself.
+```
+
 ## Permission justifications
 
 Written against the 1.2.x manifest. These go to the review team rather than onto the

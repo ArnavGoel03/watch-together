@@ -77,6 +77,24 @@ Consequences, in order of how often they bite:
   which is `npm run test:browser` and is worth running by hand after any popup or overlay
   change, because it is the only thing that loads the extension for real.
 - **Marketing site is live** at `watch.arnavgoel.dev`, with `/support` and `/privacy`.
+- **Edge: submitted 2026-08-23, version 1.2.2, in review, seven business days quoted.**
+  Enrolled as an individual in the Microsoft Edge program, which is free. The identifiers
+  Edge assigned, none of which are the Chrome ones:
+
+  | | |
+  | --- | --- |
+  | Store ID | `0RDCKH33CRQ6` |
+  | CRX ID | `ccanmopknfmhcalhmbophjeknnkeifog` |
+  | Product ID | `9fbe7774-7560-4566-8c59-4ffc92f11b18` |
+
+  Category Entertainment, visibility Public, all 241 markets including future ones,
+  English (United States) only. The Chromium package is the same file Chrome gets.
+
+  **The certification notes went in as "No Certification Notes required".** The
+  two-profile warning in `store-listing.md` is NOT in this submission. If review comes
+  back saying sync does not work, that is why: one profile runs one background worker, so
+  a second tab in the same profile replaces the first rather than joining it. Paste the
+  notes on the next submission, and into Chrome's Test instructions now.
 
 ## Things that will trip you up
 
