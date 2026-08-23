@@ -124,7 +124,11 @@ Whatever is ticked must keep matching `/privacy`, because the two are compared.
 https://watch.arnavgoel.dev/privacy
 
 ## Category
-Social & Communication
+
+Entertainment. That is what the Chrome dashboard actually holds and what Edge was set to
+on 2026-08-23 to match it. This file said "Social & Communication" until then, which was
+a third value agreeing with neither store. If Social & Communication was the intent, it
+is the two dashboards that need changing, not this line.
 
 ## Tags
 watch together, watch party, sync video, video sync, group watch, synchronized playback, movie night, remote viewing

@@ -6,6 +6,7 @@
 //
 
 import WebKit
+import os.log
 
 #if os(iOS)
 import UIKit
@@ -44,7 +45,12 @@ class ViewController: PlatformViewController, WKNavigationDelegate, WKScriptMess
 
         SFSafariExtensionManager.getStateOfSafariExtension(withIdentifier: extensionBundleIdentifier) { (state, error) in
             guard let state = state, error == nil else {
-                // Insert code to inform the user that something went wrong.
+                // Apple's template returns silently here, which means Safari failing to
+                // find the extension looks identical to the extension being switched off:
+                // the window renders its default state and says nothing. At minimum it has
+                // to reach the log, or the first person to hit it has nothing to go on.
+                os_log(.error, "Could not read the Safari extension state: %{public}@",
+                       error?.localizedDescription ?? "no state and no error")
                 return
             }
 
@@ -67,7 +73,10 @@ class ViewController: PlatformViewController, WKNavigationDelegate, WKScriptMess
 
         SFSafariApplication.showPreferencesForExtension(withIdentifier: extensionBundleIdentifier) { error in
             guard error == nil else {
-                // Insert code to inform the user that something went wrong.
+                // Same silence, worse consequence: the viewer presses the one button this
+                // window has, Safari's settings do not open, and nothing happens at all.
+                os_log(.error, "Could not open Safari extension preferences: %{public}@",
+                       error?.localizedDescription ?? "unknown error")
                 return
             }
 

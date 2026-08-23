@@ -64,7 +64,7 @@ function notePlayback(msg) {
 
 // Restore state from storage (survives MV3 service worker restarts)
 chrome.storage.local.get(
-  ["serverUrl", "movedServerUrl", "currentRoom", "userId", "partyTabId", "cachedPlayback", "cachedVideoUrl", "navSuppressUntil", "cachedMode", "cachedIsHost", "cachedMembers", "hostToken"],
+  ["serverUrl", "movedServerUrl", "currentRoom", "userId", "partyTabId", "cachedPlayback", "cachedVideoUrl", "navSuppressUntil", "cachedMode", "cachedIsHost", "cachedMembers", "hostToken", "isHeartbeatLeader"],
   /** @param {any} data */
   (data) => {
     relay.hydrate(data);
@@ -75,6 +75,11 @@ chrome.storage.local.get(
     if (typeof data.cachedIsHost === "boolean") cachedIsHost = data.cachedIsHost;
     if (Array.isArray(data.cachedMembers)) cachedMembers = data.cachedMembers;
     if (typeof data.hostToken === "string") hostToken = data.hostToken;
+    // A worker killed mid-party used to come back believing it was not the heartbeat
+    // leader, and stayed wrong until the server reassigned the role. Safari tears workers
+    // down far more eagerly than Chrome, so the window this was hit in is about to get a
+    // great deal wider.
+    if (typeof data.isHeartbeatLeader === "boolean") isHeartbeatLeader = data.isHeartbeatLeader;
     if (data.currentRoom) {
       currentRoom = data.currentRoom;
       userId = data.userId;
@@ -451,6 +456,7 @@ function saveState() {
     cachedIsHost,
     cachedMembers,
     hostToken,
+    isHeartbeatLeader,
   });
 }
 
@@ -490,6 +496,14 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 // Handle connections from content scripts and popup
 chrome.runtime.onConnect.addListener((port) => {
   const tabId = port.sender?.tab?.id;
+  // Every dynamic script registration hangs off chrome.permissions.onAdded, which assumes
+  // the browser grants site access only through permissions.request(). Safari also grants
+  // it through its OWN Settings, Extensions UI, and there is no reason to believe that
+  // path fires the event. If it does not, the grant exists and no script is ever
+  // registered for it: the viewer enables the site, sees no error, and the extension is
+  // simply dead there forever. Reconciling whenever the popup opens costs one call to
+  // permissions.getAll() and closes the whole class.
+  if (port.name === "popup") syncGrantedSiteScripts();
   const portKey = typeof tabId === "number" ? `${tabId}:${port.name}` : port.name;
   connectedPorts.set(portKey, port);
 

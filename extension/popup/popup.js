@@ -304,6 +304,7 @@ window.addEventListener("unload", () => clearInterval(tabRefreshInterval));
 // between an extension that reads every page you visit and one that reads the page you
 // asked it to.
 let siteNeedsPermission = false;
+let permissionPending = false;
 
 function originOf(url) {
   try {
@@ -336,22 +337,60 @@ function refreshSitePermission() {
   });
 }
 
+// How long to wait for the browser to answer a permission request before deciding it is
+// not going to. Chrome always calls back, promptly. Safari owns site access itself and its
+// permissions.request() has never behaved like Chrome's, so this can plausibly resolve
+// false, throw, or never settle at all. Only the first of those used to be handled: a
+// throw was an uncaught exception in a click handler, and a hang left the button inert
+// with nothing on screen and no way to retry short of closing the popup.
+const PERMISSION_ANSWER_MS = 8000;
+let permissionAnswered = false;
+
 function requestSitePermission() {
   const origin = originOf(activeTabUrl);
   if (!origin) return;
+  if (permissionPending) return;
+  permissionPending = true;
+  permissionAnswered = false;
+
+  const giveUp = setTimeout(() => {
+    if (permissionAnswered) return;
+    permissionAnswered = true;
+    permissionPending = false;
+    showToast("Not enabled here");
+  }, PERMISSION_ANSWER_MS);
+
+  const settle = (fn) => {
+    if (permissionAnswered) return;
+    permissionAnswered = true;
+    clearTimeout(giveUp);
+    permissionPending = false;
+    fn();
+  };
+
   // Must be called straight from the click: Chrome only shows this dialog for a real
   // user gesture, and an await before it silently turns the request into a no-op.
-  chrome.permissions.request({ origins: [origin] }, (granted) => {
-    if (!granted) {
-      showToast("Not enabled here");
-      return;
-    }
-    // Make it work in the tab they are already looking at, rather than asking them to
-    // reload a page they never expected to have to reload.
-    safePost({ type: "site-granted", tabId: activeTabId });
-    showToast("Enabled on this site");
-    refreshSitePermission();
-  });
+  try {
+    chrome.permissions.request({ origins: [origin] }, (granted) => {
+      settle(() => {
+        if (chrome.runtime.lastError || !granted) {
+          showToast("Not enabled here");
+          return;
+        }
+        // Make it work in the tab they are already looking at, rather than asking them to
+        // reload a page they never expected to have to reload.
+        //
+        // Deliberately NOT announcing success here. The grant is only half of it: the
+        // scripts still have to reach the tab, and until site-granted-result comes back
+        // there is nothing to celebrate. Saying "Enabled on this site" at this point told
+        // the viewer it had worked while the page went on doing nothing.
+        safePost({ type: "site-granted", tabId: activeTabId });
+        refreshSitePermission();
+      });
+    });
+  } catch {
+    settle(() => showToast("Not enabled here"));
+  }
 }
 
 function updateCreateButton() {
@@ -736,6 +775,14 @@ document.head.appendChild(style);
 
 function handlePortMessage(msg) {
   switch (msg.type) {
+    // The background reports whether the scripts actually reached the tab. This case did
+    // not exist, so the message was dropped and the popup announced success the moment
+    // the GRANT resolved, whatever happened afterwards.
+    case "site-granted-result":
+      showToast(msg.ok ? "Enabled on this site" : "Not enabled here");
+      refreshSitePermission();
+      break;
+
     case "state":
       updateConnectionStatus(msg.connected);
       if (msg.serverUrl) serverUrlInput.value = msg.serverUrl;

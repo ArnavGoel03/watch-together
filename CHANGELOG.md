@@ -2,6 +2,57 @@
 
 All notable changes to Watch Together are documented here.
 
+## [1.2.3] - 2026-08-23
+
+Preparing Safari found four bugs that were never Safari's fault. Three of them are live in
+Chrome right now. 1.2.2 is in review at Chrome and Edge; this is what goes in next.
+
+### Fixed
+
+- **The popup announced success before it knew.** Pressing "Enable on this site" showed
+  "Enabled on this site" the instant the permission GRANT resolved, which is only half the
+  job: the scripts still have to reach the tab. The background already reported the real
+  outcome as `site-granted-result`, and the popup had no case for it, so the message was
+  dropped on the floor. If injection failed, the viewer was told it had worked and the page
+  went on doing nothing, with no way to find out why. The toast now waits for the actual
+  result, and says so when it did not work.
+- **A permission request could leave the button dead.** `chrome.permissions.request()` was
+  the only action in the popup with no in-flight guard, no try/catch and no timeout, while
+  every one of its siblings had all three. Only the "user said no" branch was handled: a
+  throw was an uncaught exception in a click handler, and a request that never settled left
+  the control inert with nothing on screen. Safari owns site access itself and its
+  behaviour here has never matched Chrome's, so all three paths now end in feedback.
+- **Heartbeat leadership did not survive a worker restart.** Every other field that decides
+  what the room IS gets written by `saveState()`; `isHeartbeatLeader` was missed. A worker
+  killed mid-party came back believing it was not the leader and stayed wrong until the
+  server reassigned the role, which can stall or drift playback in the meantime. Safari
+  tears extension workers down far more eagerly than Chrome, so the window was about to get
+  much wider.
+- **Granted sites now reconcile instead of trusting an event.** Registering content scripts
+  for a granted origin hung entirely off `chrome.permissions.onAdded`, which assumes the
+  browser only ever grants access through `permissions.request()`. Safari also grants it
+  through its own Settings, Extensions UI, and there is no reason to believe that fires the
+  event. If it does not, the grant exists, no script is ever registered, and the extension
+  is silently dead on that site forever. Opening the popup now reconciles what is actually
+  granted against what is actually registered.
+
+### Changed
+
+- **The Safari app is submittable, where it was not.** The App Store marketing icon carried
+  an alpha channel, which fails validation on upload before a human ever sees it; every
+  value in that channel was 255, so removing it changed no pixel. The macOS app had no
+  `LSApplicationCategoryType`, which is an automatic rejection at upload, and now declares
+  Entertainment to match Chrome and Edge. Deployment floors were the converter's defaults
+  of macOS 10.14 and iOS 15.0, which would let somebody install an app whose extension
+  cannot run: the manifest v3 service worker and `scripting.registerContentScripts` need
+  Safari 16.4, so the floors are macOS 12.0 and iOS 16.4. The launch-screen icon had only a
+  1x asset and was upscaled on every real device. The copyright line, which was empty,
+  reuses the one already in LICENSE.
+- **The container app no longer swallows its own failures.** Both error branches Apple's
+  template leaves empty now log: one is Safari failing to report the extension's state,
+  which looked identical to the extension being switched off, and the other is the one
+  button in that window failing to open Safari's settings.
+
 ## [1.2.2] - 2026-08-23
 
 A locked-in sync offset used to be one number applied to everything you ever watched

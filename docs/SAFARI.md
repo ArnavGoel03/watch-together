@@ -16,8 +16,8 @@ repository root carries the invariants and the traps. This file does not repeat 
 
 Watch Together is a browser extension that keeps video playback in step between people
 watching the same thing in different browsers, plus a relay it talks to and a marketing
-site. It is live on the Chrome Web Store with 37 users, and 1.2.2 is in review at both
-Chrome and Microsoft Edge as of 2026-08-23.
+site. It is live on the Chrome Web Store with 37 users, 1.2.2 is in review at both Chrome
+and Microsoft Edge as of 2026-08-23, and HEAD is 1.2.3.
 
 Safari is the third browser. It is built and it does not ship, for one reason: Safari
 distribution requires the Apple Developer Program at ninety nine dollars a year, and that
@@ -37,10 +37,15 @@ whole risk.
 - The iOS scheme builds clean in Release against `generic/platform=iOS Simulator`.
 - The built app is ad-hoc signed and its identifier is `dev.arnavgoel.watchtogether`.
 - The extension inside it registers with the system: `pluginkit -a` on the appex reports
-  `dev.arnavgoel.watchtogether.Extension(1.2.2)`.
-- The bundle's `manifest.json` is manifest v3, version 1.2.2, background `service_worker`,
+  `dev.arnavgoel.watchtogether.Extension`, at whatever version HEAD carries.
+- The bundle's `manifest.json` is manifest v3, background `service_worker`,
   permissions `storage`, `tabs`, `scripting`. Contents match the Chrome zip exactly, with
   no Firefox files leaking in.
+
+**Audited on 2026-08-23**, both the extension against Safari's API behaviour and the
+generated container app against what would actually reach Apple. Everything the audits
+found that could be fixed without running Safari has been fixed and is in 1.2.3: see the
+CHANGELOG. Two findings survive as open questions, both in section 6.
 
 **NOT verified, and do not claim otherwise:**
 
@@ -77,7 +82,7 @@ repository's first invariant is that there is never a second one.
 | Schemes | `Watch Together (macOS)`, `Watch Together (iOS)` |
 | Targets | an app and an extension target for each platform |
 | Manifest | `extension/manifest.json`, the manifest v3 one Chrome and Edge get |
-| Version | 1.2.2, in eight build configurations, gated (section 11) |
+| Version | HEAD is 1.2.3, in eight build configurations, gated (section 11). 1.2.2 is what is in review at Chrome and Edge |
 
 ---
 
@@ -183,6 +188,27 @@ onStartup,onInstalled,lastError}`, `tabs.{query,get,onRemoved}`,
 `scripting.{executeScript,registerContentScripts,getRegisteredContentScripts,
 unregisterContentScripts,updateContentScripts}` and
 `permissions.{request,getAll,contains,onAdded,onRemoved}`.
+
+### Still open after the audit
+
+**The macOS Extension target has no outgoing-network entitlement while the App target
+does.** There are no `.entitlements` files; these are Xcode's synthesized build settings,
+and `ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES` is set on the App and not on the
+Extension. This is probably harmless: `SafariWebExtensionHandler.swift` does no
+networking, and `background.js` runs its WebSocket inside Safari's own WebExtension
+process rather than inside this appex. It is left alone deliberately, because this
+repository does not widen a permission on a guess. **If the first real run shows rooms
+never syncing on Safari with no error anywhere, this is the first thing to try**: add
+`ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES` to both Extension configurations.
+
+**The App Store icon is a macOS-shaped icon in an iOS-shaped slot.** Every other icon in
+the set has transparent corners, which is right for macOS, where the app supplies its own
+shape. `universal-icon-1024@1x.png` is the same artwork flattened onto white, and it is
+what iOS and the App Store use, where the icon must be a full-bleed square that Apple
+masks itself. The result is a purple rounded tile with a white margin around it, masked
+again. It is not broken and it will not fail validation. It is an artwork decision, and
+artwork in this project is derived from a master rather than drawn, so it belongs to the
+owner and to `scripts/make-icons.py`, not to whoever is reading this.
 
 ---
 

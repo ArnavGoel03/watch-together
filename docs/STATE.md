@@ -46,8 +46,12 @@ Consequences, in order of how often they bite:
 
 ## Current status
 
-- **Version 1.2.2**, both manifests. Built and verified in `dist/`. 1.2.1 was built and
-  never uploaded; 1.2.2 supersedes it and carries the per-video offset fix.
+- **HEAD is 1.2.3. 1.2.2 is what is in review at Chrome and Edge.** They are deliberately
+  different: preparing Safari turned up four bugs, three of which are live in Chrome right
+  now, and they are not worth cancelling two in-flight reviews for. 1.2.3 goes in next,
+  whether that is after 1.2.2 clears or as a replacement if either store comes back.
+  `dist/` holds 1.2.3 packages; the 1.2.2 pair that was uploaded is in the Desktop assets
+  folder.
 - **Chrome: 1.2.2 submitted for review on 2026-08-23.** Uploaded over the rejected 1.2.0
   draft, with the description replaced from `store-listing.md` and the permission
   justifications written against the 1.2.x manifest. Both stores are now in review at the
@@ -406,7 +410,8 @@ the description here once it is pasted, because not doing that is how it drifted
 | Support URL | `https://watch.arnavgoel.dev/support` |
 | Privacy policy URL | `https://watch.arnavgoel.dev/privacy` |
 | Official URL | left as None. Needs the domain verified in Search Console; `arnavgoel.dev` already has two `google-site-verification` TXT records, so it can be enabled later |
-| Category | Entertainment |
+| Category | Entertainment, in both Chrome and Edge |
+| Description | Pasted verbatim from `store-listing.md` on 2026-08-23, into Chrome and into Edge. Not duplicated here on purpose: a second copy is how the first one drifted. Diff the dashboard against that file, never against this table |
 | Mature content | off |
 | Google Analytics | opted out, so there is no extra data recipient to declare |
 
