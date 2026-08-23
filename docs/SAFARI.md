@@ -47,12 +47,18 @@ generated container app against what would actually reach Apple. Everything the 
 found that could be fixed without running Safari has been fixed and is in 1.2.3: see the
 CHANGELOG. Two findings survive as open questions, both in section 6.
 
+**First run, 2026-08-23 afternoon. It loads.** Added to Safari 27 as a temporary
+extension, from the `extension/` folder, following section 3. Safari lists it correctly:
+name, version 1.2.3, the description out of the manifest, and the real icon. It enables.
+Details and what happened next are in section 6a.
+
 **NOT verified, and do not claim otherwise:**
 
-- **Nobody has run it inside Safari.** Not once, by anyone. Building is not running.
-- No room has ever been synced with a Safari participant.
-- The per-site permission flow on Safari is unexercised and is expected to differ. See
-  section 5.
+- **No room has ever been synced with a Safari participant.** Loading and enabling is not
+  using.
+- **The toolbar button has never produced a popup.** See 6a; the likely cause is that no
+  site access had been granted, which is not the same as a broken popup, and it has not
+  been settled yet.
 
 The Firefox build sat packaged and never executed for months, and that is recorded in
 `docs/STATE.md` as a mistake. Do not let Safari become the second instance of it.
@@ -209,6 +215,45 @@ masks itself. The result is a purple rounded tile with a white margin around it,
 again. It is not broken and it will not fail validation. It is an artwork decision, and
 artwork in this project is derived from a master rather than drawn, so it belongs to the
 owner and to `scripts/make-icons.py`, not to whoever is reading this.
+
+---
+
+## 6a. First run log, 2026-08-23
+
+Kept because the next person will otherwise repeat it.
+
+**Confirmed, and bigger than the audit predicted: Safari does not honour `host_permissions`
+as grants.** With seven video hosts declared in the manifest, Safari's Extensions pane
+still read "You have not allowed this extension on any websites yet", offering only
+**Edit Websites...** and **Always Allow on Every Website...**. On Chrome and Edge those
+seven are granted at install and the extension works on YouTube immediately. On Safari
+nothing is granted until the viewer says so in Safari's own UI, so a freshly enabled
+extension can touch nothing.
+
+That reframes section 6. It is not only `permissions.request()` that behaves differently;
+the whole model does. The manifest's host list is a REQUEST on Safari, not a grant, and
+"Enable on this site" is competing with a control Safari already provides.
+
+**Then: clicking the toolbar icon on a YouTube tab produced nothing.** No popup, no error
+visible to the viewer. Not yet diagnosed. The ordered next steps, none of them done:
+
+1. Settings, Extensions, Watch Together, **Always Allow on Every Website**, then **reload
+   the tab**. A content script cannot reach a page that was already open when access was
+   granted, which is the same reload rule `/support` documents for Chrome. Click again.
+2. If still nothing: **Develop > Web Extension Background Content > Watch Together** opens
+   a Web Inspector on the background service worker. Whether that entry exists at all is
+   itself the answer to whether Safari ever started the worker. Read the console for
+   anything from `[WatchTogether]`.
+3. Only then start changing code.
+
+**Ruled out from the source, so nobody re-checks them:** the popup declares
+`body { width: 360px }` with no height, which is the ordinary pattern and renders in
+Safari; and the manifest has no `commands` block, so the empty keyboard-shortcut slot
+Safari displays is its own default rather than a missing binding.
+
+**Two things that look like regressions and are not.** A temporary extension dies when
+Safari quits or after 24 hours, and "Allow unsigned extensions" resets on every Safari
+launch. If the icon vanishes between sessions, that is why.
 
 ---
 

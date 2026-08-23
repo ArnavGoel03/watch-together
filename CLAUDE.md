@@ -94,10 +94,11 @@ same browser joins over the same socket and is not a second person.
 
 **Headless never fires `fullscreenchange`** and hangs when screenshotting a playing video.
 
-**Safari builds and registers, and has never been RUN.** Building is not running, and
-registering is not running. The one API expected to differ is `chrome.permissions.request()`
-behind "Enable on this site", because Safari manages site access through its own UI. Do not
-describe Safari as working until a human has synced a room with it.
+**Safari does not honour `host_permissions` as grants.** Confirmed on a real run: with
+seven hosts in the manifest, Safari still reports no websites allowed and grants nothing
+until the viewer says so in its own Extensions pane. On Safari the manifest host list is a
+request, not a grant, and the extension can touch nothing until then. It loads and enables;
+no room has ever been synced with it. See `docs/SAFARI.md` section 6a.
 
 **Regenerating the Safari project silently reintroduces two defects.** The converter drags
 `manifest.firefox.json` and `background-firefox.js` into the Apple binary, and seeds
