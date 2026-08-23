@@ -94,7 +94,7 @@ test("hibernation: a room with no recorded beat still gets a usable clock", asyn
 // A setTimeout cannot outlive hibernation. A room mid-grace therefore woke up with no
 // timer and nothing that would ever set one, so it stayed in storage forever counting
 // against the room cap.
-test("hibernation: an empty room re-arms its grace timer on the way back", async () => {
+test("hibernation: an empty room keeps counting down across a wake, from where it was", async () => {
   const state = makeState(new Map([[
     "room:ABCDEF",
     { code: "ABCDEF", hostId: "u1", mode: "everyone", createdAt: Date.now(), lastActivity: Date.now(), playbackState: { playing: false, currentTime: 0, playbackRate: 1, lastUpdate: Date.now() } },
@@ -102,8 +102,44 @@ test("hibernation: an empty room re-arms its grace timer on the way back", async
   const hub = new RoomHubDO(state, { HOST_TOKEN_SECRET: SECRET });
   await hub.bootPromise;
   const room = hub.rooms.get("ABCDEF");
-  assert.ok(room.emptyDeleteTimer, "a room nobody is in must be counting down to deletion");
-  clearTimeout(room.emptyDeleteTimer);
+  assert.ok(room.emptySince, "a room nobody is in must be counting down to deletion");
+  assert.ok(await state.storage.get("room:ABCDEF"), "and it is still there, because the window has not passed");
+
+  // The point of a deadline rather than a timer. A timer dies with the object, so the
+  // countdown restarted from the full thirty minutes on every unrelated wake and the room
+  // could outlive its own grace window by hours.
+  const emptied = room.emptySince;
+  const woken = new RoomHubDO(makeState(state._store), { HOST_TOKEN_SECRET: SECRET });
+  await woken.bootPromise;
+  assert.equal(woken.rooms.get("ABCDEF").emptySince, emptied, "a sleep does not restart the clock");
+});
+
+test("empty rooms: one whose grace window has passed is collected, even with nobody left to wake the object", async () => {
+  // The failure this closes: when the LAST room went empty, nothing scheduled an alarm at
+  // all, so the object slept with no timer of any kind. The room was never deleted and sat
+  // in storage against MAX_ROOMS until something unrelated happened to wake the object.
+  const longAgo = Date.now() - 31 * 60000;
+  const state = makeState(new Map([[
+    "room:ABCDEF",
+    { code: "ABCDEF", hostId: "u1", mode: "everyone", emptySince: longAgo, createdAt: longAgo, lastActivity: longAgo, playbackState: { playing: false, currentTime: 0, playbackRate: 1, lastUpdate: longAgo } },
+  ]]));
+  const hub = new RoomHubDO(state, { HOST_TOKEN_SECRET: SECRET });
+  await hub.bootPromise;
+  assert.equal(hub.rooms.has("ABCDEF"), false, "past its grace window, the room is gone from memory");
+  assert.equal(await state.storage.get("room:ABCDEF"), undefined, "and from storage, so it stops counting against the cap");
+});
+
+test("empty rooms: the object wakes itself for a grace window with nobody in any room", async () => {
+  const state = makeState(new Map([[
+    "room:ABCDEF",
+    { code: "ABCDEF", hostId: "u1", mode: "everyone", emptySince: Date.now(), createdAt: Date.now(), lastActivity: Date.now(), playbackState: { playing: false, currentTime: 0, playbackRate: 1, lastUpdate: Date.now() } },
+  ]]));
+  const hub = new RoomHubDO(state, { HOST_TOKEN_SECRET: SECRET });
+  await hub.bootPromise;
+  await hub._scheduleLeaderSweep();
+  const alarm = await state.storage.getAlarm();
+  assert.ok(alarm, "an alarm is the only timer that outlives hibernation, so one has to be set");
+  assert.ok(alarm > Date.now() + 60000, "and it is set for the deadline, not five seconds away, so an empty room is not billed a wake every five seconds for thirty minutes");
 });
 
 // The per-IP cap lived only in memory, so every wake handed the same address a fresh ten.

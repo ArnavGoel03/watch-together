@@ -195,9 +195,16 @@ const CALL_HOSTS = Object.freeze([
 //
 // globalThis.crypto rather than node:crypto or the Workers global: it is the one spelling
 // both runtimes answer to, and server.js shadows the name `crypto` with the Node module.
+// Reached through a cast because the two runtimes' type definitions disagree about where
+// this global is declared, while both provide it at runtime. The cast is about the types,
+// never about the value: a runtime without it must fail loudly rather than fall back to
+// something predictable, and it does, on the first room anybody creates.
+/** @type {{ getRandomValues<T extends Uint8Array>(a: T): T }} */
+const webcrypto = /** @type {any} */ (globalThis).crypto;
+
 function randomChars(alphabet, length) {
   const bytes = new Uint8Array(length);
-  globalThis.crypto.getRandomValues(bytes);
+  webcrypto.getRandomValues(bytes);
   let out = "";
   for (let i = 0; i < length; i++) {
     // 32 divides 256, so masking a byte is uniform for the room-code alphabet. The user-id
@@ -208,7 +215,7 @@ function randomChars(alphabet, length) {
       const ceiling = 256 - (256 % alphabet.length);
       while (b >= ceiling) {
         const one = new Uint8Array(1);
-        globalThis.crypto.getRandomValues(one);
+        webcrypto.getRandomValues(one);
         b = one[0];
       }
     }

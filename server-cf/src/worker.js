@@ -4,38 +4,33 @@
 // Uses the WebSocket Hibernation API so the DO doesn't burn CPU while idle.
 
 // ---------- Configuration ----------
-// Kept in lockstep with the Node twin and extension/config.js.
+// Every value below is READ from the shared protocol definition, not restated here.
+//
+// This file used to carry its own copy of all of them, "kept in lockstep with the Node
+// twin" by hand. They were not in lockstep. This relay, which is the one production runs,
+// was missing the host-mode heartbeat check, the ad-flag reset, the dead-socket filter in
+// the ad-freeze test and the room-creation budget entirely, and nothing anywhere could
+// have told you: two files that agree by hand only look like they agree.
+import P from "../../shared/protocol.cjs";
+
 const PROTOCOL_VERSION = 1;
-// Kept in step with server/server.js. "buffering" does not stop the room's clock, because
-// the film really is playing for everybody else; it only disqualifies that member from
-// driving everyone's position while their own is stalled.
-const PRESENCE_STATES = ["watching", "ad", "buffering"];
-// See the long explanation in server/server.js. Off by default and host-controlled, because
-// one person's connection stopping everybody else's film is a social decision. The ceiling
-// matters as much as the feature: a connection that never recovers must not hold four other
-// people hostage.
-const WAIT_FOR_SLOW_MAX_MS = 60000;
-const MAX_ROOM_MEMBERS = 50;
-const MAX_ROOMS = 10000;
-const ROOM_TTL_MS = 12 * 3600000; // 12h
-const MAX_MESSAGE_SIZE = 4096;
-const RATE_LIMIT_WINDOW = 1000; // 1s
-const RATE_LIMIT_MAX = 20;
-const MAX_CHAT_LENGTH = 500;
-const MAX_USERNAME_LENGTH = 30;
-const MAX_CONNECTIONS_PER_IP = 10;
-const MAX_VIDEO_URL_LENGTH = 2000;
-// 30 minutes, matching the Node server. It was 60 seconds here long after the Node twin
-// was deliberately widened, because closing a tab, restarting the browser or riding out a
-// dead wifi stretch all took longer than a minute and the party came back to "Room not
-// found". An empty room costs one storage key.
-const EMPTY_ROOM_GRACE_MS = 30 * 60000;
-const PERSISTENT_ROOM_TTL_MS = 30 * 24 * 3600000; // 30 days for named rooms
-const PERSISTENT_ROOM_EMPTY_GRACE_MS = 7 * 24 * 3600000; // 7 days
-const MAX_VOICE_SIGNAL_BYTES = 8192;
-const CUSTOM_NAME_REGEX = /^[a-zA-Z0-9-]{4,32}$/;
-// The shape generateRoomCode() hands out (no I, O, 0 or 1: they read the same out loud).
-const ROOM_CODE_REGEX = /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{6}$/;
+const PRESENCE_STATES = P.PRESENCE_STATES;
+const WAIT_FOR_SLOW_MAX_MS = P.TIMEOUTS.WAIT_FOR_SLOW_MAX_MS;
+const MAX_ROOM_MEMBERS = P.LIMITS.MAX_ROOM_MEMBERS;
+const MAX_ROOMS = P.LIMITS.MAX_ROOMS;
+const ROOM_TTL_MS = P.TIMEOUTS.ROOM_TTL_MS;
+const MAX_MESSAGE_SIZE = P.LIMITS.MAX_MESSAGE_SIZE;
+const RATE_LIMIT_WINDOW = P.TIMEOUTS.RATE_LIMIT_WINDOW;
+const RATE_LIMIT_MAX = P.LIMITS.RATE_LIMIT_MAX;
+const MAX_CHAT_LENGTH = P.LIMITS.MAX_CHAT_LENGTH;
+const MAX_USERNAME_LENGTH = P.LIMITS.MAX_USERNAME_LENGTH;
+const MAX_CONNECTIONS_PER_IP = P.LIMITS.MAX_CONNECTIONS_PER_IP;
+const EMPTY_ROOM_GRACE_MS = P.TIMEOUTS.EMPTY_ROOM_GRACE_MS;
+const PERSISTENT_ROOM_TTL_MS = P.TIMEOUTS.PERSISTENT_ROOM_TTL_MS;
+const PERSISTENT_ROOM_EMPTY_GRACE_MS = P.TIMEOUTS.PERSISTENT_ROOM_EMPTY_GRACE_MS;
+const MAX_VOICE_SIGNAL_BYTES = P.LIMITS.MAX_VOICE_SIGNAL_BYTES;
+const CUSTOM_NAME_REGEX = P.CUSTOM_NAME_REGEX;
+const ROOM_CODE_REGEX = P.ROOM_CODE_REGEX;
 
 // A host token is an HMAC of the room code, so a room that has to be rebuilt can still
 // prove who its host was without the object having remembered anything. Set
@@ -65,64 +60,21 @@ export async function isValidHostToken(secret, roomCode, token) {
 }
 
 // ---------- Utilities ----------
-const ROOM_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+// Codes and ids come from a CSPRNG. The room code is the only credential this system has,
+// and Math.random's internal state is recoverable from a handful of its own outputs, so an
+// attacker who made a few rooms could predict the codes handed to strangers. See
+// shared/protocol.cjs.
 function generateRoomCode(existing) {
-  let code;
-  do {
-    code = "";
-    for (let i = 0; i < 6; i++) code += ROOM_CODE_CHARS[Math.floor(Math.random() * ROOM_CODE_CHARS.length)];
-  } while (existing.has(code));
-  return code;
+  return P.generateRoomCode((code) => existing.has(code));
 }
-function generateUserId() {
-  return Math.random().toString(36).substring(2, 10);
-}
-function sanitize(str, maxLen) {
-  if (typeof str !== "string") return "";
-  return str.substring(0, maxLen).trim();
-}
-function escapeHtml(str) {
-  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
-}
-// A video-call link the room can share. An allowlist rather than "any https URL", because
-// this becomes a button every member is invited to press, so a free-text field would be a
-// convenient way to get a room full of people to click on anything. Kept in step with
-// server/server.js and extension/config.js.
-const CALL_HOSTS = [
-  "zoom.us",
-  "zoomgov.com",
-  "meet.google.com",
-  "teams.microsoft.com",
-  "teams.live.com",
-  "discord.gg",
-  "discord.com",
-  "whereby.com",
-  "meet.jit.si",
-];
-const MAX_CALL_URL_LENGTH = 500;
-
-function validateCallUrl(str) {
-  if (typeof str !== "string") return "";
-  const trimmed = str.trim().substring(0, MAX_CALL_URL_LENGTH);
-  if (!trimmed) return "";
-  try {
-    const u = new URL(trimmed);
-    // Zoom's own scheme, which opens the installed client straight into the meeting.
-    if (u.protocol === "zoommtg:" || u.protocol === "zoomus:") return trimmed;
-    if (u.protocol !== "https:") return "";
-    const host = u.hostname.toLowerCase();
-    return CALL_HOSTS.some((d) => host === d || host.endsWith("." + d)) ? trimmed : "";
-  } catch {
-    return "";
-  }
-}
-
-function validateUrl(str) {
-  if (typeof str !== "string") return "";
-  const trimmed = str.substring(0, MAX_VIDEO_URL_LENGTH).trim();
-  if (trimmed.startsWith("https://") || trimmed.startsWith("http://")) return trimmed;
-  return "";
-}
+const generateUserId = P.generateUserId;
+const sanitize = P.sanitize;
+const escapeHtml = P.escapeHtml;
+// The call-link allowlist and both URL validators live in shared/protocol.cjs, so this
+// relay, the Node one and extension/config.js cannot disagree about what a room is allowed
+// to point its members at.
+const validateCallUrl = P.validateCallUrl;
+const validateUrl = P.validateUrl;
 
 // ---------- Worker entry ----------
 export default {
@@ -181,18 +133,17 @@ export default {
 // (userId, userName, currentRoom) lives in the WS attachment so it
 // survives DO hibernation cycles.
 // ============================================================
-// Three missed beats at a 5s heartbeat.
-const LEADER_STALE_MS = 15000;
-// A host who reloads must keep their locked room; a host who leaves must not leave everyone
-// locked out. Matches HOST_ABSENCE_GRACE_MS on the Node server.
-const HOST_ABSENCE_GRACE_MS = 60000;
+const LEADER_STALE_MS = P.TIMEOUTS.LEADER_STALE_MS;
+const HOST_ABSENCE_GRACE_MS = P.TIMEOUTS.HOST_ABSENCE_GRACE_MS;
 // Generous on purpose: a university or an office behind one NAT address is a single IP to
 // us, and locking those people out of making rooms would be a worse bug than the flood it
-// prevents. Matches the Node server.
-const ROOM_CREATE_WINDOW_MS = 60000;
-const ROOM_CREATE_MAX = 60;
-const MAX_LIVE_ROOMS_PER_IP = 20;
-const LEADER_SWEEP_MS = 5000;
+// prevents.
+const ROOM_CREATE_WINDOW_MS = P.TIMEOUTS.ROOM_CREATE_WINDOW_MS;
+const ROOM_CREATE_MAX = P.LIMITS.ROOM_CREATE_MAX;
+const MAX_LIVE_ROOMS_PER_IP = P.LIMITS.MAX_LIVE_ROOMS_PER_IP;
+const LEADER_SWEEP_MS = P.TIMEOUTS.LEADER_SWEEP_MS;
+const FAILED_JOIN_WINDOW_MS = P.TIMEOUTS.FAILED_JOIN_WINDOW_MS;
+const FAILED_JOIN_MAX = P.LIMITS.FAILED_JOIN_MAX;
 
 export class RoomHubDO {
   constructor(state, env) {
@@ -205,8 +156,15 @@ export class RoomHubDO {
     // window), so limiting the RATE of creation is not enough on its own: they accumulate.
     // Limiting how many one address is holding at once is exact. Matches the Node server.
     this.liveRoomsPerIp = new Map();
-    this.roomCreateHits = new Map(); // ip -> { count, resetAt }
-    this.rateLimits = new Map();  // userId -> { count, resetAt }
+    // Windowed budgets, all three the same shared implementation. A Durable Object is
+    // long lived by design, so a hit map that is never pruned is not a rounding error: it
+    // grows by one entry for every address that ever spoke to it and never shrinks.
+    this.roomCreateLimiter = new P.WindowedLimiter(ROOM_CREATE_WINDOW_MS, ROOM_CREATE_MAX);
+    this.rateLimiter = new P.WindowedLimiter(RATE_LIMIT_WINDOW, RATE_LIMIT_MAX);
+    // A wrong room code costs nothing to send and the reply says whether that room exists,
+    // so an unbounded stream of them is a search of the code space for other people's
+    // parties. Counted per address and only ever on a miss.
+    this.failedJoinLimiter = new P.WindowedLimiter(FAILED_JOIN_WINDOW_MS, FAILED_JOIN_MAX);
     this.bootPromise = this._boot();
   }
 
@@ -226,7 +184,6 @@ export class RoomHubDO {
       this.rooms.set(code, {
         ...value,
         members: new Map(),
-        emptyDeleteTimer: null,
         lastHeartbeatAt: typeof value.lastHeartbeatAt === "number" ? value.lastHeartbeatAt : Date.now(),
       });
     }
@@ -259,14 +216,10 @@ export class RoomHubDO {
       }
     }
 
-    // A setTimeout cannot survive hibernation, so any room that was counting down its
-    // grace window when the object went to sleep woke up with no timer and nothing to
-    // ever set one again: it stayed in storage forever, counting against MAX_ROOMS. Re-arm
-    // on the way back, and sweep anything already past its deadline.
+    // Deadlines, not timers, so a sleep does not reset them. Sweep anything already past
+    // its own on the way back up.
     this._sweepExpiredRooms();
-    for (const [code, room] of this.rooms) {
-      if (room.members.size === 0) this._scheduleEmptyDelete(code);
-    }
+    this._sweepEmptyRooms();
   }
 
   // The Node server runs this on an interval. Here it rides the same alarm as the leader
@@ -280,7 +233,6 @@ export class RoomHubDO {
       for (const member of room.members.values()) {
         try { member.ws.close(4001, "Room expired"); } catch {}
       }
-      if (room.emptyDeleteTimer) clearTimeout(room.emptyDeleteTimer);
       this._releaseRoomSlot(room);
       this.rooms.delete(code);
       this._deleteRoomStorage(code);
@@ -303,10 +255,10 @@ export class RoomHubDO {
       await this.state.storage.delete(`room:${code}`);
       return;
     }
-    // Don't persist live ws references or timers
-    // Strip what must never be persisted: live socket handles, a timer id, and our own
-    // write-throttle bookkeeping.
-    const { members: _members, emptyDeleteTimer: _timer, lastPersistAt: _lastPersist, ...rest } = room;
+    // Strip what must never be persisted: live socket handles and our own write-throttle
+    // bookkeeping. Everything else, emptySince and hostAbsentSince included, is exactly
+    // what has to survive a sleep.
+    const { members: _members, lastPersistAt: _lastPersist, ...rest } = room;
     room.lastPersistAt = Date.now();
     await this.state.storage.put(`room:${code}`, rest);
   }
@@ -340,18 +292,20 @@ export class RoomHubDO {
 
   // -------- Rate limit --------
   _checkRate(userId) {
-    const now = Date.now();
-    const e = this.rateLimits.get(userId);
-    if (!e || now > e.resetAt) {
-      this.rateLimits.set(userId, { count: 1, resetAt: now + RATE_LIMIT_WINDOW });
-      return true;
-    }
-    e.count++;
-    return e.count <= RATE_LIMIT_MAX;
+    return this.rateLimiter.check(userId);
   }
 
   // -------- Heartbeat leader (first member) --------
   _heartbeatLeader(room) {
+    // In a host-only room the host is the only member whose playback this relay will
+    // accept, so they are the only member it is meaningful to make leader. Handing the
+    // role to a guest produces a leader whose every beat is rejected, which looks exactly
+    // like a room that has silently stopped syncing.
+    if (room.mode === "host") {
+      const host = room.members.get(room.hostId);
+      return host && host.ws && host.ws.readyState === 1 /* WebSocket.OPEN */ ? room.hostId : null;
+    }
+
     // First member in order whose socket is open AND who is not sitting out an ad.
     // Promoting a dead socket, or someone who has deliberately stopped broadcasting,
     // makes the room go quiet with nobody able to notice until the next sweep.
@@ -405,16 +359,26 @@ export class RoomHubDO {
   }
 
   async _scheduleLeaderSweep() {
-    // Wake for a leader handoff, and also while any room is still alive at all, because
-    // the same alarm carries the room expiry sweep and the dead-socket reaper.
-    let needed = false;
+    // Wake for a leader handoff while anybody is in a room, because the same alarm carries
+    // the room expiry sweep and the dead-socket reaper.
+    let wanted = null;
     for (const room of this.rooms.values()) {
-      if (room.members.size >= 1) { needed = true; break; }
+      if (room.members.size >= 1) { wanted = Date.now() + LEADER_SWEEP_MS; break; }
     }
-    if (!needed) return;
+    // With nobody anywhere there is still one thing left to wake for: an empty room's
+    // grace window running out. Wake once, then, rather than every five seconds through a
+    // window that is thirty minutes long and can be seven days. Without this the object
+    // slept with no alarm at all and the room was never collected.
+    if (wanted === null) {
+      const due = this._nextEmptyDeadline();
+      if (due === null) return;
+      wanted = Math.max(due, Date.now() + 1000);
+    }
     const existing = await this.state.storage.getAlarm();
-    if (existing !== null) return; // one sweep in flight is enough
-    await this.state.storage.setAlarm(Date.now() + LEADER_SWEEP_MS);
+    // An alarm already set for sooner does the job. One set for later does not, which is
+    // the case when a room fills up again while a far-off empty-room wake was pending.
+    if (existing !== null && existing <= wanted) return;
+    await this.state.storage.setAlarm(wanted);
   }
 
   async alarm() {
@@ -424,6 +388,10 @@ export class RoomHubDO {
     this._sweepHostAbsence();
     this._rotateStaleLeaders();
     this._sweepExpiredRooms();
+    this._sweepEmptyRooms();
+    this.rateLimiter.cleanup();
+    this.roomCreateLimiter.cleanup();
+    this.failedJoinLimiter.cleanup();
     await this._scheduleLeaderSweep();
   }
 
@@ -467,7 +435,15 @@ export class RoomHubDO {
     }
 
     if (room.members.size === 0) {
-      this._scheduleEmptyDelete(code);
+      if (wasHost) {
+        // The room outlives its last member by the grace window, so it is very much still
+        // joinable. Leaving hostId pointing at somebody gone meant the first-arrival rule
+        // could never fire (a stale id is not null), and in a host-only room the first
+        // friend back could not play, pause or seek anything, with nothing to say why.
+        room.hostId = null;
+        room.hostClaimable = true;
+      }
+      this._markEmpty(code);
       return;
     }
 
@@ -515,30 +491,57 @@ export class RoomHubDO {
   }
 
   // -------- Empty-room grace --------
-  _scheduleEmptyDelete(code) {
+  //
+  // A timestamp swept by the alarm, not a setTimeout, for the same reason hostAbsentSince
+  // is one. A pending timer does not survive hibernation, and this object hibernates
+  // precisely when a room is empty and quiet, so the countdown was destroyed and then
+  // restarted from the full 30 minutes by whichever unrelated wake happened to reload the
+  // room. Worse, when the LAST room went empty nothing scheduled an alarm at all, so the
+  // object slept with no timer of any kind and the room was never deleted: it sat in
+  // storage counting against MAX_ROOMS until something else woke the object, up to its
+  // whole 12 hour or 30 day inactivity ceiling. Persisted, so the deadline is the same one
+  // on the other side of a sleep.
+  _markEmpty(code) {
     const room = this.rooms.get(code);
-    if (!room || room.members.size > 0) return;
-    if (room.emptyDeleteTimer) return;
-    const grace = room.persistent ? PERSISTENT_ROOM_EMPTY_GRACE_MS : EMPTY_ROOM_GRACE_MS;
-    room.emptyDeleteTimer = setTimeout(() => {
-      const r = this.rooms.get(code);
-      if (r && r.members.size === 0) {
-        this._releaseRoomSlot(r);
-        this.rooms.delete(code);
-        this._deleteRoomStorage(code);
-      }
-    }, grace);
-    // Workers has no unref; Node does, and a pending 30-minute timer there holds the event
-    // loop open forever, which is the difference between a test suite that finishes and one
-    // that hangs. Harmless where it does not exist.
-    if (typeof room.emptyDeleteTimer?.unref === "function") room.emptyDeleteTimer.unref();
+    if (!room || room.members.size > 0 || room.emptySince) return;
+    room.emptySince = Date.now();
+    this._persistRoom(code);
   }
-  _cancelEmptyDelete(code) {
+  _markOccupied(code) {
     const room = this.rooms.get(code);
-    if (room && room.emptyDeleteTimer) {
-      clearTimeout(room.emptyDeleteTimer);
-      room.emptyDeleteTimer = null;
+    if (room && room.emptySince) room.emptySince = null;
+  }
+
+  _sweepEmptyRooms() {
+    const now = Date.now();
+    for (const [code, room] of this.rooms) {
+      if (room.members.size > 0) {
+        if (room.emptySince) room.emptySince = null;
+        continue;
+      }
+      if (!room.emptySince) {
+        room.emptySince = now;
+        this._persistRoom(code);
+        continue;
+      }
+      const grace = room.persistent ? PERSISTENT_ROOM_EMPTY_GRACE_MS : EMPTY_ROOM_GRACE_MS;
+      if (now - room.emptySince < grace) continue;
+      this._releaseRoomSlot(room);
+      this.rooms.delete(code);
+      this._deleteRoomStorage(code);
     }
+  }
+
+  /** When the earliest empty room is due to go, or null if none is waiting. */
+  _nextEmptyDeadline() {
+    let soonest = null;
+    for (const room of this.rooms.values()) {
+      if (room.members.size > 0 || !room.emptySince) continue;
+      const grace = room.persistent ? PERSISTENT_ROOM_EMPTY_GRACE_MS : EMPTY_ROOM_GRACE_MS;
+      const due = room.emptySince + grace;
+      if (soonest === null || due < soonest) soonest = due;
+    }
+    return soonest;
   }
 
   // -------- HTTP fetch entry --------
@@ -663,6 +666,28 @@ export class RoomHubDO {
       return;
     }
 
+    // Anything from this member other than the three messages that are not evidence of
+    // watching proves they are out of their ad break. The Node twin has always done this
+    // and this relay never did, so the only paths that could clear the flag here were sync
+    // and heartbeat, both behind checks a guest in a host-only room can never pass.
+    //
+    // ad-state is edge triggered: a "my break ended" lost to a socket that was down at that
+    // moment left that member marked dark with no organic way back, and a room where every
+    // member is marked dark holds its clock still. The party sits watching a film that will
+    // not advance, and nothing anywhere reports an error.
+    //
+    // A ping is excluded on purpose. It says "we are still here", not "I am watching", and
+    // counting it would unfreeze the clock during the very break the freeze exists for.
+    if (P.provesWatching(msg.type) && meta.currentRoom) {
+      const adRoom = this.rooms.get(meta.currentRoom);
+      const self = adRoom && adRoom.members.get(meta.userId);
+      if (self && self.adActive) {
+        self.adActive = false;
+        this._setMeta(ws, { adActive: false, presence: P.PRESENCE_DEFAULT });
+        this._updateRoomAdFreeze(adRoom);
+      }
+    }
+
     switch (msg.type) {
       case "create-room": return this._handleCreate(ws, meta, msg);
       case "join-room": return this._handleJoin(ws, meta, msg);
@@ -738,6 +763,17 @@ export class RoomHubDO {
     const mode = msg.mode === "host" ? "host" : "everyone";
     const videoUrl = validateUrl(msg.videoUrl);
 
+    // The whole reason this exists. This call was simply absent, so on the primary relay
+    // neither budget was enforced on the path that actually makes rooms: one address could
+    // mint them as fast as the generic message limiter allowed, times ten sockets, and fill
+    // the global MAX_ROOMS ceiling for every real user everywhere in under a minute. Rooms
+    // then sit in Durable Object storage for their whole grace window, so it does not even
+    // undo itself. The Node twin has had this check the entire time.
+    if (!this._claimRoomSlot(meta.ip)) {
+      this._sendTo(ws, { type: "error", message: "You already have too many rooms open. Close one and try again." });
+      return;
+    }
+
     const room = {
       code,
       hostId: meta.userId,
@@ -748,7 +784,6 @@ export class RoomHubDO {
       playbackState: { playing: false, currentTime: 0, playbackRate: 1, lastUpdate: Date.now() },
       createdAt: Date.now(),
       lastActivity: Date.now(),
-      emptyDeleteTimer: null,
       ownerIp: meta.ip,
     };
     this.rooms.set(code, room);
@@ -800,41 +835,63 @@ export class RoomHubDO {
 
       const rebuildIsHost = await isValidHostToken(this.env.HOST_TOKEN_SECRET, code, msg.hostToken);
       const seed = msg.resumeState && typeof msg.resumeState === "object" ? msg.resumeState : {};
-      const seedTime = parseFloat(seed.currentTime);
-      const seedRate = parseFloat(seed.playbackRate);
 
-      room = {
-        code,
-        // Rebuilding is not the same as being the host. Anyone who knows the code can ask
-        // for a rebuild, and there is nothing left to check them against but a token this
-        // Worker itself issued. Without one, a stranger who waited for a party to go quiet
-        // could come back as its exclusive controller.
-        hostId: rebuildIsHost ? meta.userId : null,
-        mode: msg.mode === "host" ? "host" : "everyone",
-        persistent: CUSTOM_NAME_REGEX.test(code),
-        members: new Map(),
-        videoUrl: validateUrl(msg.videoUrl),
-        playbackState: {
-          playing: !!seed.playing,
-          // isFinite, not isNaN: parseFloat("Infinity") is a number, and handing that back
-          // to a real client would set video.currentTime = Infinity.
-          currentTime: !isFinite(seedTime) || seedTime < 0 ? 0 : seedTime,
-          playbackRate: !isFinite(seedRate) || seedRate < 0.1 || seedRate > 16 ? 1 : seedRate,
-          lastUpdate: Date.now(),
-        },
-        createdAt: Date.now(),
-        lastActivity: Date.now(),
-        emptyDeleteTimer: null,
-        ownerIp: meta.ip,
-      };
-      if (!this._claimRoomSlot(meta.ip)) {
-        this._sendTo(ws, { type: "error", message: "You already have too many rooms open. Close one and try again." });
-        return;
+      // That await is a yield point, and a Durable Object's input gate only holds events
+      // back across STORAGE operations, not across a Web Crypto call. Several members of
+      // one room auto-reconnecting after a cold start is the ordinary case, not a contrived
+      // one, and two of them could both find the room missing, both build one, and both
+      // publish it: the second replaced the first, and the first caller went on to add
+      // itself to an object nobody could ever look up again. It got a normal room-joined,
+      // then sat in the real room as a socket that could still inject sync, navigate and
+      // chat while appearing in no member list and no reap. Re-read here so the loser of
+      // that race joins the room that actually won.
+      const raced = this.rooms.get(code);
+      if (raced) {
+        room = raced;
+      } else {
+        room = {
+          code,
+          // Rebuilding is not the same as being the host. Anyone who knows the code can ask
+          // for a rebuild, and there is nothing left to check them against but a token this
+          // Worker itself issued. Without one, a stranger who waited for a party to go quiet
+          // could come back as its exclusive controller.
+          hostId: rebuildIsHost ? meta.userId : null,
+          // And whether the "an unsteered room goes to whoever arrives first" rule below is
+          // allowed to fire for it. It must not be: the rebuilder IS the first arrival,
+          // always, so that rule handed host to them anyway and made the token check above
+          // decorative. mode was worse still, taken straight from the rebuild request, so
+          // asking for mode:"host" without any token produced a room locked to a stranger.
+          hostClaimable: rebuildIsHost,
+          mode: rebuildIsHost ? P.normalizeRoomMode(msg.mode) : P.ROOM_MODE_DEFAULT,
+          persistent: CUSTOM_NAME_REGEX.test(code),
+          members: new Map(),
+          videoUrl: validateUrl(msg.videoUrl),
+          playbackState: {
+            playing: !!seed.playing,
+            currentTime: P.validPlaybackTime(seed.currentTime) ?? 0,
+            playbackRate: P.validPlaybackRate(seed.playbackRate) ?? 1,
+            lastUpdate: Date.now(),
+          },
+          createdAt: Date.now(),
+          lastActivity: Date.now(),
+          ownerIp: meta.ip,
+        };
+        if (!this._claimRoomSlot(meta.ip)) {
+          this._sendTo(ws, { type: "error", message: "You already have too many rooms open. Close one and try again." });
+          return;
+        }
+        this.rooms.set(code, room);
       }
-      this.rooms.set(code, room);
     }
 
     if (!room) {
+      // A miss is free to produce and its answer is informative, which together make an
+      // unbounded stream of them a search for somebody else's party. Only misses count, so
+      // no legitimate join is ever affected by how much anybody else is guessing.
+      if (!this.failedJoinLimiter.check(meta.ip || "anon")) {
+        this._sendTo(ws, { type: "error", message: "Rate limited - slow down" });
+        return;
+      }
       this._sendTo(ws, { type: "error", message: "Room not found" });
       return;
     }
@@ -843,7 +900,7 @@ export class RoomHubDO {
       return;
     }
     if (meta.currentRoom) await this._leaveCurrentRoom(ws, meta);
-    this._cancelEmptyDelete(code);
+    this._markOccupied(code);
 
     const userName = sanitize(msg.userName, MAX_USERNAME_LENGTH) || "User";
     // Same person, new connection: reloading the tab used to make the host a guest in
@@ -854,7 +911,12 @@ export class RoomHubDO {
       // They only reloaded. Call off the pending unlock.
       room.hostAbsentSince = null;
     }
-    if (room.hostId === null || room.hostId === undefined) room.hostId = meta.userId;
+    // A room whose host never came back has nobody steering; the first arrival takes it.
+    // Not a room rebuilt without a valid host token: see hostClaimable above.
+    if ((room.hostId === null || room.hostId === undefined) && room.hostClaimable !== false) {
+      room.hostId = meta.userId;
+      room.hostClaimable = true;
+    }
     room.members.set(meta.userId, { ws, userName, voiceActive: false, adActive: false });
     // A new arrival is watching the film, so a room that was entirely in ads is not.
     this._updateRoomAdFreeze(room);
@@ -912,13 +974,12 @@ export class RoomHubDO {
       this._sendTo(ws, { type: "error", message: "Only the host can control playback" });
       return;
     }
-    const ct = parseFloat(msg.currentTime);
-    const pr = parseFloat(msg.playbackRate) || 1;
-    // isFinite, not isNaN. parseFloat("Infinity") is a number and isNaN(Infinity) is false,
-    // so an isNaN guard relays it to every peer, where video.currentTime = Infinity breaks
-    // the player. The rebuild path below already knew this; the live path did not.
-    if (!isFinite(ct) || ct < 0) return;
-    if (!isFinite(pr) || pr < 0.1 || pr > 16) return;
+    // Both bounds at both ends, shared with the Node relay. Infinity was not the only
+    // value that survived the old guard: isFinite(1e308) is true and 1e308 is not negative,
+    // so it became the room's authoritative position and went out to every member.
+    const ct = P.validPlaybackTime(msg.currentTime);
+    const pr = P.validPlaybackRate(msg.playbackRate);
+    if (ct === null || pr === null) return;
 
     room.playbackState = { playing: !!msg.playing, currentTime: ct, playbackRate: pr, lastUpdate: Date.now() };
     // Somebody is demonstrably watching the film, so the clock is running.
@@ -955,10 +1016,17 @@ export class RoomHubDO {
     if (!room) return;
     if (this._heartbeatLeader(room) !== meta.userId) return;
 
-    const ct = parseFloat(msg.currentTime);
-    const pr = parseFloat(msg.playbackRate) || 1;
-    if (!isFinite(ct) || ct < 0) return;
-    if (!isFinite(pr) || pr < 0.1 || pr > 16) return;
+    // And in a host-only room, only from the host. The sync path has always checked this
+    // and the heartbeat path never did, which did not matter while the leader was almost
+    // always the host. It matters now that the leader role deliberately steps over anybody
+    // in an ad break: the host hits a routine advert, a guest inherits the role, and that
+    // guest's self-reported position starts driving the host's own video. That is exactly
+    // what host-only mode exists to prevent.
+    if (room.mode === "host" && room.hostId !== meta.userId) return;
+
+    const ct = P.validPlaybackTime(msg.currentTime);
+    const pr = P.validPlaybackRate(msg.playbackRate);
+    if (ct === null || pr === null) return;
 
     room.playbackState = { playing: !!msg.playing, currentTime: ct, playbackRate: pr, lastUpdate: Date.now() };
     const hbMember = room.members.get(meta.userId);
@@ -1064,9 +1132,19 @@ export class RoomHubDO {
   // they were about to watch. Hold the clock while the room is dark; restart it from where
   // it stopped when somebody comes back.
   _everyMemberInAd(room) {
-    if (room.members.size === 0) return false;
-    for (const m of room.members.values()) if (!m.adActive) return false;
-    return true;
+    // A socket that died without a close frame sits in the map until the next alarm reaps
+    // it, still carrying whatever it last reported. A ghost marked "watching" vetoes the
+    // freeze on behalf of somebody who is not there, and the room runs on through an ad
+    // break exactly as it did before any of this existed; a ghost marked "ad" freezes it
+    // for people who are watching. Neither is a vote it gets to cast. The Node twin filters
+    // these out and this one did not, alone among its own member scans.
+    let live = 0;
+    for (const m of room.members.values()) {
+      if (!m.ws || m.ws.readyState !== 1 /* WebSocket.OPEN */) continue;
+      live++;
+      if (!m.adActive) return false;
+    }
+    return live > 0;
   }
 
   _updateRoomAdFreeze(room) {
@@ -1092,15 +1170,15 @@ export class RoomHubDO {
     return st && st.frozenAt ? Date.now() : st.lastUpdate;
   }
 
+  // Both budgets a new room has to clear: how fast one address may mint them, and how many
+  // it may be holding at once. Rooms outlive the sockets that made them, so a rate limit on
+  // its own still lets them accumulate.
+  //
+  // Only ever called once a room is CERTAIN to exist. A slot is released when a room is
+  // deleted, so claiming it before a check that can still reject the room burns it forever.
   _claimRoomSlot(ip) {
     if (!ip || ip === "anon") return true;
-    const now = Date.now();
-    const hit = this.roomCreateHits.get(ip);
-    if (!hit || now > hit.resetAt) {
-      this.roomCreateHits.set(ip, { count: 1, resetAt: now + ROOM_CREATE_WINDOW_MS });
-    } else if (++hit.count > ROOM_CREATE_MAX) {
-      return false;
-    }
+    if (!this.roomCreateLimiter.check(ip)) return false;
     const live = this.liveRoomsPerIp.get(ip) || 0;
     if (live >= MAX_LIVE_ROOMS_PER_IP) return false;
     this.liveRoomsPerIp.set(ip, live + 1);
