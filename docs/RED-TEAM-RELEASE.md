@@ -8,9 +8,9 @@ claims, not independently verified current facts.
 
 ## Findings
 
-### P1: privacy promises contradict durable room storage, open
+### P1: privacy promises contradicted durable room storage, website corrected
 
-`site/privacy.html:33`, `:38`, and `:60` say URLs and IPs are never written to a
+At audit time, `site/privacy.html:33`, `:38`, and `:60` said URLs and IPs were never written to a
 database and both relays use memory only. `server-cf/src/worker.js` persists every
 room field except members and write-throttle bookkeeping in `_persistRoom`.
 Those fields include `videoUrl` and the creator's raw `ownerIp`. Socket
@@ -22,10 +22,12 @@ Deletion is not immediate on the last departure: shared defaults allow an empty
 ordinary room for 30 minutes and an empty named room for seven days. Idle limits
 are 12 hours and 30 days respectively. `store-listing.md` also promises that room
 data is deleted when everyone leaves and certification notes say nothing is
-stored. Those statements need correction before the next submission.
+stored. Those statements are now corrected in the repository; store dashboard
+updates remain a separate submission step.
 
-No existing accurate public string covers this behavior. Proposed replacement
-copy, for owner review before changing the shipped policy:
+Owner approved the following exact replacement on 2026-09-13. It is applied
+to the policy and repository listing. The policy is live and verified at
+`https://watch.arnavgoel.dev/privacy`; deployment/render evidence is in STATE:
 
 > The Cloudflare relay stores room metadata in Durable Object storage so rooms
 > can survive hibernation. This includes the room code, the attached page's URL,
@@ -148,7 +150,7 @@ Use content-versioned asset paths or a cache policy that revalidates them.
   Hosted CI runs 34714445272 and 34714686507 subsequently passed all nine
   browser tests. Root visually reviewed the final retained screenshots.
 
-Outstanding: public privacy/listing correction, Render dependency rollout
+Outstanding: store-dashboard listing update, Render dependency rollout
 verification, real provider/Firefox/Safari and actual hibernation qualification,
 the site gate gaps, cache policy and live store-state verification. Cloudflare
 repair is deployed; root report carries its version identity.

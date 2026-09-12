@@ -37,10 +37,11 @@ GREAT FOR
 - Premieres and live events
 
 PRIVACY
-- No data collection or tracking
+- No tracking
 - No account required
-- Room data is temporary and deleted when everyone leaves
 - Open source
+
+The Cloudflare relay stores room metadata in Durable Object storage so rooms can survive hibernation. This includes the room code, the attached page's URL, playback state, room settings, and the creator's IP address for rate limiting. Connection metadata includes each connected member's display name and IP address. Chat messages are relayed without a chat-history database. The Render fallback keeps room state in memory. Empty ordinary rooms are retained for up to 30 minutes; empty named rooms for up to seven days. Inactive ordinary rooms expire after 12 hours and inactive named rooms after 30 days. Cleanup runs on periodic sweeps, so these are retention targets rather than exact deletion timestamps.
 
 ## Search terms
 
@@ -74,7 +75,7 @@ To test:
 
 Supported sites are the ones named in the manifest. On any other site, click the toolbar icon and press "Enable on this site", accept the browser's own permission prompt, then reload the tab. Nothing beyond those sites plus loopback is requested at install.
 
-The relay is wss://watch-together-cf.goelhome.workers.dev, with a second relay as a fallback. Only playback position, room membership and chat messages cross it, and none of it is stored.
+The relay is wss://watch-together-cf.goelhome.workers.dev, with a second relay as a fallback. The Cloudflare relay stores room metadata in Durable Object storage so rooms can survive hibernation. This includes the room code, the attached page's URL, playback state, room settings, and the creator's IP address for rate limiting. Connection metadata includes each connected member's display name and IP address. Chat messages are relayed without a chat-history database. The Render fallback keeps room state in memory. Empty ordinary rooms are retained for up to 30 minutes; empty named rooms for up to seven days. Inactive ordinary rooms expire after 12 hours and inactive named rooms after 30 days. Cleanup runs on periodic sweeps, so these are retention targets rather than exact deletion timestamps.
 
 To see the expected behaviour without installing anything, https://watch.arnavgoel.dev runs two live players in one room on the page itself.
 ```
@@ -91,7 +92,7 @@ Watch Together keeps video playback in step for people watching the same video i
 
 ### storage
 
-Stores this viewer's own settings and current room on their own device, using chrome.storage.local: display name, current room code, chosen appearance, overlay hotkey, relay URL, the per-video sync offset, and whether the panel's sections were last left open. None of it is transmitted anywhere. Without it, every setting and the room the viewer is in would be lost on each page load.
+Stores this viewer's own settings and current room on their own device, using chrome.storage.local: display name, current room code, chosen appearance, overlay hotkey, relay URL, the per-video sync offset, and whether the panel's sections were last left open. Without it, every setting and the room the viewer is in would be lost on each page load.
 
 ### tabs
 
@@ -115,7 +116,9 @@ Personally identifiable information (the display name a viewer chooses), persona
 
 ### Data usage, deliberately NOT ticked
 
-Health, financial, authentication, location and website content. Location looks like it applies because the example text names IP address, but the relay only sees the connection address the way any server does, uses it solely to cap rooms per address, and logs a one way hash of it. Website content does not apply because the extension reads currentTime and paused, which is playback state and not content.
+Health, financial, authentication and website content. Website content does not apply because the extension reads currentTime and paused, which is playback state and not content.
+
+Before the next dashboard submission, reconcile the store's IP-address category against the approved policy: Cloudflare persists the creator's IP for rate limiting. The old justification for leaving location unticked is withdrawn. This is a submission checklist, not a claim that either dashboard has been updated.
 
 Whatever is ticked must keep matching `/privacy`, because the two are compared.
 

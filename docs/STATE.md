@@ -26,16 +26,23 @@ lifecycle handling, repairs relay ingress/capacity checks, and updates vulnerabl
 dependencies. Both public relay health endpoints answered `status: ok` today;
 that is availability evidence, not deployment identity.
 
-Privacy correction is **open**: the public policy says memory-only storage,
-while the Worker persists room URLs and creator IPs. Proposed exact copy is in
-`docs/RED-TEAM-RELEASE.md`; it requires owner approval under the no-new-shipped-copy
-rule. Real provider/DRM, Firefox/Safari, accessibility and same-URL invite races
-remain explicitly unqualified in the audit.
+Privacy correction was **approved on 2026-09-13**. The exact approved storage
+and retention disclosure is applied to the policy and repository store listing;
+contradictory claims are removed from the homepage and support page. Published
+and verified at `https://watch.arnavgoel.dev/privacy` on 2026-09-13. Vercel
+deployment `dpl_7x3E9YwMS4tVyA5XQYCLDA1cJsWa` serves pushed commit `55c2545`.
+Live normalized HTML matches the approved paragraph exactly; fresh homepage
+and support scrapes confirm the old claims are absent. The rendered policy
+was reviewed and retained at `docs/evidence/privacy-2026-09-13.png`. CI run
+34716207330 passed all five jobs. Store dashboard submissions remain separate.
+Real provider/DRM, Firefox/Safari, accessibility and same-URL invite races remain
+explicitly unqualified in the audit.
 
 ```owner-actions
 what: Approve accurate Watch Together storage and retention disclosure in docs/RED-TEAM-RELEASE.md.
 why: The live policy promises memory-only data while Cloudflare persists room URL and creator IP; the working charter requires approval for new shipped copy.
 raised: 2026-09-13
+done: 2026-09-13
 ```
 
 

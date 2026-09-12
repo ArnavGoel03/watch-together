@@ -137,3 +137,9 @@ is not evidence that a buffering client has loaded data. Any async membership
 check must revalidate capacity after yielding. Invalid invite encoding is a
 client error, never a thrown HTTP-handler exception. Do not trust policy claims
 about storage without tracing the deployed persistence layer.
+
+
+The storage/retention disclosure in the release audit was approved on 2026-09-13.
+`site/privacy.html` is canonical; the root privacy page redirects there. Keep
+homepage/support claims and `store-listing.md` consistent with its durable-storage
+and retention statements. Repository listing edits do not update store dashboards.

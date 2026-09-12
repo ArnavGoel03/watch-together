@@ -20,6 +20,8 @@ All notable changes to Watch Together are documented here.
 
 ### Changed
 
+- Privacy disclosure now describes Cloudflare room/IP persistence and retention;
+  removes memory-only and immediate-deletion claims. Approved 2026-09-13.
 - Relay settings remain in the extension popup; removed nonfunctional in-page settings.
 - Added runtime regression tests and CI screenshots. See `docs/RED-TEAM.md` for evidence,
   remaining privacy-policy corrections and real-browser coverage limits.
