@@ -1682,3 +1682,22 @@ test("watchdog: a leader that keeps beating keeps the job", async () => {
   await assertNoMessage(h.ws, "heartbeat-role", 100);
   closeAll(h, g);
 });
+
+test('HTTP: malformed encoded invites cannot terminate the relay', async () => {
+  const result = await fetch(`http://localhost:${PORT}/join/%ZZ`);
+  assert.equal(result.status, 404);
+  const health = await fetch(`http://localhost:${PORT}/health`);
+  assert.equal(health.status, 200);
+});
+
+test('HTTP: exhausted lookup budget also blocks existing-room disclosure', async () => {
+  const { ws, code } = await host();
+  try {
+    const headers = { 'X-Forwarded-For': '203.0.113.42' };
+    for (let i = 0; i < 30; i++) await fetch(`http://localhost:${PORT}/room/MISSING`, { headers });
+    for (const route of [`/room/${code}`, `/join/${code}`]) {
+      const response = await fetch(`http://localhost:${PORT}${route}`, { headers, redirect: 'manual' });
+      assert.equal(response.status, 429);
+    }
+  } finally { closeAll(ws); }
+});

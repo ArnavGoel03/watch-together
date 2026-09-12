@@ -190,11 +190,13 @@
     // harness to the PRODUCTION relay instead of the local one under test, where it quietly
     // passed for a while and then started failing against real rate limits.
     isValidServerUrl(raw) {
-      if (typeof raw !== "string") return false;
-      if (/^wss:\/\/[^\s]+$/i.test(raw)) return true;
-      if (!/^ws:\/\/[^\s]+$/i.test(raw)) return false;
+      if (typeof raw !== "string" || !/^wss?:\/\/[^\s]+$/i.test(raw)) return false;
       try {
-        const host = new URL(raw).hostname;
+        const url = new URL(raw);
+        // These parse as URLs but cannot be opened as browser WebSockets.
+        if (!url.hostname || url.username || url.password || url.hash || raw.includes("#")) return false;
+        if (url.protocol === "wss:") return true;
+        const host = url.hostname;
         return host === "localhost" || host === "127.0.0.1" || host === "[::1]" || host === "::1";
       } catch {
         return false;

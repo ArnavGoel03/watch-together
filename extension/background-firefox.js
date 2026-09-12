@@ -15,8 +15,8 @@ let userId = null;
 let isHeartbeatLeader = false;
 let reconnectTimer = null;
 let reconnectAttempts = 0;
-// True once the CURRENT socket actually opened.
-let everConnected = false;
+// Retire queued room actions when the viewer leaves or starts a newer request.
+let roomRequestGeneration = 0;
 const connectedPorts = new Map();
 let cachedMembers = []; // Latest known room members for serving popup re-opens
 let cachedMode = "everyone";
@@ -61,7 +61,7 @@ function notePlayback(msg) {
 
 // Restore state from storage (survives background page restarts).
 chrome.storage.local.get(
-  ["serverUrl", "movedServerUrl", "currentRoom", "userId", "partyTabId", "cachedPlayback", "cachedVideoUrl", "navSuppressUntil", "cachedMode", "cachedIsHost", "cachedMembers", "hostToken"],
+  ["serverUrl", "movedServerUrl", "currentRoom", "userId", "partyTabId", "cachedPlayback", "cachedVideoUrl", "navSuppressUntil", "cachedMode", "cachedIsHost", "cachedMembers", "hostToken", "isHeartbeatLeader"],
   /** @param {any} data */
   (data) => {
     relay.hydrate(data);
@@ -72,6 +72,7 @@ chrome.storage.local.get(
     if (typeof data.cachedIsHost === "boolean") cachedIsHost = data.cachedIsHost;
     if (Array.isArray(data.cachedMembers)) cachedMembers = data.cachedMembers;
     if (typeof data.hostToken === "string") hostToken = data.hostToken;
+    if (typeof data.isHeartbeatLeader === "boolean") isHeartbeatLeader = data.isHeartbeatLeader;
     if (data.currentRoom) {
       currentRoom = data.currentRoom;
       userId = data.userId;
@@ -93,7 +94,12 @@ function connect() {
     return;
   }
 
+  const isCurrent = () => ws === socket;
+  // Count failure against this relay only if this particular socket never opened.
+  let everConnected = false;
+
   ws.onopen = () => {
+    if (!isCurrent()) return;
     reconnectAttempts = 0;
     relay.onConnected();
     everConnected = true;
@@ -103,7 +109,9 @@ function connect() {
     // server restarted and dropped the room: we rebuild it from where we last were,
     // rather than stranding a live watch party on "Room not found".
     if (currentRoom) {
+      const generation = roomRequestGeneration;
       chrome.storage.local.get(["userName"], /** @param {any} data */ (data) => {
+        if (!isCurrent() || generation !== roomRequestGeneration || !currentRoom) return;
         sendToServer({
           type: "join-room",
           roomCode: currentRoom,
@@ -122,12 +130,15 @@ function connect() {
   };
 
   ws.onmessage = (event) => {
+    if (!isCurrent()) return;
     let msg;
     try {
       msg = JSON.parse(event.data);
     } catch {
       return;
     }
+
+    if (!msg || typeof msg !== "object") return;
 
     switch (msg.type) {
       case "room-created":
@@ -156,6 +167,7 @@ function connect() {
 
       case "heartbeat-role":
         isHeartbeatLeader = msg.isLeader;
+        saveState();
         sendToParty({ type: "heartbeat-role", isLeader: msg.isLeader });
         break;
 
@@ -183,11 +195,13 @@ function connect() {
 
       case "mode-changed":
         cachedMode = msg.mode;
+        saveState();
         sendToParty(msg);
         break;
 
       case "host-transferred":
         cachedIsHost = !!msg.isHost;
+        saveState();
         sendToParty(msg);
         break;
 
@@ -222,6 +236,8 @@ function connect() {
       case "cc-state":
       case "ad-state":
       case "error":
+      case "presence":
+      case "call-url":
       case "chat-typing":
       case "voice-state":
       case "voice-signal":
@@ -347,6 +363,48 @@ function resolvePartyTab(port, msg, cb) {
   });
 }
 
+// MV2 has no chrome.scripting API. Optional grants still need registration for future
+// visits and immediate injection into the tab where the viewer granted permission.
+const firefox = /** @type {any} */ (globalThis).browser;
+let grantedScripts = null;
+let grantedScriptsUpdate = Promise.resolve();
+function syncGrantedSiteScripts() {
+  grantedScriptsUpdate = grantedScriptsUpdate.then(async () => {
+    const granted = await firefox.permissions.getAll();
+    const matches = granted.origins || [];
+    if (grantedScripts) {
+      await grantedScripts.unregister();
+      grantedScripts = null;
+    }
+    if (!matches.length) return;
+    grantedScripts = await firefox.contentScripts.register({
+      matches,
+      js: self.__wtConfig.INJECT_FILES.map((file) => ({ file })),
+      runAt: "document_idle",
+    });
+  }).catch((err) => {
+    console.log("[WatchTogether] Could not sync granted-site scripts:", err && err.message);
+  });
+  return grantedScriptsUpdate;
+}
+
+async function injectIntoTab(tabId) {
+  try {
+    for (const file of self.__wtConfig.INJECT_FILES) {
+      await firefox.tabs.executeScript(tabId, { file });
+    }
+    return true;
+  } catch (err) {
+    console.log("[WatchTogether] Could not inject into tab:", err && err.message);
+    return false;
+  }
+}
+
+chrome.permissions.onAdded.addListener(syncGrantedSiteScripts);
+chrome.permissions.onRemoved.addListener(syncGrantedSiteScripts);
+chrome.runtime.onInstalled.addListener(syncGrantedSiteScripts);
+chrome.runtime.onStartup.addListener(syncGrantedSiteScripts);
+
 function saveState() {
   chrome.storage.local.set({
     currentRoom,
@@ -357,6 +415,7 @@ function saveState() {
     cachedIsHost,
     cachedMembers,
     hostToken,
+    isHeartbeatLeader,
   });
 }
 
@@ -395,6 +454,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 
 chrome.runtime.onConnect.addListener((port) => {
   const tabId = port.sender?.tab?.id;
+  if (port.name === "popup") syncGrantedSiteScripts();
   const portKey = typeof tabId === "number" ? `${tabId}:${port.name}` : port.name;
   connectedPorts.set(portKey, port);
 
@@ -417,9 +477,10 @@ chrome.runtime.onConnect.addListener((port) => {
   }
 
   port.onMessage.addListener((msg) => {
+    if (!msg || typeof msg !== "object") return;
     // Playback traffic is only trusted from the tab the party is bound to. Otherwise
     // any other video the user has open can drive everyone else's playback.
-    const PLAYBACK_TYPES = ["sync", "heartbeat", "navigate", "cc-state", "ad-state", "presence"];
+    const PLAYBACK_TYPES = ["sync", "heartbeat", "navigate", "cc-state", "ad-state", "presence", "ping"];
     if (PLAYBACK_TYPES.includes(msg.type) && !isPartyTabPort(port)) return;
 
     switch (msg.type) {
@@ -427,9 +488,11 @@ chrome.runtime.onConnect.addListener((port) => {
         connect();
         break;
 
-      case "create-room":
+      case "create-room": {
+        const generation = ++roomRequestGeneration;
         cachedVideoUrl = msg.videoUrl || "";
         resolvePartyTab(port, msg, (resolved) => {
+          if (generation !== roomRequestGeneration) return;
           partyTabId = resolved;
           saveState();
           connect();
@@ -447,10 +510,11 @@ chrome.runtime.onConnect.addListener((port) => {
           });
         });
         break;
+      }
 
       case "join-room": {
-        const roomCode = msg.roomCode?.toUpperCase();
-        if (!roomCode) break;
+        if (!self.__wtConfig.isJoinableCode(msg.roomCode)) break;
+        const roomCode = msg.roomCode.toUpperCase();
 
         // A content script asking to join while the party is already bound to another tab
         // is never what the user meant: it is a leftover auto-join hint firing in some
@@ -461,7 +525,9 @@ chrome.runtime.onConnect.addListener((port) => {
           break;
         }
 
+        const generation = ++roomRequestGeneration;
         resolvePartyTab(port, msg, (resolved) => {
+          if (generation !== roomRequestGeneration) return;
           partyTabId = resolved;
           saveState();
           connect();
@@ -473,6 +539,7 @@ chrome.runtime.onConnect.addListener((port) => {
       }
 
       case "leave-room":
+        roomRequestGeneration++;
         sendToServer({ type: "leave-room" });
         // Tell the party tab before we forget which tab that was, or its overlay sits
         // there claiming to be in a room nobody is in.
@@ -519,6 +586,7 @@ chrome.runtime.onConnect.addListener((port) => {
         }
         break;
 
+      case "ping":
       case "chat-typing":
       case "cc-state":
       case "ad-state":
@@ -534,17 +602,23 @@ chrome.runtime.onConnect.addListener((port) => {
         sendToServer(msg);
         break;
 
-      case "set-server-url":
+      case "set-server-url": {
+        // Only allow from popup (not content scripts)
         if (port.name !== "popup") break;
-        if (!self.__wtConfig.isValidServerUrl(msg.url)) {
+        // An empty value means "go back to the default", which is the only way out if
+        // someone pastes a relay that does not work.
+        const wanted = typeof msg.url === "string" ? msg.url.trim() : "";
+        if (wanted && !self.__wtConfig.isValidServerUrl(wanted)) {
+          // Room codes, chat and the address of everything you watch cross this socket.
           postTo("popup", { type: "error", message: "Server URL must start with wss://" });
           break;
         }
-        relay.setOverride(msg.url);
-        chrome.storage.local.set({ serverUrl: msg.url });
+        relay.setOverride(wanted || null);
+        chrome.storage.local.set({ serverUrl: wanted || null });
         if (ws) ws.close();
         connect();
         break;
+      }
 
       // The party tab was closed but the room is still alive. Bind the party to the
       // tab the user is on now and pull the current playback state into it.
@@ -584,6 +658,16 @@ chrome.runtime.onConnect.addListener((port) => {
         });
         break;
 
+      case "site-granted":
+        if (port.name !== "popup") break;
+        syncGrantedSiteScripts();
+        if (typeof msg.tabId === "number") {
+          injectIntoTab(msg.tabId).then((ok) => {
+            postTo("popup", { type: "site-granted-result", ok, tabId: msg.tabId });
+          });
+        }
+        break;
+
       case "get-state":
         port.postMessage({
           type: "state",
@@ -610,14 +694,15 @@ chrome.runtime.onConnect.addListener((port) => {
   });
 });
 
-function waitForConnection(callback, retries = 60) {
+function waitForConnection(callback, retries = 60, generation = roomRequestGeneration) {
+  if (generation !== roomRequestGeneration) return;
   if (ws && ws.readyState === WebSocket.OPEN) {
     callback();
   } else if (retries > 0) {
     if (!ws || ws.readyState === WebSocket.CLOSED) {
       connect();
     }
-    setTimeout(() => waitForConnection(callback, retries - 1), 1000);
+    setTimeout(() => waitForConnection(callback, retries - 1, generation), 1000);
   } else {
     sendToParty({ type: "error", message: "Could not connect to server. Try again." });
   }

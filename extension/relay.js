@@ -43,11 +43,13 @@
 
     /** The full ordered list of relays worth trying, deduplicated. */
     candidates() {
+      // A private relay is a privacy boundary. Falling back to a public relay would
+      // replay its room code, playback URL and host credential without consent.
+      if (cfg.isValidServerUrl(this.override)) return [this.override];
       const list = [];
-      if (cfg.isValidServerUrl(this.override)) list.push(this.override);
       if (cfg.isValidServerUrl(this.moved)) list.push(this.moved);
       for (const url of cfg.SERVER_URLS) if (cfg.isValidServerUrl(url)) list.push(url);
-      // A user override that happens to equal a built-in must not be tried twice.
+      // A migration URL that equals a built-in must not be tried twice.
       return [...new Set(list)];
     }
 
@@ -83,6 +85,7 @@
      * its own address back at us.
      */
     acceptMove(url) {
+      if (cfg.isValidServerUrl(this.override)) return false;
       if (!cfg.isValidServerUrl(url)) return false;
       if (url === this.moved) return false;
       if (url === this.current()) return false;

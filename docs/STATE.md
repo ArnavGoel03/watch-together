@@ -3,7 +3,41 @@
 Read this before doing anything else. It exists so nobody has to re-derive where things
 stand by reading 8,000 lines of source and a year of git log.
 
-Last updated: 2026-08-23, at the end of the v1.2.1 release and the first store submission.
+Last updated: 2026-09-13. The dated audit section below supersedes historical
+release and test counts elsewhere in this document.
+
+## Red-team repair, 2026-09-13
+
+Source and packages are now **1.2.4**. GitHub delivery: PR 1.
+The audit and remaining risks are in `docs/RED-TEAM.md`, with separate extension
+and release/privacy detail. Local static gates, Node and Worker tests pass;
+all package audits are clean. Hosted CI runs 34714445272 and 34714686507 passed all five jobs: 202 Node,
+64 server, 35 Worker, nine browser tests and one real Worker integration (311).
+The popup and overlay screenshots from the latter run were visually reviewed
+and retained in `docs/evidence/red-team-2026-09-13/`. Cloudflare is live at Worker version
+`ba47c113-21a3-41ab-acb8-0077237bbd24` from pushed commit `fc3da47`.
+Render deployment identity remains unverified because its CLI token is expired. Local Chrome failed to launch before nine browser tests ran, so
+the browser and visual evidence comes from hosted CI, not the local session. Store versions and user counts below
+were last recorded in August and have not been reverified.
+
+The repair centralizes playback policy across all adapters, restores keepalive
+routing, pins explicit private relays, hardens invite consent and background
+lifecycle handling, repairs relay ingress/capacity checks, and updates vulnerable
+dependencies. Both public relay health endpoints answered `status: ok` today;
+that is availability evidence, not deployment identity.
+
+Privacy correction is **open**: the public policy says memory-only storage,
+while the Worker persists room URLs and creator IPs. Proposed exact copy is in
+`docs/RED-TEAM-RELEASE.md`; it requires owner approval under the no-new-shipped-copy
+rule. Real provider/DRM, Firefox/Safari, accessibility and same-URL invite races
+remain explicitly unqualified in the audit.
+
+```owner-actions
+what: Approve accurate Watch Together storage and retention disclosure in docs/RED-TEAM-RELEASE.md.
+why: The live policy promises memory-only data while Cloudflare persists room URL and creator IP; the working charter requires approval for new shipped copy.
+raised: 2026-09-13
+```
+
 
 ## What it is
 
@@ -611,7 +645,7 @@ to protect.
 The ordered plan, with what each item is blocked on, is `docs/ROADMAP.md`. What follows
 is the same set of facts as reference.
 
-0. **Upload 1.2.1 over the pending 1.2.0 submission.** The zip is built and verified and
+0. **Historical upload instruction, superseded by the 2026-09-13 section.** The zip is built and verified and
    sits in `~/Desktop/Watch Together store assets/0 - Upload this package first/`. Upload
    it BEFORE touching the Privacy tab, because those fields are generated from whichever
    package is currently uploaded.

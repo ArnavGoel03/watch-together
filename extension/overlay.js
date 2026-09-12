@@ -472,7 +472,7 @@
     });
 
     chrome.storage.local.get(
-      ["wtMembersOpen", "wtAdvancedOpen", "syncOffsets", "overlayHotkey", "serverUrl"],
+      ["wtMembersOpen", "wtAdvancedOpen", "syncOffsets", "overlayHotkey"],
       /** @param {any} d */ (d) => {
         if (d.wtMembersOpen) {
           membersList.removeAttribute("hidden");
@@ -489,10 +489,7 @@
         if (offsetInput) offsetInput.value = String(syncOffset);
         const hotkeyInput = overlayPanel.querySelector("#wt-hotkey");
         if (hotkeyInput) hotkeyInput.value = describeHotkey(d.overlayHotkey || overlayHotkey);
-        const serverInput = overlayPanel.querySelector("#wt-server");
-        if (serverInput) serverInput.value = d.serverUrl || "";
-        const serverHint = overlayPanel.querySelector("#wt-server .wt-adv-hint");
-        if (serverHint) serverHint.textContent = "";
+
       }
     );
 
@@ -500,7 +497,6 @@
     wireVolumeControls();
     wireOffsetControls();
     wireHotkeyCapture();
-    wireServerControls();
     wireModeControl();
     wireWaitControl();
     // Paint the host-only controls correctly on the FIRST render, not just when a
@@ -599,7 +595,7 @@
 
   function applyVolume(value, { remember = true } = {}) {
     const v = Math.max(0, Math.min(1, value));
-    const video = document.querySelector("video");
+    const video = window.__wtCore?.getVideo();
     if (video) video.volume = v;
     const slider = overlayPanel?.querySelector("#wt-volume");
     const label = overlayPanel?.querySelector("#wt-volume-label");
@@ -623,7 +619,7 @@
     duck.addEventListener("click", (e) => {
       e.stopPropagation();
       if (restoreTo === null) {
-        const video = document.querySelector("video");
+        const video = window.__wtCore?.getVideo();
         restoreTo = video ? video.volume : 1;
         duck.textContent = "Restore";
         applyVolume(DUCK_LEVEL, { remember: false });
@@ -749,26 +745,6 @@
       overlayHotkey = key;
       input.value = describeHotkey(key);
       chrome.storage.local.set({ overlayHotkey: key });
-    });
-  }
-
-  function wireServerControls() {
-    const input = overlayPanel.querySelector("#wt-server");
-    overlayPanel.querySelector("#wt-server-save").addEventListener("click", (e) => {
-      e.stopPropagation();
-      const url = input.value.trim();
-      if (url && !window.__wtConfig.isValidServerUrl(url)) {
-        addSystemMsg("A server address has to start with wss://");
-        return;
-      }
-      safePost({ type: "set-server-url", url });
-      addSystemMsg(url ? "Connecting to that server" : "Back to the default server");
-    });
-    overlayPanel.querySelector("#wt-server-reset").addEventListener("click", (e) => {
-      e.stopPropagation();
-      input.value = "";
-      safePost({ type: "set-server-url", url: "" });
-      addSystemMsg("Back to the default server");
     });
   }
 
@@ -1033,23 +1009,24 @@
               </div>
             </section>
 
-            <section class="wt-group">
-              <h4 class="wt-group-title">Connection</h4>
-              <div class="wt-adv-field">
-                <input type="text" id="wt-server" class="wt-input" placeholder="wss://..." spellcheck="false">
-                <div class="wt-actions">
-                  <button class="wt-btn-small" id="wt-server-save">Save</button>
-                  <button class="wt-btn-small" id="wt-server-reset">Use default</button>
-                </div>
-                <span class="wt-adv-hint">Only change this if you are running your own sync server.</span>
-              </div>
-            </section>
 
           </div>
         </details>
         <button class="wt-btn-leave" id="wt-leave">Leave</button>
       </div>
     `;
+
+    // The host page shares this DOM. Synthetic input must not create rooms, join an
+    // invite or change settings; guard controls themselves if the page reparents them.
+    for (const target of [overlayPanel, ...overlayPanel.querySelectorAll("button, input, select, textarea")]) {
+      for (const type of ["click", "change", "input", "keydown", "keyup"]) {
+        target.addEventListener(type, (event) => {
+          if (event.isTrusted) return;
+          event.preventDefault();
+          event.stopImmediatePropagation();
+        }, true);
+      }
+    }
 
     document.body.appendChild(overlayPanel);
     trackFullscreenHost();
@@ -1136,7 +1113,7 @@
     overlayPanel.querySelector("#wt-pip").addEventListener("click", async (e) => {
       e.stopPropagation();
       try {
-        const v = document.querySelector("video");
+        const v = window.__wtCore?.getVideo();
         if (!v) { addSystemMsg("No video found on this page"); return; }
         if (document.pictureInPictureElement) {
           await document.exitPictureInPicture();
@@ -1798,7 +1775,7 @@
 
     // Fallback: float the button over the video
     btn.classList.add("wt-floating");
-    const video = document.querySelector("video");
+    const video = window.__wtCore?.getVideo();
     if (video) {
       const container = video.closest("[class*='player']") || video.parentElement;
       if (container) {

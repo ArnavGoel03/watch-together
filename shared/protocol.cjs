@@ -71,6 +71,11 @@ function provesWatching(type) {
   return typeof type === "string" && !NOT_PROOF_OF_WATCHING.includes(type);
 }
 
+/** Invalid percent encoding is an invalid invite, never a server exception. */
+function decodeRoomCode(value) {
+  try { return decodeURIComponent(value).toUpperCase(); } catch { return ""; }
+}
+
 // ---- Room state enums ----
 
 // What a member can be doing. "buffering" is not an ad break: it does not stop the room's
@@ -366,6 +371,7 @@ class WindowedLimiter {
 }
 
 module.exports = {
+  decodeRoomCode,
   MESSAGE_TYPES,
   CLIENT_MESSAGE_TYPES,
   NOT_PROOF_OF_WATCHING,

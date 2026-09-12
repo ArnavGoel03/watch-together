@@ -607,3 +607,48 @@ test("host: the last member out of a locked room does not leave it locked to a g
   const joined = friend.sent.find((m) => m.type === "room-joined");
   assert.equal(joined.isHost, true, "the first friend back can drive the film");
 });
+
+test("join: an exhausted address gets the same refusal for existing and missing rooms", async () => {
+  const { hub, ws } = await hubWithSocket();
+  await hub.webSocketMessage(ws, JSON.stringify({ type: "create-room", userName: "Host" }));
+  const code = ws.sent.find(m => m.type === "room-created").roomCode;
+  const ip = "203.0.113.42";
+  for (let i = 0; i < 30; i++) hub.failedJoinLimiter.check(ip);
+  const guest = fakeSocket({ userId: "limited", currentRoom: null, ip });
+  await hub.webSocketMessage(guest, JSON.stringify({ type: "join-room", roomCode: code }));
+  assert.equal(guest.sent.at(-1).message, "Rate limited - slow down");
+  for (const path of [`/room/${code}`, `/join/${code}`, '/room/MISSING']) {
+    const result = await hub.fetch(new Request(`https://relay.example${path}`, { headers: { "cf-connecting-ip": ip } }));
+    assert.equal(result.status, 429);
+  }
+});
+
+test("join: concurrent token checks cannot exceed room membership capacity", async () => {
+  const { hub, state, ws } = await hubWithSocket();
+  await hub.webSocketMessage(ws, JSON.stringify({ type: "create-room", userName: "Host" }));
+  const created = ws.sent.find(m => m.type === "room-created");
+  const room = hub.rooms.get(created.roomCode);
+  for (let i = 1; i < 49; i++) room.members.set(`existing${i}`, { ws, userName: 'Existing' });
+  const guests = ['a', 'b'].map(userId => fakeSocket({ userId, currentRoom: null, ip: userId }));
+  state.sockets.push(...guests);
+  await Promise.all(guests.map(guest => hub.webSocketMessage(guest, JSON.stringify({
+    type: 'join-room', roomCode: created.roomCode, hostToken: '0'.repeat(64),
+  }))));
+  assert.equal(room.members.size, 50);
+  assert.equal(guests.flatMap(guest => guest.sent).filter(m => m.type === 'room-joined').length, 1);
+});
+
+test("hibernation: the per-address room census survives a wake", async () => {
+  const { hub, state, ws } = await hubWithSocket();
+  await hub.webSocketMessage(ws, JSON.stringify({ type: 'create-room', userName: 'Host' }));
+  const room = [...hub.rooms.values()][0];
+  const woken = new RoomHubDO(makeState(state._store), { HOST_TOKEN_SECRET: SECRET });
+  await woken.bootPromise;
+  assert.equal(woken.liveRoomsPerIp.get(room.ownerIp), 1);
+});
+
+test("HTTP: malformed encoded invites return a client error", async () => {
+  const { hub } = await hubWithSocket();
+  const result = await hub.fetch(new Request('https://relay.example/join/%ZZ'));
+  assert.equal(result.status, 404);
+});

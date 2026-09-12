@@ -626,7 +626,7 @@ const server = http.createServer((req, res) => {
     // room exist" at whatever rate an attacker can ask, which is the enumeration the
     // socket-side limiter was built to stop, reachable over plain HTTP and, because of
     // the wildcard CORS header above, from any page in anybody's browser.
-    if (!room && !rateLimitHttp(req)) {
+    if (!rateLimitHttp(req)) {
       res.writeHead(429, headers);
       res.end(JSON.stringify({ error: "Rate limited - slow down" }));
       return;
@@ -639,7 +639,7 @@ const server = http.createServer((req, res) => {
   // Shareable join link: /join/CODE or /join/CODE?url=ENCODED_URL
   if (req.url.startsWith("/join/")) {
     const urlParts = (req.url.split("/join/")[1] || "").split("?");
-    const rawCode = decodeURIComponent(urlParts[0] || "").toUpperCase();
+    const rawCode = P.decodeRoomCode(urlParts[0] || "");
     // Anything that is not a code we could have issued is not a code. Without this the
     // path segment reaches an HTML attribute below, and escapeHtml is the wrong tool
     // there: it turns ' into &#39;, which the HTML parser decodes back to ' before the
@@ -651,7 +651,7 @@ const server = http.createServer((req, res) => {
       return;
     }
     const room = rooms.get(code);
-    if (!room && !rateLimitHttp(req)) {
+    if (!rateLimitHttp(req)) {
       res.writeHead(429, { "Content-Type": "text/plain", "X-Frame-Options": "DENY" });
       res.end("Rate limited - slow down");
       return;
@@ -927,6 +927,10 @@ wss.on("connection", (ws, req) => {
       }
 
       case "join-room": {
+        if (!isLoopback(clientIp) && !failedJoinLimiter.check(clientIp)) {
+          sendTo(ws, { type: "error", message: "Rate limited - slow down" });
+          return;
+        }
         const code = typeof msg.roomCode === "string" ? msg.roomCode.toUpperCase().trim() : "";
         let room = rooms.get(code);
 
@@ -997,14 +1001,6 @@ wss.on("connection", (ws, req) => {
         }
 
         if (!room) {
-          // A wrong code is cheap to send and the answer says whether that room is real, so
-          // an unbounded stream of them is a search of the code space for somebody else's
-          // party. Counted per address, and only ever on a MISS, so no legitimate join is
-          // ever affected by how often anybody else is guessing.
-          if (!isLoopback(clientIp) && !failedJoinLimiter.check(clientIp)) {
-            sendTo(ws, { type: "error", message: "Rate limited - slow down" });
-            return;
-          }
           sendTo(ws, { type: "error", message: "Room not found" });
           return;
         }

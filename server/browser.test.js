@@ -302,6 +302,11 @@ describe("Browser integration", () => {
     expect(await popup.$("#userName")).not.toBeNull();
     expect(await popup.$("#btnCreate")).not.toBeNull();
     expect(await popup.$("#btnJoin")).not.toBeNull();
+    if (process.env.WT_SCREENSHOTS_DIR) {
+      fs.mkdirSync(process.env.WT_SCREENSHOTS_DIR, { recursive: true });
+      await popup.evaluate(() => Promise.all(document.getAnimations().map(a => a.finished.catch(() => {}))));
+      await popup.screenshot({ path: path.join(process.env.WT_SCREENSHOTS_DIR, "popup.png") });
+    }
   }, 40000);
 
   it("the content script attaches to the page and injects its overlay", async () => {
@@ -375,10 +380,9 @@ describe("Browser integration", () => {
     await hostPage.waitForSelector("#wt-overlay-btn", { timeout: 15000 });
     await hostPage.evaluate(() => document.getElementById("wt-overlay-btn").click());
     await hostPage.waitForSelector("#wt-members-toggle", { timeout: 10000 });
-    await hostPage.evaluate(() => {
-      const list = document.getElementById("wt-members");
-      if (list.hasAttribute("hidden")) document.getElementById("wt-members-toggle").click();
-    });
+    if (await hostPage.$eval("#wt-members", list => list.hasAttribute("hidden"))) {
+      await hostPage.click("#wt-members-toggle");
+    }
 
     const listed = await waitUntil(async () => {
       const names = await hostPage.evaluate(() =>
@@ -392,6 +396,10 @@ describe("Browser integration", () => {
     expect(listed, `member list showed ${JSON.stringify(names)}`).toBe(true);
     // You are always first, and always marked, so the row you care about is findable.
     expect(names[0]).toMatch(/\(you\)/);
+    if (process.env.WT_SCREENSHOTS_DIR) {
+      await hostPage.evaluate(() => Promise.all(document.getAnimations().map(a => a.finished.catch(() => {}))));
+      await hostPage.screenshot({ path: path.join(process.env.WT_SCREENSHOTS_DIR, "overlay.png") });
+    }
   }, 120000);
 
   // Everything past the three things most people need lives behind one disclosure, and it
@@ -422,7 +430,6 @@ describe("Browser integration", () => {
           controlMode: inside("#wt-mode-seg"),
           offset: inside("#wt-offset"),
           hotkey: inside("#wt-hotkey"),
-          server: inside("#wt-server"),
         },
       };
     });
@@ -522,10 +529,9 @@ describe("Ad recognition", () => {
     await guestPage.waitForSelector("#wt-overlay-btn", { timeout: 15000 });
     await guestPage.evaluate(() => document.getElementById("wt-overlay-btn").click());
     await guestPage.waitForSelector("#wt-members-toggle", { timeout: 10000 });
-    await guestPage.evaluate(() => {
-      const list = document.getElementById("wt-members");
-      if (list.hasAttribute("hidden")) document.getElementById("wt-members-toggle").click();
-    });
+    if (await guestPage.$eval("#wt-members", list => list.hasAttribute("hidden"))) {
+      await guestPage.click("#wt-members-toggle");
+    }
 
     const statesSeen = () =>
       guestPage.evaluate(() =>
