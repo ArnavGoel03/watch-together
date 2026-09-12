@@ -180,7 +180,10 @@
   // Attach event listeners to the video
   function attachVideoListeners(video) {
     if (!video || video === activeVideo) return;
-    if (activeVideo) detachVideoListeners(activeVideo);
+    if (activeVideo) {
+      cancelRateNudge(activeVideo);
+      detachVideoListeners(activeVideo);
+    }
     const isNewElement = video !== lastAttachedElement;
     activeVideo = video;
     lastAttachedElement = video;
@@ -210,13 +213,18 @@
 
     // If we have a pending playback state, apply it now
     if (pendingPlaybackState) {
-      applySync(pendingPlaybackState);
+      const pending = pendingPlaybackState;
       pendingPlaybackState = null;
+      applySync(pending);
     }
   }
 
   function detachVideoListeners(video) {
     if (!video) return;
+    if (metadataWaiter) {
+      video.removeEventListener("loadedmetadata", metadataWaiter);
+      metadataWaiter = null;
+    }
     const events = ["play", "pause", "seeked", "ratechange"];
     events.forEach((event) => {
       video.removeEventListener(event, onVideoEvent);
@@ -234,6 +242,9 @@
   let bufferTimer = null;
 
   function onBufferEvent(e) {
+    // A server pause while waiting for this viewer does not prove their data loaded.
+    // Only the player becoming ready may end that wait.
+    if (e.type === "pause" && isBuffering && lastApplied?.playing === false) return;
     const stalling = e.type === "waiting" || e.type === "stalled";
     if (stalling) {
       if (isBuffering || bufferTimer) return;
@@ -554,7 +565,7 @@
   }
 
   function onVideoEvent(e) {
-    if (!inRoom || isAdPlaying()) return;
+    if (!inRoom || e.target !== activeVideo || isAdPlaying()) return;
 
     // Skip events triggered by fullscreen transitions (player often remounts the video,
     // firing play/seeked at currentTime=0 which would yank everyone else to the start)
@@ -599,8 +610,8 @@
       action,
       playing: !video.paused,
       // Live streams: don't propagate currentTime - DVR offsets differ per viewer.
-      currentTime: live ? 0 : ct,
-      playbackRate: video.playbackRate,
+      currentTime: live ? 0 : Math.max(0, ct - syncOffset),
+      playbackRate: activeRateNudge ? activeRateNudge.normalRate : video.playbackRate,
       isLive: live,
     });
   }
@@ -614,7 +625,7 @@
         if (msg.type === "join-room" && msg.roomCode) {
           // consented: the user already asked to join this one, we are only retrying.
           chrome.storage.local.set({
-            pendingJoin: { roomCode: msg.roomCode, timestamp: Date.now(), consented: true },
+            pendingJoin: { roomCode: msg.roomCode, url: location.href, timestamp: Date.now(), consented: true },
           });
         }
         connectToBackground();
@@ -645,10 +656,12 @@
     }
     activeRateNudge = { normalRate, restoreTimer: null };
 
+    if (lastApplied) lastApplied.rate = targetRate;
     try { video.playbackRate = targetRate; } catch {}
 
     activeRateNudge.restoreTimer = setTimeout(() => {
       if (video && Math.abs(video.playbackRate - targetRate) < 0.05) {
+        if (lastApplied) { lastApplied.rate = normalRate; lastApplied.at = Date.now(); }
         try { video.playbackRate = normalRate; } catch {}
       }
       activeRateNudge = null;
@@ -763,14 +776,18 @@
       }
     }
 
+    if (!live) {
+      targetTime = Math.max(0, targetTime);
+      if (Number.isFinite(video.duration)) targetTime = Math.min(targetTime, video.duration);
+    }
+
     // Remember what we are about to write so the events it provokes can be told apart from
     // a viewer doing something of their own in the same moment.
     lastApplied = { currentTime: targetTime, playing: !!msg.playing, rate: normalRate, at: Date.now() };
 
-    if (adapter && adapter.applyState) {
-      // Adapter handles its own seeking; pass adjusted state
-      adapter.applyState(video, { ...msg, currentTime: targetTime });
-    } else {
+    // Every adapter uses this policy. Site-specific copies bypassed live-stream,
+    // drift, offset and autoplay safeguards even on the generic player.
+    {
       if (live) {
         // Live: never seek. Just sync play/pause/rate.
         if (normalRate && Math.abs(video.playbackRate - normalRate) > 0.01) {
@@ -938,8 +955,9 @@
       type: "heartbeat",
       playing: !video.paused,
       // Translated out of this copy's timeline and into the room's.
-      currentTime: video.currentTime - syncOffset,
-      playbackRate: video.playbackRate,
+      currentTime: isLiveStream(video) ? 0 : Math.max(0, video.currentTime - syncOffset),
+      isLive: isLiveStream(video),
+      playbackRate: activeRateNudge ? activeRateNudge.normalRate : video.playbackRate,
     });
 
     // Ease off only while the room is demonstrably in sync. Any real drift resets this.
@@ -1119,6 +1137,15 @@
           currentRoom = null;
           stopHeartbeat();
           stopKeepalive();
+          cancelRateNudge(activeVideo);
+          pendingPlaybackState = null;
+          if (metadataWaiter && activeVideo) activeVideo.removeEventListener("loadedmetadata", metadataWaiter);
+          metadataWaiter = null;
+          if (pendingNavigateTimer) clearTimeout(pendingNavigateTimer);
+          pendingNavigateTimer = null;
+          divergencePending = false;
+          dismissActionCard(DIVERGENCE_CARD_ID);
+          clearGesturePrompt();
           showNotification(msg.reason === "moved" ? "The party moved to another tab" : "Left the room");
           break;
 
@@ -1191,7 +1218,11 @@
     const no = document.createElement("button");
     no.textContent = opts.secondaryLabel || "Not now";
     no.style.cssText = "all:initial;display:inline-block;font-family:inherit;cursor:pointer;background:rgba(255,255,255,0.1);color:rgba(244,244,245,0.75);font-size:13px;font-weight:500;padding:9px 14px;border-radius:8px;";
-    go.addEventListener("click", () => { dismissActionCard(id); onAction(); });
+    go.addEventListener("click", (event) => {
+      if (!event.isTrusted) return;
+      dismissActionCard(id);
+      onAction();
+    });
     no.addEventListener("click", () => {
       dismissActionCard(id);
       if (opts.onSecondary) opts.onSecondary();
@@ -1226,7 +1257,8 @@
         const v = activeVideo || findVideo();
         if (v) v.play().catch(() => {});
         requestResync();
-      }
+      },
+      { onSecondary: () => { awaitingGesture = false; } }
     );
   }
 
@@ -1299,6 +1331,7 @@
     // Reset state - fresh video, fresh broadcast guard
     lastBroadcastTime = 0;
     cancelRateNudge(activeVideo);
+    if (activeVideo) detachVideoListeners(activeVideo);
     activeVideo = null;
     pendingPlaybackState = null;
     console.log("[WatchTogether] URL changed:", oldUrl, "→", location.href);
@@ -1351,7 +1384,7 @@
     if (currentRoom) {
       // consented: we are already in this room, this is the room moving, not an invite.
       chrome.storage.local.set({
-        pendingJoin: { roomCode: currentRoom, timestamp: Date.now(), consented: true },
+        pendingJoin: { roomCode: currentRoom, url: target, timestamp: Date.now(), consented: true },
       });
     }
     // A newer navigate supersedes an older one, so only ever hold one pending redirect.
@@ -1391,29 +1424,29 @@
 
   observer.observe(document.body, { childList: true, subtree: true });
 
-  // --- Auto-join via chrome.storage.local (bulletproof) ---
-  // auto-join-extract.js writes { pendingJoin: { roomCode, timestamp } } to chrome.storage
-  // We read it here, join the room, then clear it.
+  // A join hint belongs to its destination. Every permitted tab observes storage
+  // changes, so bystanders must neither consume the invite nor inherit its consent.
 
   function checkPendingJoin() {
     chrome.storage.local.get(["pendingJoin", "userName"], /** @param {any} data */ (data) => {
       if (!data.pendingJoin) return;
 
-      const { roomCode, timestamp } = data.pendingJoin;
+      const { roomCode, timestamp, url } = data.pendingJoin;
 
-      // Clear the hint first, unconditionally. It is a one-shot: consumed or not, it must
-      // not outlive this check. A hint left behind because we were already in the room is
-      // live bait for the next tab the user opens (the content script runs everywhere),
-      // and that tab would yank the party binding away from the actual video.
+      if (!window.__wtConfig.isSafeNavigateUrl(url)) return;
+      if (normalizeUrl(url) !== normalizeUrl(location.href)) return;
       chrome.storage.local.remove("pendingJoin");
 
       if (inRoom) return;
-      if (Date.now() - timestamp > 120000) return; // stale, older than 2 minutes
+      if (typeof timestamp !== "number" || !Number.isFinite(timestamp)) return;
+      const age = Date.now() - timestamp;
+      if (age < 0 || age > 120000) return;
       if (!window.__wtConfig || !window.__wtConfig.isJoinableCode(roomCode)) return;
 
       const name = data.userName || "User";
 
       const join = () => {
+        if (normalizeUrl(url) !== normalizeUrl(location.href)) return;
         showNotification(`Joining room ${roomCode}...`);
         sendMsg({ type: "join-room", roomCode, userName: name });
         // Timeout fallback
@@ -1468,6 +1501,7 @@
   window.__wtCore = {
     resync: requestResync,
     isInRoom: () => inRoom,
+    getVideo: () => activeVideo || findVideo(),
     // The overlay owns the offset control; the sync core owns applying it.
     setOffset: (seconds) => {
       const n = Number(seconds);

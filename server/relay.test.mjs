@@ -33,6 +33,212 @@ function loadExtensionGlobals() {
 
 const { __wtConfig: config, __wtRelay: relayModule } = loadExtensionGlobals();
 
+function loadBackground(file) {
+  const sockets = [];
+  const timers = [];
+  const storage = {};
+  const registrations = [];
+  const injections = [];
+  let origins = [];
+  const listener = () => ({ addListener(fn) { this.fn = fn; } });
+  const chrome = {
+    storage: { local: {
+      get(_keys, cb) { cb({ ...storage }); },
+      set(data) { Object.assign(storage, data); },
+    } },
+    runtime: { onConnect: listener(), onStartup: listener(), onInstalled: listener() },
+    tabs: { onRemoved: listener(), query(_query, cb) { cb([]); } },
+    permissions: { onAdded: listener(), onRemoved: listener(), async getAll() { return { origins }; } },
+    scripting: { async getRegisteredContentScripts() { return []; } },
+  };
+  class Socket {
+    static CONNECTING = 0;
+    static OPEN = 1;
+    static CLOSED = 3;
+    constructor(url) { this.url = url; this.readyState = 0; this.sent = []; sockets.push(this); }
+    open() { this.readyState = 1; this.onopen(); }
+    message(msg) { this.onmessage({ data: JSON.stringify(msg) }); }
+    send(raw) { this.sent.push(JSON.parse(raw)); }
+    close() { this.readyState = 2; }
+    finishClose() { this.readyState = 3; this.onclose({ code: 1006 }); }
+  }
+  const scope = {};
+  const context = vm.createContext({
+    self: scope, window: scope, chrome, WebSocket: Socket, URL, URLSearchParams,
+    browser: {
+      permissions: chrome.permissions,
+      contentScripts: { async register(script) {
+        registrations.push(script);
+        return { async unregister() { registrations.splice(registrations.indexOf(script), 1); } };
+      } },
+      tabs: { async executeScript(tabId, details) { injections.push({ tabId, ...details }); } },
+    },
+    console: { log() {}, error() {} },
+    setTimeout(fn) { timers.push(fn); return timers.length; }, clearTimeout() {},
+  });
+  const run = (name) => vm.runInContext(readFileSync(join(extensionDir, name), "utf8"), context, { filename: name });
+  context.importScripts = (...files) => files.forEach(run);
+  run("config.js");
+  run("relay.js");
+  run(file);
+  function port(name, tabId) {
+    const messages = [];
+    const p = { name, sender: tabId === undefined ? {} : { tab: { id: tabId } },
+      onMessage: listener(), onDisconnect: listener(), postMessage(msg) { messages.push(msg); } };
+    chrome.runtime.onConnect.fn(p);
+    return { messages, send(msg) { p.onMessage.fn(msg); } };
+  }
+  const content = port("content", 1);
+  const popup = port("popup");
+  popup.send({ type: "connect" });
+  sockets[0].open();
+  popup.send({ type: "create-room", tabId: 1, videoUrl: "https://video.example/film" });
+  sockets[0].message({ type: "room-created", roomCode: "ABCDEF", userId: "host", hostToken: "proof", mode: "everyone" });
+  return { sockets, timers, storage, content, popup, port, registrations, injections,
+    grant(sites) { origins = sites; return chrome.permissions.onAdded.fn(); } };
+}
+
+for (const file of ["background.js", "background-firefox.js"]) {
+  test(`${file}: forwards only the party tab's keepalive`, () => {
+    const bg = loadBackground(file);
+    const socket = bg.sockets[0];
+    bg.content.send({ type: "ping" });
+    assert.equal(socket.sent.at(-1).type, "ping");
+    const before = socket.sent.length;
+    bg.port("content", 2).send({ type: "ping" });
+    assert.equal(socket.sent.length, before);
+  });
+
+  test(`${file}: forwards presence and pinned call updates`, () => {
+    const bg = loadBackground(file);
+    for (const type of ["presence", "call-url"]) {
+      bg.sockets[0].message({ type, userId: "guest", callUrl: "https://meet.google.com/abc" });
+      assert.equal(bg.content.messages.at(-1).type, type);
+    }
+  });
+
+  test(`${file}: a retired socket cannot change the current room`, () => {
+    const bg = loadBackground(file);
+    bg.popup.send({ type: "set-server-url", url: "wss://private.example" });
+    bg.sockets[1].open();
+    const before = bg.content.messages.length;
+    bg.sockets[0].open();
+    bg.sockets[0].message({ type: "room-created", roomCode: "STALE1", userId: "old" });
+    assert.equal(bg.content.messages.length, before);
+    assert.equal(bg.storage.currentRoom, "ABCDEF");
+    bg.sockets[0].finishClose();
+    bg.content.send({ type: "sync", currentTime: 10, playing: true });
+    assert.equal(bg.sockets[1].sent.at(-1).type, "sync");
+  });
+
+  test(`${file}: clearing an override reconnects to the default`, () => {
+    const bg = loadBackground(file);
+    bg.popup.send({ type: "set-server-url", url: "wss://private.example" });
+    bg.sockets[1].open();
+    bg.popup.send({ type: "set-server-url", url: "" });
+    assert.equal(bg.sockets.length, 3);
+    assert.equal(bg.sockets[2].url, config.SERVER_URL);
+    assert.equal(bg.storage.serverUrl, null);
+  });
+
+  test(`${file}: changed room authority survives background restarts`, () => {
+    const bg = loadBackground(file);
+    bg.sockets[0].message({ type: "mode-changed", mode: "host" });
+    bg.sockets[0].message({ type: "host-transferred", isHost: false });
+    bg.sockets[0].message({ type: "heartbeat-role", isLeader: true });
+    assert.equal(bg.storage.cachedMode, "host");
+    assert.equal(bg.storage.cachedIsHost, false);
+    assert.equal(bg.storage.isHeartbeatLeader, true);
+  });
+
+  test(`${file}: a relay's non-object packet is ignored`, () => {
+    const bg = loadBackground(file);
+    assert.doesNotThrow(() => bg.sockets[0].message(null));
+    assert.doesNotThrow(() => bg.content.send({ type: "join-room", roomCode: 12 }));
+  });
+
+  test(`${file}: leaving cancels a join queued while disconnected`, () => {
+    const bg = loadBackground(file);
+    bg.sockets[0].finishClose();
+    bg.popup.send({ type: "join-room", roomCode: "NEW123", tabId: 1 });
+    bg.popup.send({ type: "leave-room" });
+    const socket = bg.sockets.at(-1);
+    socket.open();
+    for (const timer of bg.timers.splice(0)) timer();
+    assert.equal(socket.sent.some((msg) => msg.type === "join-room"), false);
+  });
+}
+
+test("Firefox: optional access registers future visits and injects the current tab", async () => {
+  const bg = loadBackground("background-firefox.js");
+  await bg.grant(["https://video.example/*"]);
+  assert.equal(bg.registrations.length, 1);
+  assert.deepEqual(Array.from(bg.registrations[0].matches), ["https://video.example/*"]);
+  bg.popup.send({ type: "site-granted", tabId: 2 });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(bg.injections.map((i) => i.file), Array.from(config.INJECT_FILES));
+  assert.ok(bg.injections.every((i) => i.tabId === 2));
+  assert.equal(bg.popup.messages.at(-1).ok, true);
+  await bg.grant([]);
+  assert.equal(bg.registrations.length, 0);
+});
+
+test("join hints: only the destination consumes consent and malformed time expires", () => {
+  const content = readFileSync(join(extensionDir, "content.js"), "utf8");
+  const normalizer = content.slice(content.indexOf("  function normalizeUrl("), content.indexOf("  function requestResync("));
+  const check = content.slice(content.indexOf("  function checkPendingJoin("), content.indexOf("  // A backgrounded tab"));
+  const now = Date.now();
+  for (const [destination, timestamp, consumes, joins] of [
+    ["https://video.example/film", now, true, true],
+    ["https://video.example/other", now, false, false],
+    ["https://different.example/film", now, false, false],
+    ["https://video.example/film", undefined, true, false],
+    ["https://video.example/film", now + 60000, true, false],
+    ["https://video.example/film", now - 121000, true, false],
+  ]) {
+    let removed = false;
+    const sent = [];
+    const context = vm.createContext({
+      URL, Date, location: { href: "https://video.example/film" },
+      window: { __wtConfig: config }, inRoom: false,
+      chrome: { storage: { local: {
+        get(_keys, cb) { cb({ pendingJoin: { roomCode: "ABCDEF", url: destination + "?wt_room=ABCDEF", timestamp, consented: true } }); },
+        remove() { removed = true; },
+      } } },
+      sendMsg(msg) { sent.push(msg); }, showNotification() {}, setTimeout() {},
+      showActionCard() { assert.fail("a consented hint needs no new prompt"); },
+    });
+    vm.runInContext(normalizer + check + "checkPendingJoin();", context);
+    assert.equal(removed, consumes, destination);
+    assert.equal(sent.some((msg) => msg.type === "join-room"), joins, destination);
+  }
+});
+
+test("join consent: a page-script click cannot approve an invite", () => {
+  const source = readFileSync(join(extensionDir, "content.js"), "utf8");
+  const action = source.slice(source.indexOf("  function showActionCard("), source.indexOf("  function dismissActionCard("));
+  const elements = [];
+  let approved = false;
+  const context = vm.createContext({
+    document: {
+      body: { appendChild() {} },
+      createElement(tag) {
+        const node = { tag, style: {}, appendChild() {}, addEventListener(_type, fn) { this.click = fn; } };
+        elements.push(node);
+        return node;
+      },
+    },
+    dismissActionCard() {},
+    approve() { approved = true; },
+  });
+  vm.runInContext(action + 'showActionCard("wt-join-consent", "Join", "Invite", "Join", approve);', context);
+  const button = elements.find((el) => el.tag === "button");
+  button.click({ isTrusted: false });
+  assert.equal(approved, false);
+  button.click({ isTrusted: true });
+  assert.equal(approved, true);
+});
+
 // ---------- config: the shared safety rules ----------
 
 test("config: a navigate target must be an ordinary web page", () => {
@@ -72,6 +278,10 @@ test("config: a relay must be wss, never plaintext", () => {
   assert.equal(config.isValidServerUrl("https://relay.example.com"), false);
   assert.equal(config.isValidServerUrl(""), false);
   assert.equal(config.isValidServerUrl(undefined), false);
+  for (const bad of ["wss://[", "wss://example.com:99999", "wss://example.com/#", "wss://example.com/#fragment", "wss://user:secret@example.com"]) {
+    assert.equal(config.isValidServerUrl(bad), false, bad);
+  }
+  assert.equal(config.isValidServerUrl("ws://localhost:3000"), true);
 });
 
 test("config: the server URL is defined in exactly one place", () => {
@@ -173,11 +383,11 @@ test("relay: connecting clears the failure count", () => {
 test("relay: candidates are deduplicated", () => {
   const relay = new RelayPicker();
   const before = relay.candidates().length;
-  relay.setOverride(config.SERVER_URLS[0]);
+  relay.hydrate({ movedServerUrl: config.SERVER_URLS[0] });
   assert.equal(
     relay.candidates().length,
     before,
-    "an override equal to a built-in is the same backend, not an extra one"
+    "a moved URL equal to a built-in is the same backend, not an extra one"
   );
   assert.equal(new Set(relay.candidates()).size, relay.candidates().length, "no duplicates at all");
 });
@@ -186,11 +396,22 @@ test("relay: what we learned last session is restored", () => {
   const relay = new RelayPicker();
   relay.hydrate({ serverUrl: "wss://chosen.example", movedServerUrl: "wss://moved.example" });
   assert.equal(relay.current(), "wss://chosen.example");
+  assert.equal(relay.candidates().length, 1);
+  relay.setOverride(null);
   assert.equal(relay.candidates().includes("wss://moved.example"), true);
   // Junk in storage must not poison the picker.
   const other = new RelayPicker();
   other.hydrate({ serverUrl: "ws://bad", movedServerUrl: 42 });
   assert.equal(other.current(), config.SERVER_URLS[0]);
+});
+
+test("relay: a private override never fails over or migrates to a public relay", () => {
+  const relay = new RelayPicker();
+  relay.setOverride("wss://private.example");
+  for (let i = 0; i < 8; i++) relay.onFailure();
+  assert.equal(relay.current(), "wss://private.example");
+  assert.equal(relay.acceptMove("wss://other.example"), false);
+  assert.equal(relay.current(), "wss://private.example");
 });
 
 

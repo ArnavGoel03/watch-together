@@ -73,13 +73,20 @@ function build(target) {
   // because a missing content script is not an error at install time: the extension loads
   // and quietly does nothing.
   const manifest = JSON.parse(readFileSync(join(work, "manifest.json"), "utf8"));
+  const actions = [manifest.action, manifest.browser_action, manifest.page_action].filter(Boolean);
   const required = [
-    ...(manifest.content_scripts ?? []).flatMap((cs) => cs.js ?? []),
+    ...(manifest.content_scripts ?? []).flatMap((cs) => [...(cs.js ?? []), ...(cs.css ?? [])]),
     ...(manifest.background?.scripts ?? []),
     ...(manifest.background?.service_worker ? [manifest.background.service_worker] : []),
     ...Object.values(manifest.icons ?? {}),
+    ...actions.flatMap((action) => [
+      ...(action.default_popup ? [action.default_popup] : []),
+      ...(typeof action.default_icon === "string" ? [action.default_icon] : Object.values(action.default_icon ?? {})),
+    ]),
+    ...[manifest.background?.page, manifest.options_page, manifest.options_ui?.page, manifest.devtools_page].filter(Boolean),
+    ...Object.values(manifest.chrome_url_overrides ?? {}),
   ];
-  const missing = required.filter((f) => !existsSync(join(work, f)));
+  const missing = required.filter((f) => !existsSync(join(work, f)) || !statSync(join(work, f)).isFile());
   if (missing.length) {
     throw new Error(`${target}: manifest references files that are not in the package: ${missing.join(", ")}`);
   }

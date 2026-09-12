@@ -69,7 +69,9 @@ jobs:
           node-version: "22"
           cache: npm
       - run: npm ci --prefix server-cf
+      - run: npm ci --prefix server
       - run: npm --prefix server-cf test
+      - run: npm --prefix server-cf run test:integration
 
   browser:
     name: Two-browser sync harness
@@ -87,6 +89,14 @@ jobs:
         run: npx --prefix server puppeteer browsers install chrome
       - name: Real two-profile sync test
         run: npm --prefix server run test:browser
+        env:
+          WT_SCREENSHOTS_DIR: ${{ runner.temp }}/watch-together-shots
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: browser-screenshots
+          path: ${{ runner.temp }}/watch-together-shots
+          if-no-files-found: warn
 
   package:
     name: Store package builds and is clean

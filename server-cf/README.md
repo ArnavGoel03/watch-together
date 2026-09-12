@@ -5,7 +5,8 @@ Both backends can run side by side; the extension picks one per session.
 
 ## Why this exists
 
-- **Lower latency**: runs in 300+ Cloudflare edge cities, not one Render region.
+- **Edge ingress**: requests enter Cloudflare, then route to one shared Durable Object.
+  Room processing is centralized, so global low latency is not guaranteed.
 - **No cold-start sleep**: Render free tier sleeps after 15 minutes idle. Workers don't.
 - **Cheaper at scale**: `$5/mo` Workers Paid plan covers up to 10M Durable Object requests, which is roughly 10× what 100 daily users will generate.
 
@@ -30,16 +31,14 @@ npx wrangler dev --port 8787
 # then point the extension at ws://localhost:8787
 ```
 
-## Run the existing test suite against this backend
+## Verify the Worker
 
-The Node test suite in `../server/server.e2e.test.mjs` is protocol-level: it works against either backend. Start `wrangler dev` in one terminal, then in another:
-
-```bash
-cd server-cf
-PORT=8787 node --test ../server/server.e2e.test.mjs
-```
-
-If anything fails it usually means a protocol drift between the two implementations.
+From the repository root, install dependencies in `server/` and `server-cf/`,
+then run `npm --prefix server-cf test` for unit coverage and
+`npm --prefix server-cf run test:integration` for the real local runtime smoke.
+The smoke creates two local WebSockets, checks room creation/join/playback and
+malformed invite handling, then terminates its runtime and removes temporary
+storage. It does not prove production hibernation behavior.
 
 ## How the extension picks which backend
 

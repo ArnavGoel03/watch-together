@@ -5,7 +5,7 @@
     const params = new URLSearchParams(window.location.search);
     const code = params.get("wt_room");
     if (code) {
-      // Store in chrome.storage - 100% reliable, no race conditions
+      // Content scripts only consume this hint at the destination URL.
       chrome.storage.local.set({
         pendingJoin: {
           roomCode: code.toUpperCase(),
@@ -16,7 +16,7 @@
       // Clean URL
       const url = new URL(window.location.href);
       url.searchParams.delete("wt_room");
-      window.history.replaceState({}, "", url.toString());
+      window.history.replaceState(window.history.state, "", url.toString());
     }
   } catch {}
 })();

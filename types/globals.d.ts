@@ -14,7 +14,6 @@ interface WatchTogetherAdapter {
   /** Which site this adapter is for. Diagnostic only. */
   name?: string;
   findVideo?(): HTMLVideoElement | null;
-  applyState?(video: HTMLVideoElement, state: Record<string, any>): void;
 }
 
 interface WatchTogetherConfig {
@@ -121,6 +120,7 @@ interface WatchTogetherRelayModule {
 interface WatchTogetherCore {
   resync(): void;
   isInRoom(): boolean;
+  getVideo(): HTMLVideoElement | null;
   /** Seconds behind (+) or ahead (-), or null when the reading is too old to trust. */
   getDrift(): number | null;
   /** Seconds this viewer's copy runs ahead of the room's timeline. */

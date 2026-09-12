@@ -190,6 +190,11 @@ export class RoomHubDO {
         lastHeartbeatAt: typeof value.lastHeartbeatAt === "number" ? value.lastHeartbeatAt : Date.now(),
       });
     }
+    for (const room of this.rooms.values()) {
+      if (room.ownerIp && !room.slotReleased) {
+        this.liveRoomsPerIp.set(room.ownerIp, (this.liveRoomsPerIp.get(room.ownerIp) || 0) + 1);
+      }
+    }
     // Re-attach surviving websockets to their rooms (after a hibernation wake)
     for (const ws of this.state.getWebSockets()) {
       const meta = this._meta(ws);
@@ -583,7 +588,7 @@ export class RoomHubDO {
       // room exist" as fast as anybody can ask, which is the enumeration the socket-side
       // limiter exists to stop, over plain HTTP and, thanks to the wildcard CORS header,
       // from any page in any visitor's browser.
-      if (!room && !this.failedJoinLimiter.check(this._requestIp(request))) {
+      if (!this.failedJoinLimiter.check(this._requestIp(request))) {
         return new Response(JSON.stringify({ error: "Rate limited - slow down" }), {
           status: 429,
           headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
@@ -596,7 +601,7 @@ export class RoomHubDO {
 
     if (url.pathname.startsWith("/join/")) {
       const parts = url.pathname.slice("/join/".length).split("?");
-      const rawCode = decodeURIComponent(parts[0] || "").toUpperCase();
+      const rawCode = P.decodeRoomCode(parts[0] || "");
       // Anything that is not a code we could have issued is not a code. Without this the
       // path segment reaches the page below, and escapeHtml is the wrong tool for the JS
       // attribute it used to land in: an HTML attribute decodes &#39; back to a real
@@ -609,7 +614,7 @@ export class RoomHubDO {
         );
       }
       const room = this.rooms.get(code);
-      if (!room && !this.failedJoinLimiter.check(this._requestIp(request))) {
+      if (!this.failedJoinLimiter.check(this._requestIp(request))) {
         return new Response("Rate limited - slow down", {
           status: 429,
           headers: { "Content-Type": "text/plain", "X-Frame-Options": "DENY" },
@@ -866,6 +871,10 @@ export class RoomHubDO {
   }
 
   async _handleJoin(ws, meta, msg) {
+    if (!this.failedJoinLimiter.check(meta.ip || "anon")) {
+      this._sendTo(ws, { type: "error", message: "Rate limited - slow down" });
+      return;
+    }
     const code = typeof msg.roomCode === "string" ? msg.roomCode.toUpperCase().trim() : "";
     let room = this.rooms.get(code);
 
@@ -907,6 +916,10 @@ export class RoomHubDO {
       if (raced) {
         room = raced;
       } else {
+        if (this.rooms.size >= MAX_ROOMS) {
+          this._sendTo(ws, { type: "error", message: "Server is at capacity. Try again later." });
+          return;
+        }
         room = {
           code,
           // Rebuilding is not the same as being the host. Anyone who knows the code can ask
@@ -943,13 +956,6 @@ export class RoomHubDO {
     }
 
     if (!room) {
-      // A miss is free to produce and its answer is informative, which together make an
-      // unbounded stream of them a search for somebody else's party. Only misses count, so
-      // no legitimate join is ever affected by how much anybody else is guessing.
-      if (!this.failedJoinLimiter.check(meta.ip || "anon")) {
-        this._sendTo(ws, { type: "error", message: "Rate limited - slow down" });
-        return;
-      }
       this._sendTo(ws, { type: "error", message: "Room not found" });
       return;
     }
@@ -964,6 +970,13 @@ export class RoomHubDO {
     // Same person, new connection: reloading the tab used to make the host a guest in
     // their own party, because every reconnect gets a fresh user id.
     const reclaimsHost = await isValidHostToken(this.env.HOST_TOKEN_SECRET, code, msg.hostToken);
+    // Crypto and leaving the previous room yield. Recheck immediately before publishing
+    // membership, with no await between the capacity check and members.set.
+    if (this.rooms.get(code) !== room || ws.readyState !== 1) return;
+    if (room.members.size >= MAX_ROOM_MEMBERS) {
+      this._sendTo(ws, { type: "error", message: `Room is full (max ${MAX_ROOM_MEMBERS})` });
+      return;
+    }
     if (reclaimsHost) {
       room.hostId = meta.userId;
       // They only reloaded. Call off the pending unlock.

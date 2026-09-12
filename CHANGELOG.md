@@ -2,6 +2,28 @@
 
 All notable changes to Watch Together are documented here.
 
+## [1.2.4] - 2026-09-13
+
+### Fixed
+
+- Route all video adapters through shared live-stream, drift, rate and autoplay handling.
+- Translate local timeline offsets on outgoing playback actions and clamp seek targets.
+- Cancel deferred navigation/playback when leaving, preserve sync through metadata loading,
+  and keep buffering presence until the player actually becomes ready.
+- Forward room keepalives in both browsers; restore Firefox presence, call links,
+  optional-site injection and authoritative state persistence.
+- Keep explicit relay overrides private instead of falling back to public relays.
+- Bind invite hints to their destination and reject programmatic consent/control clicks.
+- Reject malformed invite paths without an exception, enforce lookup budgets on hits,
+  and preserve Worker room/member limits through hibernation and concurrent joins.
+- Update vulnerable runtime and development dependencies; verify popup and CSS packaging.
+
+### Changed
+
+- Relay settings remain in the extension popup; removed nonfunctional in-page settings.
+- Added runtime regression tests and CI screenshots. See `docs/RED-TEAM.md` for evidence,
+  remaining privacy-policy corrections and real-browser coverage limits.
+
 ## [1.2.3] - 2026-08-23
 
 Preparing Safari found four bugs that were never Safari's fault. Three of them are live in

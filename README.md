@@ -312,3 +312,13 @@ Works on any site with an HTML5 `<video>` element. Site-specific adapters for:
 ## License
 
 MIT
+
+
+## Red-team verification
+
+The 2026-09-13 audit, repairs and remaining release blockers are recorded in
+`docs/RED-TEAM.md` and `docs/STATE.md`. Development tests require Node 22.12 or
+newer. `npm test` includes actual content/background runtime regressions;
+`npm run test:browser` separately drives two Chrome profiles. Explicit custom
+relays never fall back to a public relay. All adapters select a video while the
+shared content core owns playback policy. Relay settings are in the popup.

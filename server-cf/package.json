@@ -3,14 +3,15 @@
   "version": "1.0.0",
   "description": "Cloudflare Workers + Durable Objects port of the Watch Together server",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "wrangler dev --port 8787",
     "deploy": "wrangler deploy",
     "tail": "wrangler tail",
     "test": "node --test worker.test.mjs",
-    "test:integration": "echo 'Run: npm run dev (in one shell), then point the extension at ws://localhost:8787' && exit 0"
+    "test:integration": "node --test integration.test.mjs"
   },
   "devDependencies": {
-    "wrangler": "^3.99.0"
+    "wrangler": "^4.131.1"
   }
 }

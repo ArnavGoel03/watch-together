@@ -14,6 +14,8 @@ let userId = null;
 let isHeartbeatLeader = false;
 let reconnectTimer = null;
 let reconnectAttempts = 0;
+// Retire queued room actions when the viewer leaves or starts a newer request.
+let roomRequestGeneration = 0;
 const connectedPorts = new Map(); // "tabId:portName" -> port
 let cachedMembers = []; // Latest known room members for serving popup re-opens
 let cachedMode = "everyone";
@@ -40,10 +42,6 @@ let cachedVideoUrl = "";
 // must not announce a move of its own. It outlives the page load, and the MV3 worker, on
 // purpose: the whole point is to still be true once the new content script wakes up.
 let navSuppressUntil = 0;
-
-// True once the CURRENT socket has actually opened. A close before that means the relay
-// itself is not answering, which is a different problem from a network blip.
-let everConnected = false;
 
 let lastPlaybackPersist = 0;
 function notePlayback(msg) {
@@ -109,6 +107,8 @@ function connect() {
   // and healthy, reports the party offline, and reconnects a THIRD socket. Two sockets
   // then relay the same room, so every chat line and every join notice arrives twice.
   const isCurrent = () => ws === socket;
+  // Count failure against this relay only if this particular socket never opened.
+  let everConnected = false;
 
   ws.onopen = () => {
     if (!isCurrent()) return;
@@ -122,7 +122,9 @@ function connect() {
     // server restarted and dropped the room: we rebuild it from where we last were,
     // rather than stranding a live watch party on "Room not found".
     if (currentRoom) {
+      const generation = roomRequestGeneration;
       chrome.storage.local.get(["userName"], /** @param {any} data */ (data) => {
+        if (!isCurrent() || generation !== roomRequestGeneration || !currentRoom) return;
         sendToServer({
           type: "join-room",
           roomCode: currentRoom,
@@ -148,6 +150,8 @@ function connect() {
     } catch {
       return;
     }
+
+    if (!msg || typeof msg !== "object") return;
 
     switch (msg.type) {
       case "room-created":
@@ -188,16 +192,19 @@ function connect() {
 
       case "mode-changed":
         cachedMode = msg.mode;
+        saveState();
         sendToParty(msg);
         break;
 
       case "host-transferred":
         cachedIsHost = !!msg.isHost;
+        saveState();
         sendToParty(msg);
         break;
 
       case "heartbeat-role":
         isHeartbeatLeader = msg.isLeader;
+        saveState();
         sendToParty({
           type: "heartbeat-role",
           isLeader: msg.isLeader,
@@ -526,9 +533,10 @@ chrome.runtime.onConnect.addListener((port) => {
   }
 
   port.onMessage.addListener((msg) => {
+    if (!msg || typeof msg !== "object") return;
     // Playback traffic is only trusted from the tab the party is bound to. Otherwise
     // any other video the user has open can drive everyone else's playback.
-    const PLAYBACK_TYPES = ["sync", "heartbeat", "navigate", "cc-state", "ad-state", "presence"];
+    const PLAYBACK_TYPES = ["sync", "heartbeat", "navigate", "cc-state", "ad-state", "presence", "ping"];
     if (PLAYBACK_TYPES.includes(msg.type) && !isPartyTabPort(port)) return;
 
     switch (msg.type) {
@@ -536,9 +544,11 @@ chrome.runtime.onConnect.addListener((port) => {
         connect();
         break;
 
-      case "create-room":
+      case "create-room": {
+        const generation = ++roomRequestGeneration;
         cachedVideoUrl = msg.videoUrl || "";
         resolvePartyTab(port, msg, (resolved) => {
+          if (generation !== roomRequestGeneration) return;
           partyTabId = resolved;
           saveState();
           connect();
@@ -553,10 +563,11 @@ chrome.runtime.onConnect.addListener((port) => {
           });
         });
         break;
+      }
 
       case "join-room": {
-        const roomCode = msg.roomCode?.toUpperCase();
-        if (!roomCode) break;
+        if (!self.__wtConfig.isJoinableCode(msg.roomCode)) break;
+        const roomCode = msg.roomCode.toUpperCase();
 
         // A content script asking to join while the party is already bound to another tab
         // is never what the user meant: it is a leftover auto-join hint firing in some
@@ -567,7 +578,9 @@ chrome.runtime.onConnect.addListener((port) => {
           break;
         }
 
+        const generation = ++roomRequestGeneration;
         resolvePartyTab(port, msg, (resolved) => {
+          if (generation !== roomRequestGeneration) return;
           partyTabId = resolved;
           saveState();
           connect();
@@ -583,6 +596,7 @@ chrome.runtime.onConnect.addListener((port) => {
       }
 
       case "leave-room":
+        roomRequestGeneration++;
         sendToServer({ type: "leave-room" });
         // Tell the party tab before we forget which tab that was, or its overlay sits
         // there claiming to be in a room nobody is in.
@@ -633,6 +647,7 @@ chrome.runtime.onConnect.addListener((port) => {
 
       case "voice-state":
       case "voice-signal":
+      case "ping":
       case "chat-typing":
       case "cc-state":
       case "ad-state":
@@ -739,7 +754,8 @@ chrome.runtime.onConnect.addListener((port) => {
   });
 });
 
-function waitForConnection(callback, retries = 60) {
+function waitForConnection(callback, retries = 60, generation = roomRequestGeneration) {
+  if (generation !== roomRequestGeneration) return;
   if (ws && ws.readyState === WebSocket.OPEN) {
     callback();
   } else if (retries > 0) {
@@ -747,7 +763,7 @@ function waitForConnection(callback, retries = 60) {
     if (!ws || ws.readyState === WebSocket.CLOSED) {
       connect();
     }
-    setTimeout(() => waitForConnection(callback, retries - 1), 1000);
+    setTimeout(() => waitForConnection(callback, retries - 1, generation), 1000);
   } else {
     sendToParty({ type: "error", message: "Could not connect to server. Try again." });
   }

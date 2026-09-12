@@ -36,8 +36,8 @@ popup or the overlay: it is the only thing that loads the extension for real.
 hand. It must be published from `yashgoel0304@gmail.com` or the existing users are
 stranded on 1.0.1 forever.
 
-**Relay:** Cloudflare is primary, Render is a live fallback. Pushing the server ships it
-immediately, which is the asymmetry to exploit: the server is redeployable in seconds and
+**Relay:** Cloudflare is primary, Render is a live fallback. Render follows Git;
+Cloudflare needs `npm --prefix server-cf run deploy` after verified pushed code, which is the asymmetry to exploit: the server is redeployable in seconds and
 the extension takes days of review, so **prefer a server-side fix wherever one exists**.
 
 **Site:** `cd site && vercel deploy --prod --yes`. A git push does NOT deploy it. The
@@ -124,3 +124,16 @@ dashes anywhere. Satisfy them; do not weaken them.
 No em or en dashes, anywhere, enforced by the gate. Comments explain WHY, especially the
 non-obvious constraint that forced the shape of the code; a comment restating what the
 line does is noise. Match the density and voice already in the file.
+
+
+## Red-team invariants, 2026-09-13
+
+Read `docs/RED-TEAM.md` for remaining blockers. Adapters only find the video;
+`content.js` alone owns live, drift, offset and autoplay policy. Do not restore
+site-specific `applyState` copies. Runtime tests execute the actual scripts.
+Custom relay overrides are exclusive, including across failure and relocation.
+Keepalive is party-tab traffic and must reach both relays. A remote wait pause
+is not evidence that a buffering client has loaded data. Any async membership
+check must revalidate capacity after yielding. Invalid invite encoding is a
+client error, never a thrown HTTP-handler exception. Do not trust policy claims
+about storage without tracing the deployed persistence layer.
