@@ -28,6 +28,14 @@ The earlier storage and retention correction is already approved and live.
   advanced controls require room membership, read-only probes must not replace the popup port,
   and the invited tab must be foregrounded. Firefox loaded but BiDi refused direct extension-page
   navigation. Its staged launcher now asks the extension to open its own popup. Rerun pending.
+- Run 34719284200 passed all 12 Chrome scenarios, including the new invite, host-control,
+  diagnostics, focus and remount cases. Rendered popup/overlay/control screenshots were reviewed.
+  Faint secondary text and the empty self-name were corrected after that review.
+  Firefox 155.0.1 requires its explicit `--remote-allow-system-access` automation flag to
+  navigate extension pages; this is confined to the test browser. Its final run is pending.
+- The hosted real YouTube attempt reached both player pages with the extension attached, but
+  both returned a bot challenge, `LOGIN_REQUIRED`, zero decoded frames and no time progression.
+  This is a recorded blocker, not a passing provider qualification.
 
 - Full local `npm test` passes: lint, all six typecheck contexts, dash/version gates,
   252 Node tests, 64 Vitest tests and 46 Worker tests (362 tests).

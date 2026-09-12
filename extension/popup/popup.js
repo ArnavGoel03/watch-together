@@ -782,7 +782,7 @@ function updateMembersList() {
     span.className = "member-tag";
     span.toggleAttribute("data-offline", !connectionLive);
     const name = document.createElement("span");
-    name.textContent = m.userName;
+    name.textContent = m.userName || (m.id === myUserId ? getUserName() : "User");
     span.appendChild(name);
     const presence = !connectionLive ? "Offline" : m.state === "buffering" ? "buffering" : m.state === "ad" ? "ad break" : "";
     if (presence) {

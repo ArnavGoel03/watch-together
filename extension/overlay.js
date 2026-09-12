@@ -2005,7 +2005,7 @@
 
         --wt-text: #f4f4f5;
         --wt-text-dim: rgba(244, 244, 245, 0.6);
-        --wt-text-faint: rgba(244, 244, 245, 0.36);
+        --wt-text-faint: rgba(244, 244, 245, 0.6);
 
         /* Nothing on this panel is filled with a bright colour. The primary action is a
            dark surface with a hairline edge and white text, and the ONLY colour anywhere

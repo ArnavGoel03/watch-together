@@ -11,8 +11,11 @@ The local YouTube qualification attempt stopped at Chrome launch. The emitted re
 participants and every playback case `not-run`. No YouTube page or decoded media was observed
 in that run. Syntax and ESLint checks passed for the harness.
 
-The hosted run must supply its own JSON artifact before any provider case below is called
-passed. The implementation's test results and the local launch failure are not substitutes.
+Hosted run 34719284200 reached YouTube in both Chrome 152 profiles. The extension attached,
+but both players returned `LOGIN_REQUIRED` and displayed a bot challenge. Both decoded zero
+frames and stayed at time zero. The report records `outcome: blocked` and
+`reason: provider-bot-challenge`. No provider playback or synchronization case passed.
+This is preserved in `docs/evidence/reliability-2026-09-13/provider-qualification.json`.
 
 ## Running the public YouTube baseline
 
@@ -57,10 +60,10 @@ and `baselinePassed: true`, because the broader matrix still requires qualificat
 
 | Scenario | YouTube | Netflix | JioHotstar | Required evidence |
 | --- | --- | --- | --- | --- |
-| Content loads and advances | Local run blocked at browser launch; hosted report pending | Account/device run pending | Account/device run pending | Real media time and decoded frames advance on both participants |
-| Join and play/pause | Hosted baseline pending | Pending | Pending | Two devices/profiles join one authoritative room; transitions reach the other player |
-| Seek and measured drift | Hosted baseline pending | Pending | Pending | Observed final positions, timestamps and drift after a real seek |
-| Relay socket reconnect | Hosted baseline pending | Pending | Pending | New membership acknowledgement and successful control after reconnect |
+| Content loads and advances | Blocked by YouTube bot challenge in both profiles | Account/device run pending | Account/device run pending | Real media time and decoded frames advance on both participants |
+| Join and play/pause | Blocked by playback prerequisite | Pending | Pending | Two devices/profiles join one authoritative room; transitions reach the other player |
+| Seek and measured drift | Blocked by playback prerequisite | Pending | Pending | Observed final positions, timestamps and drift after a real seek |
+| Relay socket reconnect | Blocked by playback prerequisite | Pending | Pending | New membership acknowledgement and successful control after reconnect |
 | Provider buffering | Pending | Pending | Pending | Actual stalled provider media, correct presence, recovery without stale seek/pause |
 | Advertisement entry/exit | Pending | Pending where plan includes ads | Pending where plan includes ads | Different ad lengths on two participants, held room clock, resync after both finish |
 | Next video or episode | Pending | Pending | Pending | Provider-driven navigation/player replacement; URL permission and playback recovered |

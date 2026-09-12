@@ -18,7 +18,6 @@ const ADDON_ID = "watch-together@extension";
 const UUID = "5ca14d20-7b85-4a65-94e1-c2741c215e02";
 const POPUP_URL = `moz-extension://${UUID}/popup/popup.html`;
 let RELAY_URL;
-let popupSequence = 0;
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function firefoxExecutable() {
@@ -43,55 +42,22 @@ async function poll(check, description, timeout = 10000) {
 }
 
 async function openPopup(browser, marker) {
-  const video = (await browser.pages()).find((page) => new URL(page.url()).searchParams.get("tab") === marker);
-  assert.ok(video, `No video tab for ${marker}`);
-  const id = String(++popupSequence);
-  const expectedUrl = `${POPUP_URL}?wt_test_marker=${marker}&wt_test_id=${id}`;
-  const launcher = await browser.newPage();
-  try {
-    // BiDi refuses direct navigation to extension schemes. Have the installed extension
-    // create its own page, then attach automation to that already-open browsing context.
-    await launcher.goto(`${new URL(video.url()).origin}/__wt_open_popup?marker=${marker}&id=${id}`, { waitUntil: "domcontentloaded", timeout: 10000 });
-    const target = await browser.waitForTarget((candidate) => candidate.url() === expectedUrl, { timeout: 10000 });
-    const page = await target.page();
-    assert.ok(page, "Firefox did not expose the extension popup browsing context");
-    page.setDefaultTimeout(10000);
-    await page.waitForSelector("#btnCreate");
-    return page;
-  } finally {
-    await launcher.close();
-  }
-}
-
-function popupTabLookup() {
-  // A real toolbar popup sees the underlying video; this document is opened as a tab.
-  // Run this adaptation before the unchanged production popup script initializes.
-  const marker = new URL(location.href).searchParams.get("wt_test_marker");
-  const query = chrome.tabs.query.bind(chrome.tabs);
-  chrome.tabs.query = (info, callback) => {
-    if (info?.active && info.currentWindow) {
-      return query({}, (tabs) => callback(tabs.filter((tab) => tab.url?.includes(`tab=${marker}`)).slice(0, 1)));
-    }
-    return query(info, callback);
-  };
-}
-
-function popupLauncher() {
-  if (location.pathname !== "/__wt_open_popup") return;
-  const params = new URL(location.href).searchParams;
-  chrome.runtime.sendMessage({ type: "firefox-test-open-popup", marker: params.get("marker"), id: params.get("id") }, () => { void chrome.runtime.lastError; });
-}
-
-function popupBridge(fixtureOrigin) {
-  chrome.runtime.onMessage.addListener((message, sender, respond) => {
-    if (message?.type !== "firefox-test-open-popup" || !sender.url || new URL(sender.url).origin !== fixtureOrigin) return false;
-    if (!["host", "guest"].includes(message.marker) || !/^\d+$/.test(message.id)) return false;
-    const url = new URL(chrome.runtime.getURL("popup/popup.html"));
-    url.searchParams.set("wt_test_marker", message.marker);
-    url.searchParams.set("wt_test_id", message.id);
-    chrome.tabs.create({ url: url.href }, () => respond({ ok: !chrome.runtime.lastError }));
-    return true;
-  });
+  const page = await browser.newPage();
+  page.setDefaultTimeout(10000);
+  // A toolbar popup sees the video tab underneath it. This test opens its document as
+  // a tab, so only the active-tab lookup needs adapting; all extension messaging is real.
+  await page.evaluateOnNewDocument((mark) => {
+    const query = chrome.tabs.query.bind(chrome.tabs);
+    chrome.tabs.query = (info, callback) => {
+      if (info?.active && info.currentWindow) {
+        return query({}, (tabs) => callback(tabs.filter((tab) => tab.url?.includes(`tab=${mark}`)).slice(0, 1)));
+      }
+      return query(info, callback);
+    };
+  }, marker);
+  await page.goto(POPUP_URL, { waitUntil: "domcontentloaded", timeout: 10000 });
+  await page.waitForSelector("#btnCreate");
+  return page;
 }
 
 async function backgroundState(page) {
@@ -157,19 +123,7 @@ test("Firefox extension qualification", { timeout: 90000 }, async (t) => {
   await mkdir(path.join(ROOT, "dist"), { recursive: true });
   staging = await mkdtemp(path.join(ROOT, "dist/.firefox-test-"));
   await cp(path.join(ROOT, "extension"), staging, { recursive: true });
-  const manifest = JSON.parse(await readFile(path.join(staging, "manifest.firefox.json"), "utf8"));
-  // These three small drivers exist only in the disposable test package. They open and
-  // anchor the real popup; room actions and assertions still exercise production code.
-  manifest.background.scripts.push("firefox-test-bridge.js");
-  manifest.content_scripts.push({ matches: ["http://127.0.0.1/*"], js: ["firefox-test-launcher.js"], run_at: "document_idle" });
-  await writeFile(path.join(staging, "manifest.json"), JSON.stringify(manifest));
-  await writeFile(path.join(staging, "firefox-test-bridge.js"), `(${popupBridge.toString()})(${JSON.stringify(videoOrigin)});`);
-  await writeFile(path.join(staging, "firefox-test-launcher.js"), `(${popupLauncher.toString()})();`);
-  await writeFile(path.join(staging, "popup/firefox-test-popup.js"), `(${popupTabLookup.toString()})();`);
-  const popupPath = path.join(staging, "popup/popup.html");
-  const popupHtml = await readFile(popupPath, "utf8");
-  assert.ok(popupHtml.includes('<script src="popup.js"></script>'));
-  await writeFile(popupPath, popupHtml.replace('<script src="popup.js"></script>', '<script src="firefox-test-popup.js"></script>\n  <script src="popup.js"></script>'));
+  await cp(path.join(staging, "manifest.firefox.json"), path.join(staging, "manifest.json"));
   // Only relay configuration changes in this disposable copy. An unconfigured profile
   // must never open a production socket before the test has time to save its settings.
   const configPath = path.join(staging, "config.js");
@@ -185,6 +139,10 @@ test("Firefox extension qualification", { timeout: 90000 }, async (t) => {
     const browser = await puppeteer.launch({
       browser: "firefox",
       headless: true,
+      // Firefox's browsingContext.navigate explicitly rejects moz-extension URLs unless
+      // this test-profile flag sets RemoteAgent.allowSystemAccess. Browser source:
+      // remote/webdriver-bidi/modules/root/browsingContext.sys.mjs and RemoteAgent.sys.mjs.
+      args: ["--remote-allow-system-access"],
       timeout: 15000,
       protocolTimeout: 15000,
       executablePath,

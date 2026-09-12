@@ -381,6 +381,7 @@ describe("Browser integration", () => {
     await hostPopup.waitForSelector(".member-remove");
     expect(await hostPopup.$eval("#roomAccess", el => el.hidden)).toBe(false);
     expect(await guestPopup.$eval("#roomAccess", el => el.hidden)).toBe(true);
+    expect(await hostPopup.$eval("#membersList", el => el.textContent)).toContain("Alice");
     const readInvite = async () => (await popupState(hostPopup)).inviteToken;
     const oldInvite = await readInvite();
     await hostPopup.click("#btnRevokeInvites");
@@ -412,6 +413,7 @@ describe("Browser integration", () => {
     }
     await hostPopup.click(".member-remove");
     expect(await waitUntil(async () => guestPopup.$eval("#view-landing", el => el.classList.contains("active")))).toBe(true);
+    expect(await waitUntil(async () => hostPopup.evaluate(() => document.activeElement.id === "btnCopyCode"))).toBe(true);
   }, 45000);
 
   it("an invitation survives login and cannot be consumed by another tab at the same URL", async () => {
