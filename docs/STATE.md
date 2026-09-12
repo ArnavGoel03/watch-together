@@ -11,8 +11,10 @@ release and test counts elsewhere in this document.
 Source and verified packages are **1.3.0**, merged through PR 3 at
 `68e7559cbb933b2d4cb126cb2c3be55db73b8ca2`. They are not submitted to the stores.
 The six-workstream queue and release evidence live in `docs/RELIABILITY-RELEASE.md`.
-New UI wording and signed-in provider access were requested separately; neither
-is assumed approved or available.
+The owner approved all eight UI labels on 2026-09-13; the exact list is in the
+release queue. Signed-in Netflix/JioHotstar access has been offered, but the browser
+connection check still returns no available sessions. Playback qualification awaits
+that connection. The copy-approval blocker is closed; store submission remains pending.
 
 CI run 34720902419 passes all six jobs: static gates, 252 Node tests, 64 Vitest,
 46 Worker, real workerd integration, 12 Chrome scenarios and three Firefox 155.0.1
@@ -36,11 +38,12 @@ matches the approved source. The original privacy approval remains recorded belo
 what: Approve the eight proposed 1.3.0 UI labels in docs/RELIABILITY-RELEASE.md before store publication.
 why: The charter requires approval for new shipped copy; the implementation and labels are available for review.
 raised: 2026-09-13
+done: 2026-09-13
 ```
 
 ```owner-actions
 what: Provide signed-in Netflix and JioHotstar playback sessions for the real-provider qualification matrix.
-why: Controlled browser tests cannot verify provider DRM, personalized ads, account login or real device sleep; no signed-in browser is available in this session.
+why: The owner offered signed-in access on 2026-09-13. Browser discovery still returns no sessions; connect the browser with two separate extension profiles before the real playback checks can run.
 raised: 2026-09-13
 ```
 

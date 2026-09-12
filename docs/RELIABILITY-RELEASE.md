@@ -4,16 +4,16 @@ User requested all six proposed improvements. This is the persistent work queue.
 
 | Workstream | Status | Acceptance |
 | --- | --- | --- |
-| Real provider qualification | Blocked on provider access | Hosted YouTube attempt hit a bot challenge. Signed-in Netflix/JioHotstar access requested; real Safari playback unavailable. See `PROVIDER-QUALIFICATION.md`. |
+| Real provider qualification | Blocked on provider access | Hosted YouTube attempt hit a bot challenge. Signed-in Netflix/JioHotstar access offered; browser connection pending. Real Safari playback unavailable. See `PROVIDER-QUALIFICATION.md`. |
 | Invitations and first join | Implemented, Chrome and Firefox verified | Correct video and relay, revocable credentials, tab binding through login, optional-site extraction. Legacy global consent removed. |
 | Recovery | Implemented, runtime and relay tests passed | 10s socket open, 25s waiting actions, 15s membership acknowledgement; cancellation, stable room relay, private override isolation. |
 | Host controls | Implemented, Chrome and live Cloudflare verified | Independent navigation permission, lock, removal and invite revocation on both relays. Lost-room recovery requires host and fresh invitations. |
 | Private diagnostics | Implemented, Chrome verified | Latency and drift, 100 local events, allowlisted export without URLs, IPs, chat, room codes, names or tokens. |
 | Accessibility and polish | Implemented, Chrome and Firefox verified | Focus return and Tab exit, volume through player remount, version/release/update metadata. |
 | Remaining audit cache correction | Live and verified | Stable marketing asset names now revalidate. Vercel deployment `dpl_6tJd6DKT4Wo5NUkYusq5rV45cE3F`; live asset response confirms the header. |
-| Release verification and shipping | Partially shipped | All six CI jobs pass, rendered Chrome/Firefox evidence reviewed, packages verified and Worker live. PR 3 merged at `68e7559`. Store submissions require approved labels and publisher access. Render reports merged `68e7559` and passes the live owned-room behavior check. |
+| Release verification and shipping | Partially shipped | All six CI jobs pass, rendered Chrome/Firefox evidence reviewed, packages verified and Worker live. PR 3 merged at `68e7559`. All eight labels approved on 2026-09-13; store submissions still require publisher access. Render reports merged `68e7559` and passes the live owned-room behavior check. |
 
-New UI labels were proposed for approval. Implementation is provisional until that reply:
+The owner approved these exact UI labels for the 1.3.0 release on 2026-09-13:
 Lock room; Allow guests to change video; Remove; Revoke invitations; Download diagnostics;
 Latency; Drift; Update available. Other UI wording reuses project strings.
 The earlier storage and retention correction is already approved and live.
@@ -104,11 +104,12 @@ the invitation. A private relay setting cannot be replaced by an invitation link
 
 ## Outstanding release boundaries
 
-- New UI labels still require the requested approval under the owner's copy rule.
+- All eight UI labels are approved; the copy-approval blocker is closed.
   Verified Chrome/Firefox 1.3.0 archives are in `dist/`; neither has been submitted.
   Publisher/store account access is unavailable in this session.
 - Real YouTube qualification is blocked by the provider challenge. Netflix/JioHotstar
-  need authorized signed-in playback sessions; Safari, actual sleep, ads and cross-device
+  access has been offered; browser discovery still returns no sessions and the connection
+  request is pending. Safari, actual sleep, ads and cross-device
   cases need real device/provider runs. See `PROVIDER-QUALIFICATION.md`.
 - Broader audit limits remain explicit in `RED-TEAM.md`: site-demo playback evidence,
   real hibernation/load behavior, optional permission prompts, full assistive-technology

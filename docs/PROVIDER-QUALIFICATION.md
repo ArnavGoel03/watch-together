@@ -17,6 +17,11 @@ frames and stayed at time zero. The report records `outcome: blocked` and
 `reason: provider-bot-challenge`. No provider playback or synchronization case passed.
 This is preserved in `docs/evidence/reliability-2026-09-13/provider-qualification.json`.
 
+The owner subsequently offered signed-in Netflix/JioHotstar access. The fresh browser
+connection attempt returned no available browser, and discovery returned an empty list.
+A request to connect two separate profiles with version 1.3.0 enabled is pending. This
+clears the uncertainty about willingness to provide access, not the playback prerequisites.
+
 ## Running the public YouTube baseline
 
 From the repository root, after installing `server/` dependencies and Puppeteer's Chrome:
