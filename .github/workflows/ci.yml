@@ -114,7 +114,7 @@ jobs:
           node-version: "22"
           cache: npm
       - run: npm ci --prefix server
-      - name: Install stable Firefox for Puppeteer BiDi
+      - name: Install stable Firefox for Marionette
         run: npx --prefix server puppeteer browsers install firefox@stable
       - name: Real Firefox extension, popup and playback qualification
         run: npm --prefix server run test:firefox

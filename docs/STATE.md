@@ -17,9 +17,11 @@ Cloudflare now serves pushed commit `2f72937`, Worker version
 denial, member rejoin, invitation rotation, playback, removal and instance-bound
 host proofs. The privacy correction remains identified below.
 Local full gate passes: 252 Node, 64 Vitest and 46 Worker tests, plus a real workerd
-integration test. PR 3 carries this release. Hosted run 34718782726 passed static,
-Node, Worker and package jobs; its three new Chrome tests and Firefox navigation
-failed on harness setup defects. The harness corrections await the next run.
+integration test. PR 3 carries this release. Hosted run 34719871032 passed static, Node, Worker, package and all 12 Chrome
+browser scenarios. The rendered popup, overlay and room controls were reviewed.
+Firefox 155.0.1 BiDi cannot inspect extension pages; the harness now uses classic
+WebDriver/Marionette with real popup and playback assertions. Hosted verification is pending. The hosted real YouTube
+attempt is blocked by a provider bot challenge, with zero decoded frames.
 
 ```owner-actions
 what: Approve the eight proposed 1.3.0 UI labels in docs/RELIABILITY-RELEASE.md before store publication.

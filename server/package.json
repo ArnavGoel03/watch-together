@@ -20,7 +20,9 @@
     "ws": "^8.16.0"
   },
   "devDependencies": {
+    "geckodriver": "^6.1.1",
     "puppeteer": "^25.10.0",
+    "selenium-webdriver": "^4.49.0",
     "vitest": "^4.1.4"
   }
 }

@@ -1,9 +1,12 @@
-// Real Firefox MV2 qualification through Puppeteer's WebDriver BiDi transport.
+// Real Firefox MV2 qualification through classic WebDriver/Marionette.
 // Two profiles are required: two tabs would share one background and one room member.
 import test from "node:test";
 import assert from "node:assert/strict";
 import puppeteer from "puppeteer";
 import { getInstalledBrowsers } from "@puppeteer/browsers";
+import { By, Key } from "selenium-webdriver";
+import firefox from "selenium-webdriver/firefox.js";
+import { download as downloadGeckodriver } from "geckodriver";
 import { existsSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { fork } from "node:child_process";
@@ -41,21 +44,69 @@ async function poll(check, description, timeout = 10000) {
   throw new Error(`Timed out: ${description}`);
 }
 
+async function bounded(promise, ms, description) {
+  let timer;
+  try {
+    return await Promise.race([promise, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`Timed out: ${description}`)), ms);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+
+// Only the small browser boundary differs from the Chromium harness. Every action
+// targets the real popup or video document, using native WebDriver input events.
+class FirefoxPage {
+  constructor(driver, handle) {
+    this.driver = driver;
+    this.handle = handle;
+    this.keyboard = { press: async (key) => {
+      await this.bringToFront();
+      await driver.actions().sendKeys(key === "Escape" ? Key.ESCAPE : key).perform();
+    } };
+  }
+  bringToFront() { return this.driver.switchTo().window(this.handle); }
+  async goto(url) { await this.bringToFront(); await this.driver.get(url); }
+  async evaluate(fn, ...args) { await this.bringToFront(); return this.driver.executeScript(fn, ...args); }
+  async $eval(selector, fn) {
+    await this.bringToFront();
+    return this.driver.executeScript(`return (${fn.toString()})(document.querySelector(arguments[0]));`, selector);
+  }
+  async waitForSelector(selector) { return poll(() => this.evaluate((css) => !!document.querySelector(css), selector), selector); }
+  async waitForFunction(fn) { return poll(() => this.evaluate(fn), fn.toString()); }
+  async click(selector) { await this.bringToFront(); await this.driver.findElement(By.css(selector)).click(); }
+  async type(selector, text) { await this.bringToFront(); await this.driver.findElement(By.css(selector)).sendKeys(text); }
+  async screenshot({ path: target }) { await this.bringToFront(); await writeFile(target, await this.driver.takeScreenshot(), "base64"); }
+  async close() {
+    await this.bringToFront();
+    await this.driver.close();
+    const handles = await this.driver.getAllWindowHandles();
+    if (handles.length) await this.driver.switchTo().window(handles[0]);
+  }
+}
+
+class FirefoxBrowser {
+  constructor(driver) { this.driver = driver; }
+  async newPage() {
+    await this.driver.switchTo().newWindow("tab");
+    return new FirefoxPage(this.driver, await this.driver.getWindowHandle());
+  }
+  close() { return this.driver.quit(); }
+}
+
+function popupTabLookup() {
+  const marker = new URL(location.href).searchParams.get("wt_test_marker");
+  const query = chrome.tabs.query.bind(chrome.tabs);
+  chrome.tabs.query = (info, callback) => {
+    if (info?.active && info.currentWindow) {
+      return query({}, (tabs) => callback(tabs.filter((tab) => tab.url?.includes(`tab=${marker}`)).slice(0, 1)));
+    }
+    return query(info, callback);
+  };
+}
+
 async function openPopup(browser, marker) {
   const page = await browser.newPage();
-  page.setDefaultTimeout(10000);
-  // A toolbar popup sees the video tab underneath it. This test opens its document as
-  // a tab, so only the active-tab lookup needs adapting; all extension messaging is real.
-  await page.evaluateOnNewDocument((mark) => {
-    const query = chrome.tabs.query.bind(chrome.tabs);
-    chrome.tabs.query = (info, callback) => {
-      if (info?.active && info.currentWindow) {
-        return query({}, (tabs) => callback(tabs.filter((tab) => tab.url?.includes(`tab=${mark}`)).slice(0, 1)));
-      }
-      return query(info, callback);
-    };
-  }, marker);
-  await page.goto(POPUP_URL, { waitUntil: "domcontentloaded", timeout: 10000 });
+  await page.goto(`${POPUP_URL}?wt_test_marker=${marker}`);
   await page.waitForSelector("#btnCreate");
   return page;
 }
@@ -76,14 +127,13 @@ async function backgroundState(page) {
 
 test("Firefox extension qualification", { timeout: 90000 }, async (t) => {
   const browsers = [];
+  const services = [];
   let fixtureServer = null;
   let relay = null;
   let staging = null;
   t.after(async () => {
-    await Promise.allSettled(browsers.map(async (browser) => {
-      try { await Promise.race([browser.close(), delay(5000).then(() => { throw new Error("Browser close timed out"); })]); }
-      finally { if (browser.process()?.exitCode === null) browser.process().kill("SIGKILL"); }
-    }));
+    await Promise.allSettled(browsers.map((browser) => bounded(browser.close(), 5000, "Firefox shutdown")));
+    await Promise.allSettled(services.map((service) => service.kill()));
     if (relay) {
       relay.kill("SIGTERM");
       await Promise.race([new Promise((resolve) => relay.once("exit", resolve)), delay(1000)]);
@@ -124,6 +174,13 @@ test("Firefox extension qualification", { timeout: 90000 }, async (t) => {
   staging = await mkdtemp(path.join(ROOT, "dist/.firefox-test-"));
   await cp(path.join(ROOT, "extension"), staging, { recursive: true });
   await cp(path.join(staging, "manifest.firefox.json"), path.join(staging, "manifest.json"));
+  // A tab-opened popup needs the same underlying-video lookup as a real toolbar popup.
+  // Install only this lookup shim before the unchanged popup.js in the staged copy.
+  await writeFile(path.join(staging, "popup/firefox-test-popup.js"), `(${popupTabLookup.toString()})();`);
+  const popupPath = path.join(staging, "popup/popup.html");
+  const popupHtml = await readFile(popupPath, "utf8");
+  assert.ok(popupHtml.includes('<script src="popup.js"></script>'));
+  await writeFile(popupPath, popupHtml.replace('<script src="popup.js"></script>', '<script src="firefox-test-popup.js"></script>\n  <script src="popup.js"></script>'));
   // Only relay configuration changes in this disposable copy. An unconfigured profile
   // must never open a production socket before the test has time to save its settings.
   const configPath = path.join(staging, "config.js");
@@ -134,33 +191,28 @@ test("Firefox extension qualification", { timeout: 90000 }, async (t) => {
 
   console.info("Firefox: launching two profiles and installing the real MV2 package");
   const executablePath = await firefoxExecutable();
+  const driverPath = await bounded(downloadGeckodriver(), 25000, "geckodriver download");
   // Install sequentially so a failed second launch still leaves the first in cleanup.
   for (let index = 0; index < 2; index++) {
-    const browser = await puppeteer.launch({
-      browser: "firefox",
-      headless: true,
-      // Firefox's browsingContext.navigate explicitly rejects moz-extension URLs unless
-      // this test-profile flag sets RemoteAgent.allowSystemAccess. Browser source:
-      // remote/webdriver-bidi/modules/root/browsingContext.sys.mjs and RemoteAgent.sys.mjs.
-      args: ["--remote-allow-system-access"],
-      timeout: 15000,
-      protocolTimeout: 15000,
-      executablePath,
-      extraPrefsFirefox: {
-        "extensions.webextensions.uuids": JSON.stringify({ [ADDON_ID]: UUID }),
-        "media.autoplay.default": 0,
-        "media.autoplay.blocking_policy": 0,
-        "media.block-autoplay-until-in-foreground": false,
-      },
-    });
+    const options = new firefox.Options().setBinary(executablePath)
+      .addArguments("-headless", "--remote-allow-system-access")
+      .setPreference("extensions.webextensions.uuids", JSON.stringify({ [ADDON_ID]: UUID }))
+      .setPreference("media.autoplay.default", 0)
+      .setPreference("media.autoplay.blocking_policy", 0)
+      .setPreference("media.block-autoplay-until-in-foreground", false);
+    const service = new firefox.ServiceBuilder(driverPath).build();
+    services.push(service);
+    const driver = firefox.Driver.createSession(options, service);
+    await bounded(driver.getSession(), 15000, "Firefox session startup");
+    await driver.manage().setTimeouts({ pageLoad: 10000, script: 10000, implicit: 0 });
+    const browser = new FirefoxBrowser(driver);
     browsers.push(browser);
-    assert.equal(await browser.installExtension(staging), ADDON_ID);
+    assert.equal(await driver.installAddon(staging, true), ADDON_ID);
   }
 
   const pages = [];
   for (const [index, browser] of browsers.entries()) {
     const page = await browser.newPage();
-    page.setDefaultTimeout(10000);
     await page.goto(`${videoOrigin}/?tab=${index ? "guest" : "host"}`, { waitUntil: "load", timeout: 10000 });
     await page.waitForFunction(() => document.querySelector("video")?.readyState >= 2);
     await page.waitForSelector("#wt-overlay-btn");
