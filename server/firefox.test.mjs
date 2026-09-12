@@ -195,12 +195,14 @@ test("Firefox extension qualification", { timeout: 90000 }, async (t) => {
   // Install sequentially so a failed second launch still leaves the first in cleanup.
   for (let index = 0; index < 2; index++) {
     const options = new firefox.Options().setBinary(executablePath)
-      .addArguments("-headless", "--remote-allow-system-access")
+      .addArguments("-headless")
       .setPreference("extensions.webextensions.uuids", JSON.stringify({ [ADDON_ID]: UUID }))
       .setPreference("media.autoplay.default", 0)
       .setPreference("media.autoplay.blocking_policy", 0)
       .setPreference("media.block-autoplay-until-in-foreground", false);
-    const service = new firefox.ServiceBuilder(driverPath).build();
+    // GeckoDriver owns the privileged-access switch and rejects it in moz:firefoxOptions.
+    // Its release src/main.rs declares --allow-system-access as a service argument.
+    const service = new firefox.ServiceBuilder(driverPath).addArguments("--allow-system-access").build();
     services.push(service);
     const driver = firefox.Driver.createSession(options, service);
     await bounded(driver.getSession(), 15000, "Firefox session startup");

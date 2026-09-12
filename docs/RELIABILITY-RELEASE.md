@@ -10,7 +10,7 @@ User requested all six proposed improvements. This is the persistent work queue.
 | Host controls | Implemented, Chrome and live Cloudflare verified | Independent navigation permission, lock, removal and invite revocation on both relays. Lost-room recovery requires host and fresh invitations. |
 | Private diagnostics | Implemented, Chrome verified | Latency and drift, 100 local events, allowlisted export without URLs, IPs, chat, room codes, names or tokens. |
 | Accessibility and polish | Implemented, Chrome verified | Focus return and Tab exit, volume through player remount, version/release/update metadata. |
-| Remaining audit cache correction | Source corrected, deployment pending | Stable marketing asset names revalidate instead of retaining a one-year immutable browser cache. |
+| Remaining audit cache correction | Live and verified | Stable marketing asset names now revalidate. Vercel deployment `dpl_6tJd6DKT4Wo5NUkYusq5rV45cE3F`; live asset response confirms the header. |
 | Release verification and shipping | Partially shipped | Local gates, Chrome, packages and live Worker pass. Firefox correction in progress. PR 3 pushed; STATE and Atlas updated. Store submissions require approved labels and publisher access. Render identity is pending main deployment. |
 
 New UI labels were proposed for approval. Implementation is provisional until that reply:
@@ -19,6 +19,12 @@ Latency; Drift; Update available. Other UI wording reuses project strings.
 The earlier storage and retention correction is already approved and live.
 
 ## Verification log
+
+- Website cache correction deployed from pushed `8cb16b1`, Vercel deployment
+  `dpl_6tJd6DKT4Wo5NUkYusq5rV45cE3F`. Live `/assets/logo-256.png` returns
+  `Cache-Control: public, max-age=0, must-revalidate`. Normalized live policy text
+  still exactly matches the approved repository policy. Existing immutable browser
+  cache entries cannot be invalidated retroactively by changing response headers.
 
 - Cloudflare deployed from pushed commit `2f72937`, version
   `943e79e7-6575-4d88-b0e2-10c4e71f2102`. The live relay passes

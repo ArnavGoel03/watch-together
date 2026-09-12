@@ -15,7 +15,9 @@ access were requested separately; neither is assumed approved or available.
 Cloudflare now serves pushed commit `2f72937`, Worker version
 `943e79e7-6575-4d88-b0e2-10c4e71f2102`. A live three-socket check passed locked-join
 denial, member rejoin, invitation rotation, playback, removal and instance-bound
-host proofs. The privacy correction remains identified below.
+host proofs. The privacy correction remains identified below. Website cache deployment
+`dpl_6tJd6DKT4Wo5NUkYusq5rV45cE3F` now serves pushed `8cb16b1`; live asset headers
+require revalidation and live policy text still matches the approved source.
 Local full gate passes: 252 Node, 64 Vitest and 46 Worker tests, plus a real workerd
 integration test. PR 3 carries this release. Hosted run 34719871032 passed static, Node, Worker, package and all 12 Chrome
 browser scenarios. The rendered popup, overlay and room controls were reviewed.
