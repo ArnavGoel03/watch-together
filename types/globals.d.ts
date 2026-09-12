@@ -17,6 +17,11 @@ interface WatchTogetherAdapter {
 }
 
 interface WatchTogetherConfig {
+  RELEASED_AT: string;
+  isNewerVersion(candidate: unknown, installed: unknown): boolean;
+  DIAGNOSTIC_EVENTS: string[];
+  buildDiagnosticsReport(transport: any, driftSeconds?: number | null): any;
+  buildInviteUrl(options: {videoUrl?: string; roomCode: string; inviteToken?: string; serverUrl?: string}): string;
   /**
    * Every file making up the in-page half of the extension, in load order. Needed both by
    * the manifest's content_scripts and by the runtime injection used when a viewer grants
@@ -96,6 +101,9 @@ interface WatchTogetherConfig {
 
 /** Chooses which relay to talk to, and where to go when one stops answering. */
 declare class RelayPicker {
+  affinity: string | null;
+  pin(url?: unknown): void;
+  clearAffinity(): void;
   override: string | null;
   moved: string | null;
   index: number;
@@ -109,15 +117,40 @@ declare class RelayPicker {
   /** True when the move was accepted; a bad, repeated or self-referential URL is refused. */
   acceptMove(url: unknown): boolean;
   setOverride(url: unknown): string | null;
-  hydrate(stored?: { serverUrl?: unknown; movedServerUrl?: unknown }): void;
+  hydrate(stored?: { serverUrl?: unknown; movedServerUrl?: unknown; roomRelayUrl?: unknown; currentRoom?: unknown }): void;
+}
+
+declare class ConnectionLifecycle {
+  constructor(publish: (diagnostics: any) => void);
+  snapshot(): any;
+  state(state: string, attempts?: number): void;
+  record(event: string, value?: number): void;
+  arm(onTimeout: () => void): void;
+  disarm(): void;
+  ping(): void;
+  pong(): void;
+  cancelWaiters(): void;
+  request(onTimeout: () => void): void;
+  cancelRequest(): void;
+  wait(ready: () => boolean, valid: () => boolean, connect: () => void, callback: () => void, timeout: () => void): void;
 }
 
 interface WatchTogetherRelayModule {
   RelayPicker: typeof RelayPicker;
+  ConnectionLifecycle: typeof ConnectionLifecycle;
+  InviteStore: typeof InviteStore;
+}
+
+declare class InviteStore {
+  constructor(storage: any);
+  handle(msg: any, sender: any): Promise<any>;
+  removeTab(tabId: number): void;
 }
 
 /** The handle content.js exposes so overlay.js can read sync health without a round trip. */
 interface WatchTogetherCore {
+  setVolume(value: number, temporary?: boolean): void;
+  getVolume(): number | null;
   resync(): void;
   isInRoom(): boolean;
   getVideo(): HTMLVideoElement | null;

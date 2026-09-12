@@ -84,9 +84,10 @@ reinstate a design that had been replaced.
 
 ## Traps
 
-**Chrome for Testing cannot play YouTube.** It returns Error 153 regardless of the page.
-This is not evidence that anything is broken. To check anything involving real YouTube
-playback, drive the user's actual Chrome; that environment has the codecs.
+**Hosted Chrome for Testing is not provider qualification by itself.** Earlier runs
+returned YouTube Error 153; the 2026-09-13 run reached a provider bot challenge with
+zero decoded frames. Record actual player evidence and the blocker rather than
+assuming a codec failure or treating HTTP 200 as playback. See `docs/PROVIDER-QUALIFICATION.md`.
 
 **Stable Chrome silently ignores `--load-extension`.** Extension tests need Chrome for
 Testing. Two participants need two separate PROFILES, not two tabs: a second tab in the

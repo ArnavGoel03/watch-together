@@ -84,6 +84,14 @@ let partyTabId = null;
 let selectedMode = "everyone";
 let isHost = false;
 let currentMode = "everyone";
+let myUserId = null;
+let navigationMode = "everyone";
+let roomLocked = false;
+let inviteToken = "";
+let connectionLive = false;
+let roomVideoUrl = "";
+let roomRelayUrl = window.__wtConfig.SERVER_URL;
+let diagnostics = null;
 
 // Internal/useless URL patterns
 const BLOCKED_PREFIXES = ["chrome", "about:", "edge:", "moz-extension:", "chrome-extension:", "file:", "brave:"];
@@ -112,6 +120,31 @@ const chatMessages = $("#chatMessages");
 const chatInput = $("#chatInput");
 const toastEl = $("#toast");
 const btnCreate = $("#btnCreate");
+
+for (const control of document.querySelectorAll(".pref-row select, .pref-row input")) {
+  const label = control.closest(".pref-row")?.querySelector(".pref-label");
+  if (label) control.setAttribute("aria-label", label.textContent);
+}
+chatInput.setAttribute("aria-label", chatInput.placeholder);
+$("#version").textContent = `v${chrome.runtime.getManifest().version}`;
+$("#releasedAt").dateTime = window.__wtConfig.RELEASED_AT;
+$("#releasedAt").textContent = new Date(window.__wtConfig.RELEASED_AT).toLocaleString();
+$("#connectionDetails").addEventListener("toggle", () => {
+  if ($("#connectionDetails").open) safePost({ type: "get-diagnostics" });
+});
+$("#btnDownloadDiagnostics").addEventListener("click", () => {
+  if (!diagnostics) return;
+  const report = window.__wtConfig.buildDiagnosticsReport(diagnostics);
+  const url = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2)], { type: "application/json" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "watch-together-diagnostics.json";
+  link.hidden = true;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
 
 // Backend presets - Render is the original Node server, Cloudflare is the new Worker.
 // Per-backend URL is remembered so flipping the radio swaps the URL field instantly.
@@ -442,9 +475,24 @@ btnCreate.addEventListener("click", () => {
 document.querySelectorAll(".mode-btn").forEach(/** @param {any} btn */ (btn) => {
   btn.addEventListener("click", () => {
     document.querySelectorAll(".mode-btn").forEach((b) => b.classList.remove("mode-active"));
+    document.querySelectorAll(".mode-btn").forEach((b) => b.setAttribute("aria-pressed", String(b === btn)));
     btn.classList.add("mode-active");
     selectedMode = btn.dataset.mode;
   });
+});
+
+for (const id of ["lockRoom", "guestNavigation"]) {
+  $(`#${id}`).addEventListener("change", (event) => {
+    if (isHost) {
+      safePost(id === "lockRoom"
+        ? { type: "set-room-access", locked: event.target.checked }
+        : { type: "set-room-access", navigationMode: event.target.checked ? "everyone" : "host" });
+    }
+    updateRoomAccess();
+  });
+}
+$("#btnRevokeInvites").addEventListener("click", () => {
+  if (isHost) safePost({ type: "revoke-invites" });
 });
 
 // Toggle mode in active room (host only)
@@ -513,17 +561,12 @@ $("#btnCopyCode").addEventListener("click", async () => {
 // before the clipboard write, otherwise Chrome rejects the user-gesture.
 function buildShareLink() {
   if (!currentRoom) return "";
-  const tabUrl = activeTabUrl || "";
-  if (isVideoTab(tabUrl)) {
-    try {
-      const url = new URL(tabUrl);
-      url.searchParams.set("wt_room", currentRoom);
-      return url.toString();
-    } catch {
-      return `${tabUrl}${tabUrl.includes("?") ? "&" : "?"}wt_room=${currentRoom}`;
-    }
-  }
-  return `${window.__wtConfig.HTTP_ORIGIN}/join/${currentRoom}`;
+  return window.__wtConfig.buildInviteUrl({
+    videoUrl: roomVideoUrl,
+    roomCode: currentRoom,
+    inviteToken,
+    serverUrl: roomRelayUrl,
+  });
 }
 
 $("#btnCopyLink").addEventListener("click", async () => {
@@ -732,14 +775,41 @@ function addSystemMessage(text) {
 }
 
 function updateMembersList() {
+  const focusedId = document.activeElement?.getAttribute("data-remove-member");
   membersListEl.innerHTML = "";
   members.forEach((m) => {
     const span = document.createElement("span");
     span.className = "member-tag";
-    span.textContent = m.userName;
+    span.toggleAttribute("data-offline", !connectionLive);
+    const name = document.createElement("span");
+    name.textContent = m.userName || (m.id === myUserId ? getUserName() : "User");
+    span.appendChild(name);
+    const presence = !connectionLive ? "Offline" : m.state === "buffering" ? "buffering" : m.state === "ad" ? "ad break" : "";
+    if (presence) {
+      const state = document.createElement("span");
+      state.className = "member-state";
+      state.textContent = presence;
+      span.appendChild(state);
+    }
+    if (isHost && m.id !== myUserId) {
+      const remove = document.createElement("button");
+      remove.className = "action-btn member-remove";
+      remove.setAttribute("data-remove-member", m.id);
+      remove.textContent = "Remove";
+      remove.setAttribute("aria-label", `Remove ${m.userName || "Someone"}`);
+      remove.addEventListener("click", () => {
+        if (isHost) safePost({ type: "remove-member", userId: m.id });
+      });
+      span.appendChild(remove);
+    }
     membersListEl.appendChild(span);
   });
   memberCountEl.textContent = members.length;
+  if (focusedId) {
+    const target = [...membersListEl.querySelectorAll("[data-remove-member]")]
+      .find((button) => button.getAttribute("data-remove-member") === focusedId);
+    (target || $("#btnCopyCode")).focus({ preventScroll: true });
+  }
 }
 
 function showToast(text) {
@@ -774,7 +844,19 @@ document.head.appendChild(style);
 // --- Messages from background ---
 
 function handlePortMessage(msg) {
+  if (["state", "room-created", "room-joined", "navigate"].includes(msg.type) && typeof msg.videoUrl === "string") {
+    roomVideoUrl = msg.videoUrl;
+  }
+  if (typeof msg.serverUrl === "string") roomRelayUrl = msg.serverUrl;
   switch (msg.type) {
+    case "diagnostics":
+      diagnostics = window.__wtConfig.buildDiagnosticsReport(msg.diagnostics);
+      renderDiagnostics();
+      break;
+
+    case "update-available":
+      renderUpdate(msg.version);
+      break;
     // The background reports whether the scripts actually reached the tab. This case did
     // not exist, so the message was dropped and the popup announced success the moment
     // the GRANT resolved, whatever happened afterwards.
@@ -785,6 +867,8 @@ function handlePortMessage(msg) {
 
     case "state":
       updateConnectionStatus(msg.connected);
+      renderUpdate(msg.updateAvailableVersion);
+      if (msg.userId) myUserId = msg.userId;
       if (msg.serverUrl) serverUrlInput.value = msg.serverUrl;
       if (msg.currentRoom) {
         currentRoom = msg.currentRoom;
@@ -800,6 +884,8 @@ function handlePortMessage(msg) {
           isHost = msg.isHost;
         }
         updateModeUI();
+        readRoomAccess(msg);
+        updateMembersList();
         partyTabId = typeof msg.partyTabId === "number" ? msg.partyTabId : null;
         updateReattachBar();
         showView("room");
@@ -828,8 +914,10 @@ function handlePortMessage(msg) {
 
     case "room-created":
       currentRoom = msg.roomCode;
+      myUserId = msg.userId;
       isHost = true;
       currentMode = msg.mode || "everyone";
+      readRoomAccess(msg);
       displayRoomCode.textContent = msg.roomCode;
       members = [{ id: msg.userId, userName: getUserName() }];
       updateMembersList();
@@ -844,8 +932,10 @@ function handlePortMessage(msg) {
 
     case "room-joined":
       currentRoom = msg.roomCode;
+      myUserId = msg.userId;
       isHost = msg.isHost || false;
       currentMode = msg.mode || "everyone";
+      readRoomAccess(msg);
       displayRoomCode.textContent = msg.roomCode;
       members = msg.members || [];
       updateMembersList();
@@ -856,11 +946,13 @@ function handlePortMessage(msg) {
 
     case "mode-changed":
       currentMode = msg.mode;
+      readRoomAccess(msg);
       updateModeUI();
       addSystemMessage(`${msg.fromUser} switched to ${msg.mode === "host" ? "host only" : "everyone"} controls`);
       break;
 
     case "member-joined":
+      members = members.filter((m) => m.id !== msg.userId);
       members.push({ id: msg.userId, userName: msg.userName });
       updateMembersList();
       addSystemMessage(`${msg.userName} joined`);
@@ -870,6 +962,43 @@ function handlePortMessage(msg) {
       members = members.filter((m) => m.id !== msg.userId);
       updateMembersList();
       addSystemMessage(`${msg.userName} left`);
+      break;
+
+    case "room-access":
+      readRoomAccess(msg);
+      break;
+
+    case "host-transferred":
+      isHost = !!msg.isHost;
+      updateModeUI();
+      updateRoomAccess();
+      updateMembersList();
+      break;
+
+    case "presence":
+    case "ad-state": {
+      const member = members.find((m) => m.id === msg.userId);
+      if (member) member.state = msg.state || (msg.active ? "ad" : "watching");
+      updateMembersList();
+      break;
+    }
+
+    case "room-ended":
+      currentRoom = null;
+      isHost = false;
+      inviteToken = "";
+      roomVideoUrl = "";
+      navigationMode = "everyone";
+      roomLocked = false;
+      members = [];
+      updateRoomAccess();
+      updateMembersList();
+      chatMessages.textContent = "";
+      showView("landing");
+      break;
+
+    case "send-failed":
+      showToast(msg.message || "Not sent, still reconnecting.");
       break;
 
     case "heartbeat-role":
@@ -895,6 +1024,19 @@ function handlePortMessage(msg) {
   }
 }
 
+function readRoomAccess(msg) {
+  if (typeof msg.navigationMode === "string") navigationMode = msg.navigationMode;
+  if (typeof msg.locked === "boolean") roomLocked = msg.locked;
+  if (typeof msg.inviteToken === "string") inviteToken = msg.inviteToken;
+  updateRoomAccess();
+}
+
+function updateRoomAccess() {
+  $("#roomAccess").hidden = !isHost;
+  $("#lockRoom").checked = roomLocked;
+  $("#guestNavigation").checked = navigationMode === "everyone";
+}
+
 function updateModeUI() {
   const modeLabel = $("#modeLabel");
   const toggleBtn = $("#btnToggleMode");
@@ -903,6 +1045,20 @@ function updateModeUI() {
 }
 
 function updateConnectionStatus(connected) {
+  connectionLive = !!connected;
   statusEl.className = `status-pill ${connected ? "connected" : "disconnected"}`;
   statusText.textContent = connected ? "Live" : "Offline";
+  updateMembersList();
+  renderDiagnostics();
+}
+
+function renderDiagnostics() {
+  const rtt = diagnostics?.rttMs;
+  $("#latency").textContent = `Latency: ${connectionLive && Number.isFinite(rtt) ? `${Math.round(rtt)} ms` : "..."}`;
+  $("#btnDownloadDiagnostics").disabled = !diagnostics;
+}
+
+function renderUpdate(version) {
+  $("#updateAvailable").hidden = !version;
+  $("#updateAvailable").title = version || "";
 }

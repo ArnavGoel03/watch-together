@@ -22,6 +22,17 @@
   let syncOffset = 0; // seconds this viewer's copy runs ahead of the room's timeline
   let roomCallUrl = ""; // a voice call pinned to this room by its host
   let waitForSlow = false; // does the room pause when somebody's connection stalls
+  let connectionLive = false;
+  let returnFocus = null;
+  let navigationMode = "everyone";
+  let roomLocked = false;
+  let inviteToken = "";
+  let relayUrl = "";
+  let roomVideoUrl = "";
+  let diagnostics = null;
+  let updateAvailableVersion = "";
+  let syncHealthTimer = null;
+  let refreshSyncHealth = () => {};
   let pendingEnterSend = false; // true if user pressed Enter during IME composition
   const inFlight = new Set();
 
@@ -499,11 +510,47 @@
     wireHotkeyCapture();
     wireModeControl();
     wireWaitControl();
+    wireRoomAccess();
     // Paint the host-only controls correctly on the FIRST render, not just when a
     // mode-changed or host-transferred happens to arrive later. Until this ran, a guest saw
     // an enabled toggle that would silently refuse to do anything.
     renderModeControl();
     renderWaitControl();
+    renderRoomAccess();
+  }
+
+  function wireRoomAccess() {
+    for (const id of ["wt-lock-room", "wt-guest-navigation"]) {
+      overlayPanel.querySelector(`#${id}`).addEventListener("change", (event) => {
+        event.stopPropagation();
+        if (!iAmHost) { renderRoomAccess(); return; }
+        const value = event.target.checked;
+        safePost(id === "wt-lock-room"
+          ? { type: "set-room-access", locked: value }
+          : { type: "set-room-access", navigationMode: value ? "everyone" : "host" });
+        // Until the relay acknowledges, retain the last confirmed policy.
+        renderRoomAccess();
+      });
+    }
+    overlayPanel.querySelector("#wt-revoke-invites").addEventListener("click", () => {
+      if (iAmHost) safePost({ type: "revoke-invites" });
+    });
+  }
+
+  function readRoomAccess(msg) {
+    if (typeof msg.navigationMode === "string") navigationMode = msg.navigationMode;
+    if (typeof msg.locked === "boolean") roomLocked = msg.locked;
+    if (typeof msg.inviteToken === "string") inviteToken = msg.inviteToken;
+    renderRoomAccess();
+  }
+
+  function renderRoomAccess() {
+    if (!overlayPanel) return;
+    overlayPanel.querySelector("#wt-room-access").hidden = !iAmHost;
+    overlayPanel.querySelector("#wt-lock-room").checked = roomLocked;
+    const navigation = overlayPanel.querySelector("#wt-guest-navigation");
+    navigation.checked = navigationMode === "everyone";
+    navigation.disabled = !iAmHost;
   }
 
   // Only the host can move this, and the buttons say so by being disabled rather than by
@@ -595,13 +642,11 @@
 
   function applyVolume(value, { remember = true } = {}) {
     const v = Math.max(0, Math.min(1, value));
-    const video = window.__wtCore?.getVideo();
-    if (video) video.volume = v;
+    window.__wtCore?.setVolume(v, !remember);
     const slider = overlayPanel?.querySelector("#wt-volume");
     const label = overlayPanel?.querySelector("#wt-volume-label");
     if (slider) slider.value = String(Math.round(v * 100));
     if (label) label.textContent = `${Math.round(v * 100)}%`;
-    if (remember) chrome.storage.local.set({ filmVolume: v });
   }
 
   function wireVolumeControls() {
@@ -624,15 +669,12 @@
         duck.textContent = "Restore";
         applyVolume(DUCK_LEVEL, { remember: false });
       } else {
-        applyVolume(restoreTo, { remember: false });
+        applyVolume(window.__wtCore?.getVolume() ?? restoreTo, { remember: false });
         restoreTo = null;
         duck.textContent = "Duck";
       }
     });
 
-    chrome.storage.local.get(["filmVolume"], /** @param {any} d */ (d) => {
-      if (typeof d.filmVolume === "number") applyVolume(d.filmVolume, { remember: false });
-    });
   }
 
   // Host-only, like the control mode, and for the same reason: it decides whether one
@@ -733,6 +775,8 @@
     // viewer's key does two things at once on every site they watch on.
     const COLLIDES = new Set(["f", "k", "j", "l", "c", "t", "i", "m", " "]);
     input.addEventListener("keydown", (e) => {
+      // Tab must leave the key recorder; Escape belongs to the panel.
+      if (["Tab", "Escape"].includes(e.key)) return;
       e.preventDefault();
       e.stopPropagation();
       const key = e.key;
@@ -750,6 +794,14 @@
 
   function setupHotkeyListeners() {
     document.addEventListener("keydown", (e) => {
+      if (!e.isTrusted) return;
+      if (e.key === "Escape" && overlayPanel?.classList.contains("wt-visible")) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        hotkeyHeld = false;
+        hidePanel();
+        return;
+      }
       if (!matchesHotkey(e)) return;
       if (e.repeat) return; // ignore key-repeat firing
       e.preventDefault();
@@ -796,8 +848,20 @@
     // and they conclude the button is broken. Checking again at the moment we open costs
     // nothing and makes that impossible.
     reparentPanel();
+    const wasVisible = overlayPanel.classList.contains("wt-visible");
+    if (!wasVisible) returnFocus = document.activeElement;
+    const volume = window.__wtCore?.getVideo()?.volume ?? window.__wtCore?.getVolume();
+    if (typeof volume === "number") {
+      overlayPanel.querySelector("#wt-volume").value = String(Math.round(volume * 100));
+      overlayPanel.querySelector("#wt-volume-label").textContent = `${Math.round(volume * 100)}%`;
+    }
     overlayPanel.classList.add("wt-visible");
+    if (!syncHealthTimer) syncHealthTimer = setInterval(() => refreshSyncHealth(), 1000);
+    refreshSyncHealth();
+    overlayBtn?.setAttribute("aria-expanded", "true");
+    if (!wasVisible && overlayMode !== "hold") overlayPanel.querySelector("#wt-close").focus({ preventScroll: true });
     safePost({ type: "get-state" });
+    safePost({ type: "get-diagnostics" });
     syncMemberCountDom();
   }
 
@@ -857,6 +921,10 @@
     // applied again here rather than only on change.
     overlayBtn.setAttribute("data-ui", uiStyle);
     overlayBtn.title = "Watch Together";
+    overlayBtn.setAttribute("aria-label", "Watch Together");
+    overlayBtn.setAttribute("aria-haspopup", "dialog");
+    overlayBtn.setAttribute("aria-controls", "wt-overlay-panel");
+    overlayBtn.setAttribute("aria-expanded", "false");
     overlayBtn.innerHTML = `
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4-4v-2"/>
@@ -880,12 +948,15 @@
 
     overlayPanel = document.createElement("div");
     overlayPanel.id = "wt-overlay-panel";
+    // The player remains usable, so this is a nonmodal dialog and must not trap Tab.
+    overlayPanel.setAttribute("role", "dialog");
+    overlayPanel.setAttribute("aria-labelledby", "wt-panel-title");
     overlayPanel.setAttribute("data-ui", uiStyle);
     overlayPanel.innerHTML = `
       <div class="wt-panel-header">
-        <span class="wt-panel-title">Watch Together</span>
-        <span class="wt-panel-status" id="wt-status">Offline</span>
-        <button class="wt-panel-close" id="wt-close">&times;</button>
+        <span class="wt-panel-title" id="wt-panel-title">Watch Together</span>
+        <span class="wt-panel-status" id="wt-status" role="status">Offline</span>
+        <button class="wt-panel-close" id="wt-close" aria-label="Close">&times;</button>
       </div>
       <div id="wt-view-landing" class="wt-view wt-active">
         <input type="text" id="wt-name" class="wt-input" placeholder="Your name" maxlength="30">
@@ -898,7 +969,7 @@
       <div id="wt-view-room" class="wt-view">
         <div class="wt-room-info">
           <span class="wt-room-code" id="wt-room-code"></span>
-          <button class="wt-watchers" id="wt-members-toggle" aria-expanded="false" title="Who is here">
+          <button class="wt-watchers" id="wt-members-toggle" aria-expanded="false" aria-controls="wt-members" title="Who is here">
             <span id="wt-member-count">1</span> watching
             <svg class="wt-chev" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="6 9 12 15 18 9"/></svg>
           </button>
@@ -918,7 +989,7 @@
           <div class="wt-typing" id="wt-typing"></div>
           <div class="wt-chat-input-row">
             <input type="text" id="wt-chat-input" class="wt-input wt-chat-field" placeholder="Message..." maxlength="500">
-            <button class="wt-send" id="wt-send">
+            <button class="wt-send" id="wt-send" aria-label="Send">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
             </button>
           </div>
@@ -937,6 +1008,8 @@
                 <span class="wt-sync-health" id="wt-sync-health" title="How far your video is from the room">Sync: checking...</span>
                 <button class="wt-btn-small" id="wt-resync" title="Snap to the room's current position">Resync</button>
               </div>
+              <div class="wt-diagnostics"><span id="wt-latency">Latency: ...</span><span id="wt-drift">Drift: ...</span></div>
+              <button class="wt-btn-small" id="wt-download-diagnostics" disabled>Download diagnostics</button>
               <div class="wt-adv-field">
                 <span class="wt-adv-label">My copy runs ahead by</span>
                 <div class="wt-inline">
@@ -966,6 +1039,11 @@
                   <span>Wait for slow connections</span>
                 </label>
                 <span class="wt-adv-hint">If someone's video stalls, the room pauses until they catch up rather than leaving them behind. It gives up after a minute, so one bad connection cannot hold everyone.</span>
+              </div>
+              <div id="wt-room-access" hidden>
+                <label class="wt-check wt-adv-field"><input type="checkbox" id="wt-guest-navigation"><span>Allow guests to change video</span></label>
+                <label class="wt-check wt-adv-field"><input type="checkbox" id="wt-lock-room"><span>Lock room</span></label>
+                <button class="wt-btn-small" id="wt-revoke-invites">Revoke invitations</button>
               </div>
             </section>
 
@@ -1014,6 +1092,7 @@
         </details>
         <button class="wt-btn-leave" id="wt-leave">Leave</button>
       </div>
+      <footer class="wt-release"><span id="wt-version"></span><time id="wt-released-at"></time><span id="wt-update" role="status" hidden>Update available</span></footer>
     `;
 
     // The host page shares this DOM. Synthetic input must not create rooms, join an
@@ -1029,7 +1108,14 @@
     }
 
     document.body.appendChild(overlayPanel);
+    // Reuse visible wording as the accessible name; placeholders alone disappear.
+    for (const input of overlayPanel.querySelectorAll("input[placeholder]")) {
+      input.setAttribute("aria-label", input.placeholder);
+    }
+    overlayPanel.querySelector("#wt-offset").setAttribute("aria-label", "My copy runs ahead by");
+    overlayPanel.querySelector("#wt-volume").setAttribute("aria-label", "Film volume");
     trackFullscreenHost();
+    renderRelease();
 
     wireProgressiveDisclosure();
 
@@ -1062,14 +1148,7 @@
     copyLinkBtn.addEventListener("click", async (e) => {
       e.stopPropagation();
       if (!currentRoom) { flashText(copyLinkBtn, "No room"); return; }
-      let link;
-      try {
-        const url = new URL(location.href);
-        url.searchParams.set("wt_room", currentRoom);
-        link = url.toString();
-      } catch {
-        link = `${location.href}${location.href.includes("?") ? "&" : "?"}wt_room=${currentRoom}`;
-      }
+      const link = window.__wtConfig.buildInviteUrl({ videoUrl: roomVideoUrl || location.href, roomCode: currentRoom, inviteToken, serverUrl: relayUrl });
       const ok = await safeCopy(link);
       flashText(copyLinkBtn, ok ? "Copied!" : "Failed");
     });
@@ -1133,7 +1212,14 @@
     function startSyncHealth() {
       const el = overlayPanel.querySelector("#wt-sync-health");
       if (!el) return;
-      setInterval(() => {
+      refreshSyncHealth = () => {
+        if (!overlayPanel.classList.contains("wt-visible")) return;
+        renderDiagnostics();
+        if (!connectionLive) {
+          el.textContent = "Offline";
+          el.className = "wt-sync-health";
+          return;
+        }
         if (!window.__wtCore?.isInRoom()) {
           el.textContent = "Sync: not in a room";
           el.className = "wt-sync-health";
@@ -1141,8 +1227,8 @@
         }
         const drift = window.__wtCore.getDrift();
         if (drift === null) {
-          el.textContent = "Sync: in sync";
-          el.className = "wt-sync-health wt-sync-good";
+          el.textContent = "Sync: checking...";
+          el.className = "wt-sync-health";
           return;
         }
         const abs = Math.abs(drift);
@@ -1157,7 +1243,7 @@
           el.textContent = `Sync: ${abs.toFixed(1)}s ${dir}`;
           el.className = "wt-sync-health wt-sync-bad";
         }
-      }, 1000);
+      };
     }
 
     overlayPanel.querySelector("#wt-resync").addEventListener("click", (e) => {
@@ -1165,6 +1251,20 @@
       if (!window.__wtCore?.isInRoom()) { addSystemMsg("Not in a room"); return; }
       window.__wtCore.resync();
       addSystemMsg("Resyncing to the room...");
+    });
+
+    overlayPanel.querySelector("#wt-download-diagnostics").addEventListener("click", () => {
+      if (!diagnostics) return;
+      const report = window.__wtConfig.buildDiagnosticsReport(diagnostics, window.__wtCore?.getDrift?.());
+      const url = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2)], { type: "application/json" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "watch-together-diagnostics.json";
+      link.hidden = true;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
     });
 
     // Voice ships disabled (see VOICE_ENABLED). Hide its surfaces rather than deleting
@@ -1189,12 +1289,8 @@
 
   function togglePanel() {
     createPanel();
-    overlayPanel.classList.toggle("wt-visible");
-    // Refresh state from background each time the panel is shown so a stale UI is impossible
-    if (overlayPanel.classList.contains("wt-visible")) {
-      safePost({ type: "get-state" });
-      syncMemberCountDom();
-    }
+    if (overlayPanel.classList.contains("wt-visible")) hidePanel();
+    else showPanel();
     // Load saved name
     chrome.storage.local.get(["userName"], (data) => {
       const nameInput = overlayPanel.querySelector("#wt-name");
@@ -1207,11 +1303,33 @@
   // One place that writes the connection pill, so every path that learns the truth can
   // say it without duplicating the DOM work.
   function setStatusDom(connected) {
+    connectionLive = !!connected;
     if (!overlayPanel) return;
     const statusEl = overlayPanel.querySelector("#wt-status");
     if (!statusEl) return;
     statusEl.textContent = connected ? "Live" : "Offline";
     statusEl.className = `wt-panel-status ${connected ? "wt-live" : ""}`;
+    renderMembers();
+  }
+
+  function renderDiagnostics() {
+    if (!overlayPanel) return;
+    const rtt = diagnostics?.rttMs;
+    const drift = window.__wtCore?.getDrift?.();
+    overlayPanel.querySelector("#wt-latency").textContent = `Latency: ${connectionLive && Number.isFinite(rtt) ? `${Math.round(rtt)} ms` : "..."}`;
+    overlayPanel.querySelector("#wt-drift").textContent = `Drift: ${connectionLive && Number.isFinite(drift) ? `${drift > 0 ? "+" : ""}${drift.toFixed(2)} s` : "..."}`;
+    overlayPanel.querySelector("#wt-download-diagnostics").disabled = !diagnostics;
+  }
+
+  function renderRelease() {
+    if (!overlayPanel) return;
+    overlayPanel.querySelector("#wt-version").textContent = `v${chrome.runtime.getManifest().version}`;
+    const released = overlayPanel.querySelector("#wt-released-at");
+    released.dateTime = window.__wtConfig.RELEASED_AT;
+    released.textContent = new Date(window.__wtConfig.RELEASED_AT).toLocaleString();
+    const update = overlayPanel.querySelector("#wt-update");
+    update.hidden = !updateAvailableVersion;
+    update.title = updateAvailableVersion;
   }
 
   // Renders the member list. Deliberately shows only what we genuinely know: inventing a
@@ -1220,6 +1338,7 @@
     if (!overlayPanel) return;
     const list = overlayPanel.querySelector("#wt-members");
     if (!list) return;
+    const focusedId = document.activeElement?.getAttribute("data-remove-member");
     list.textContent = "";
 
     const entries = [...membersById.entries()];
@@ -1235,7 +1354,7 @@
       const state = m.state || (m.inAd ? "ad" : "watching");
       dot.className =
         "wt-member-dot" +
-        (state === "ad" ? " wt-member-away" : state === "buffering" ? " wt-member-stalled" : "");
+        (!connectionLive ? " wt-member-offline" : state === "ad" ? " wt-member-away" : state === "buffering" ? " wt-member-stalled" : "");
       row.appendChild(dot);
 
       const name = document.createElement("span");
@@ -1245,7 +1364,9 @@
 
       const stateEl = document.createElement("span");
       stateEl.className = "wt-member-state";
-      if (state === "ad") {
+      if (!connectionLive) {
+        stateEl.textContent = "Offline";
+      } else if (state === "ad") {
         stateEl.textContent = "ad break";
       } else if (state === "buffering") {
         stateEl.textContent = "buffering";
@@ -1275,6 +1396,18 @@
         badge.textContent = "syncing";
         row.appendChild(badge);
       }
+      if (iAmHost && !isYou) {
+        const remove = document.createElement("button");
+        remove.className = "wt-btn-small";
+        remove.setAttribute("data-remove-member", id);
+        remove.textContent = "Remove";
+        remove.setAttribute("aria-label", `Remove ${m.userName || "Someone"}`);
+        remove.addEventListener("click", (event) => {
+          if (!event.isTrusted || !iAmHost) return;
+          safePost({ type: "remove-member", userId: id });
+        });
+        row.appendChild(remove);
+      }
       list.appendChild(row);
     }
 
@@ -1283,6 +1416,11 @@
       empty.className = "wt-member-empty";
       empty.textContent = "Nobody else yet. Send them the code.";
       list.appendChild(empty);
+    }
+    if (focusedId) {
+      const target = [...list.querySelectorAll("[data-remove-member]")]
+        .find((button) => button.getAttribute("data-remove-member") === focusedId);
+      (target || overlayPanel.querySelector("#wt-members-toggle")).focus({ preventScroll: true });
     }
   }
 
@@ -1316,7 +1454,17 @@
   }
 
   function hidePanel() {
-    if (overlayPanel) overlayPanel.classList.remove("wt-visible");
+    if (!overlayPanel) return;
+    const restore = overlayPanel.contains(document.activeElement);
+    overlayPanel.classList.remove("wt-visible");
+    clearInterval(syncHealthTimer);
+    syncHealthTimer = null;
+    overlayBtn?.setAttribute("aria-expanded", "false");
+    if (restore) {
+      const target = returnFocus?.isConnected ? returnFocus : overlayBtn;
+      target?.focus?.({ preventScroll: true });
+    }
+    returnFocus = null;
   }
 
   function showView(name) {
@@ -1521,7 +1669,20 @@
     chrome.runtime.lastError;
 
     port.onMessage.addListener((msg) => {
+      if (["state", "room-created", "room-joined", "navigate"].includes(msg.type)) {
+        if (typeof msg.serverUrl === "string") relayUrl = msg.serverUrl;
+        if (typeof msg.videoUrl === "string") roomVideoUrl = msg.videoUrl;
+      }
       switch (msg.type) {
+        case "diagnostics":
+          diagnostics = window.__wtConfig.buildDiagnosticsReport(msg.diagnostics);
+          renderDiagnostics();
+          break;
+
+        case "update-available":
+          updateAvailableVersion = msg.version || "";
+          renderRelease();
+          break;
         case "room-created":
           settleInFlight("create");
           currentRoom = msg.roomCode;
@@ -1530,6 +1691,7 @@
           memberCount = 1;
           iAmHost = true;
           roomMode = msg.mode || "everyone";
+          readRoomAccess(msg);
           roomCallUrl = "";
           renderCallLink();
           membersById.clear();
@@ -1552,6 +1714,7 @@
           memberCount = msg.members?.length || 1;
           iAmHost = !!msg.isHost;
           roomMode = msg.mode || "everyone";
+          readRoomAccess(msg);
           roomCallUrl = window.__wtConfig.isValidCallUrl(msg.callUrl) ? msg.callUrl : "";
           waitForSlow = !!msg.waitForSlow;
           renderCallLink();
@@ -1588,6 +1751,11 @@
           membersById.clear();
           iAmHost = false;
           iAmLeader = false;
+          inviteToken = "";
+          roomVideoUrl = "";
+          roomLocked = false;
+          navigationMode = "everyone";
+          renderRoomAccess();
           stopVoice();
           voice.activePeerIds.clear();
           updateVoiceBadge();
@@ -1642,15 +1810,25 @@
 
         case "state":
           setStatusDom(msg.connected);
+          updateAvailableVersion = msg.updateAvailableVersion || "";
+          renderRelease();
           if (msg.userId) myUserId = msg.userId;
           if (msg.currentRoom) {
             currentRoom = msg.currentRoom;
             inRoom = true;
+            if (typeof msg.isHost === "boolean") iAmHost = msg.isHost;
+            if (typeof msg.mode === "string") roomMode = msg.mode;
+            if (typeof msg.waitForSlow === "boolean") waitForSlow = msg.waitForSlow;
+            readRoomAccess(msg);
+            renderModeControl();
+            renderWaitControl();
             // The whole point of asking for state on open is that a stale panel is
             // impossible, but the member count was never read back, so a reinjected
             // content script sat on its default of 1 while the popup showed the truth.
             if (Array.isArray(msg.members) && msg.members.length) {
               memberCount = msg.members.length;
+              membersById.clear();
+              for (const member of msg.members) membersById.set(member.id, member);
             } else if (typeof msg.memberCount === "number") {
               memberCount = msg.memberCount;
             }
@@ -1703,6 +1881,7 @@
 
         case "mode-changed":
           roomMode = msg.mode || "everyone";
+          readRoomAccess(msg);
           if (typeof msg.waitForSlow === "boolean" && msg.waitForSlow !== waitForSlow) {
             waitForSlow = msg.waitForSlow;
             addSystemMsg(
@@ -1720,11 +1899,17 @@
           );
           break;
 
+        case "room-access":
+          readRoomAccess(msg);
+          renderMembers();
+          break;
+
         case "host-transferred":
           iAmHost = !!msg.isHost;
           renderCallLink();
           renderWaitControl();
           renderModeControl();
+          renderRoomAccess();
           renderMembers();
           if (iAmHost) addSystemMsg("You are the host now");
           break;
@@ -1820,7 +2005,7 @@
 
         --wt-text: #f4f4f5;
         --wt-text-dim: rgba(244, 244, 245, 0.6);
-        --wt-text-faint: rgba(244, 244, 245, 0.36);
+        --wt-text-faint: rgba(244, 244, 245, 0.6);
 
         /* Nothing on this panel is filled with a bright colour. The primary action is a
            dark surface with a hairline edge and white text, and the ONLY colour anywhere
@@ -1939,6 +2124,8 @@
          that scrolls, which is what keeps it usable when the content is long or the
          viewer is zoomed in and the viewport is short. */
       #wt-overlay-panel.wt-visible { display: flex; animation: wt-slide-in 0.2s ease-out; }
+      .wt-release { display: flex; flex-wrap: wrap; gap: 4px 8px; flex-shrink: 0; padding: 8px 14px; border-top: 1px solid var(--wt-line); color: var(--wt-text-dim); font-size: 10px; }
+      .wt-diagnostics { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; color: var(--wt-text-dim); font-size: 11px; }
       @keyframes wt-slide-in {
         from { opacity: 0; transform: translateY(-8px); }
         to { opacity: 1; transform: translateY(0); }
@@ -2108,6 +2295,8 @@
       }
       .wt-member-away { background: var(--wt-warn); }
       .wt-member-stalled { background: var(--wt-info); }
+      .wt-member-offline { background: var(--wt-text-faint); }
+      #wt-overlay-panel [hidden] { display: none; }
       .wt-member-name {
         flex: 1;
         color: var(--wt-text);

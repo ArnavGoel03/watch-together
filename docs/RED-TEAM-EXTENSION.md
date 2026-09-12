@@ -37,22 +37,28 @@ from any browser store.
 - Real-browser and rendered UI verification are owned by the parent audit. Synthetic
   test clicks on guarded controls must be replaced with browser-generated clicks.
 
+## Reliability release follow-up
+
+Version 1.3.0 supersedes the invite and recovery limits below: invitation claims are
+background-owned and tab-bound, socket establishment has a ten-second deadline, and
+joined rooms retain relay affinity. Runtime and Chrome browser checks pass. See
+`RELIABILITY-RELEASE.md` for current evidence and remaining browser/provider access.
+
 ## Residual risks and coverage limits
 
 - **Shared page DOM is not an isolated permission surface.** Trusted-event checks stop
   programmatic clicks, but the page can still alter labels/styles or trick a person into
   a real click. Room acceptance on an extension-owned surface is the stronger boundary.
-- **Invite hints are URL-bound, not tab-bound.** Two tabs on the exact same normalized
-  destination may race for one global hint. A background-owned tab claim would remove
-  this remaining ambiguity.
+- **Same-URL invite races, fixed in 1.3.0.** Background-owned claims bind each invite
+  to a tab and exact destination, with bounded expiry and acknowledged consumption.
 - **Browser startup restores a numeric tab ID.** The existing startup check verifies
   that the tab exists, not that a recycled ID still identifies the original video tab.
   Storage hydration and startup event ordering are not covered by the synchronous VM.
-- **WebSocket connection establishment has no explicit deadline.** A socket stuck in
-  CONNECTING depends on the browser's network timeout before relay failover progresses.
-- **Default relays are independent room stores.** Public fallback can create a second
-  copy of a room during a partial outage. This audit does not add cross-relay replication
-  or a globally authoritative room directory.
+- **Socket deadline, fixed in 1.3.0.** CONNECTING is bounded at ten seconds; retired
+  socket generations cannot publish late results.
+- **Default relays remain independent room stores.** In 1.3.0 an existing room stays
+  pinned to its relay; fallback applies to new room creation. There is no cross-relay
+  replication or globally authoritative room directory.
 - **Remote HTTP(S) navigation remains intentional room capability.** Scheme validation
   blocks script/data/file URLs, but ordinary web pages, including local HTTP endpoints,
   remain reachable by room peers. The code cannot infer whether every target is a video.

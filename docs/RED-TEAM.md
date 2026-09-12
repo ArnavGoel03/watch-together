@@ -38,7 +38,7 @@ claim that every streaming provider or browser combination is qualified.
 | P1 | Locked runtime `ws` had published memory exhaustion/disclosure advisories. | Patched compatible version installed; all three package audits report zero advisories. |
 | P2 | Firefox lacked optional-site injection, dropped presence/call updates and retained stale socket callbacks. | MV2 registration/injection, message parity and stale-socket guards have runtime regressions. |
 | P2 | Mode/host/leader changes and queued room actions could become stale across lifecycle changes. | Both backgrounds persist authority updates and invalidate deferred room requests when superseded. |
-| P2 | A global invite hint could be consumed by an unrelated page. | Destination URL and finite freshness checks precede consumption; hint writers include destination identity. Same-URL races remain. |
+| P2 | A global invite hint could be consumed by an unrelated page. | Destination URL and finite freshness checks precede consumption; hint writers include destination identity. Version 1.3.0 replaces global hints with background-owned tab claims. |
 | P2 | Leaving a room left navigation/metadata playback pending; attaching before metadata discarded the queued sync. | Deferred work is cancelled on leave; snapshot-before-apply preserves metadata waits. |
 | P2 | A wait-for-slow pause falsely announced buffer recovery. | Remote pause retains buffering until the player reports readiness. |
 | P2 | Temporary drift rates leaked into room state; stale player events remained active after navigation. | Heartbeats advertise the canonical rate; player handoff cancels nudges and detaches events. |
@@ -67,16 +67,17 @@ proof that browser integration works.
   credentials, not user authentication. Rate limits are per address and Worker
   limiter counters are memory-resident. Distributed guessing and hibernation
   reset of short rate windows are not eliminated.
-- **P2, host tokens:** room-name-bound HMAC tokens have no expiry/revocation.
-  A former host retains authority when a name is reused, as already documented
-  in STATE. Changing this needs a compatible durable ownership design.
+- **Host reuse fixed in 1.3.0:** new signed tokens include a random room-instance
+  nonce, so reusing a room name cannot recreate the previous host authority.
+  Legacy tokens are accepted only for legacy rooms or authorized reconstruction.
+  Host tokens remain bearer credentials without an account-level revocation service.
 - **P2, permission boundary:** trusted-click checks block programmatic events;
   shared host DOM can still be overlaid, moved or visually tampered with. An
-  isolated browser-owned consent surface is stronger. Same-URL tabs can race
-  the destination-bound hint. Startup tab identity/hydration races remain
+  isolated browser-owned consent surface is stronger. Version 1.3.0 resolves
+  same-URL invite races through tab-bound claims. Startup tab identity/hydration races remain
   unqualified. See [extension review](RED-TEAM-EXTENSION.md).
-- **P2, availability:** default-relay failover can split a room across two
-  independent servers; a socket can remain CONNECTING without a deadline.
+- **P2, availability:** version 1.3.0 pins existing rooms to their relay and bounds
+  socket establishment at ten seconds. Relays still have independent room stores.
   Single-hub Durable Object throughput/geography and cost under hostile traffic
   were not load-tested against production.
 - **P2, real providers:** bare-video tests cannot establish Netflix/JioHotstar
@@ -93,14 +94,15 @@ proof that browser integration works.
 - **P2, accessibility/UI:** no complete screen-reader, focus-trap, keyboard,
   mobile Safari, zoom or high-contrast qualification was possible locally.
   Caption track listener lifecycle and whole-document mutation observation
-  remain performance concerns, not benchmarked failures. Popup version/release-time
-  footer, update indicator and Demo Data Mode are absent product-default gaps.
+  remain performance concerns, not benchmarked failures. Version 1.3.0 adds the
+  version/release-time footer, update indicator and tested keyboard/focus repairs.
+  Demo Data Mode remains outside this six-workstream reliability release.
 - **P2, marketing/site gate:** the site check does not prove actual embedded
   playback and is absent from CI. Site claims exceed verified provider coverage.
   Detailed evidence is in the release audit.
 - **P3, cache:** stable-name marketing assets use immutable caching. This was
-  left for the site release alongside its policy correction so public changes
-  can be verified together.
+  corrected in source to revalidate stable filenames; live header verification
+  is tracked in the reliability release.
 
 ## Verification and production evidence
 

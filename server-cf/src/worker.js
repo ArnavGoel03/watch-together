@@ -32,11 +32,9 @@ const MAX_VOICE_SIGNAL_BYTES = P.LIMITS.MAX_VOICE_SIGNAL_BYTES;
 const CUSTOM_NAME_REGEX = P.CUSTOM_NAME_REGEX;
 const ROOM_CODE_REGEX = P.ROOM_CODE_REGEX;
 
-// A host token is an HMAC of the room code, so a room that has to be rebuilt can still
-// prove who its host was without the object having remembered anything. Set
-// HOST_TOKEN_SECRET as a Worker secret to make that survive a redeploy; without it, host
-// is simply never restored on a rebuild, which is the safe direction to fail.
-export async function mintHostToken(secret, roomCode) {
+// The signed nonce survives reconstruction without letting a new creator of the same
+// room name acquire the previous incarnation's authority. Old tokens remain readable.
+export async function mintHostToken(secret, roomCode, nonce = null) {
   if (!secret) return null;
   const key = await crypto.subtle.importKey(
     "raw",
@@ -45,15 +43,16 @@ export async function mintHostToken(secret, roomCode) {
     false,
     ["sign"]
   );
-  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(String(roomCode)));
-  return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(P.hostTokenMessage(roomCode, nonce)));
+  const signature = [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return nonce ? `${nonce}.${signature}` : signature;
 }
 
-export async function isValidHostToken(secret, roomCode, token) {
-  if (!secret || typeof token !== "string" || token.length !== 64) return false;
-  const expected = await mintHostToken(secret, roomCode);
+export async function isValidHostToken(secret, roomCode, token, expectedNonce = undefined) {
+  const parts = P.hostTokenParts(token);
+  if (!secret || !parts || (expectedNonce !== undefined && parts.nonce !== expectedNonce)) return false;
+  const expected = await mintHostToken(secret, roomCode, parts.nonce);
   if (!expected || expected.length !== token.length) return false;
-  // Constant time: a check that leaks its answer through timing is not a check.
   let diff = 0;
   for (let i = 0; i < expected.length; i++) diff |= expected.charCodeAt(i) ^ token.charCodeAt(i);
   return diff === 0;
@@ -217,6 +216,7 @@ export class RoomHubDO {
             ws,
             userName: meta.userName,
             voiceActive: !!meta.voiceActive,
+            memberToken: meta.memberToken,
             adActive: !!meta.adActive,
             presence: meta.presence || (meta.adActive ? "ad" : "watching"),
           });
@@ -501,7 +501,7 @@ export class RoomHubDO {
       if (Date.now() - room.hostAbsentSince < HOST_ABSENCE_GRACE_MS) continue;
       room.hostAbsentSince = null;
       room.mode = "everyone";
-      this._broadcast(code, { type: "mode-changed", mode: "everyone", fromUser: "System" });
+      this._broadcast(code, { type: "mode-changed", mode: "everyone", navigationMode: P.navigationMode(room), fromUser: "System" });
       this._persistRoom(code);
     }
   }
@@ -583,7 +583,9 @@ export class RoomHubDO {
 
     if (url.pathname.startsWith("/room/")) {
       const code = url.pathname.slice("/room/".length).split("?")[0]?.toUpperCase() || "";
-      const room = this.rooms.get(code);
+      const candidate = this.rooms.get(code);
+      const inviteToken = url.searchParams.get("invite");
+      const room = candidate && !P.roomAccessError(candidate, { inviteToken }, false) ? candidate : null;
       // The same ceiling the socket path has. Without it this endpoint answers "does this
       // room exist" as fast as anybody can ask, which is the enumeration the socket-side
       // limiter exists to stop, over plain HTTP and, thanks to the wildcard CORS header,
@@ -591,11 +593,11 @@ export class RoomHubDO {
       if (!this.failedJoinLimiter.check(this._requestIp(request))) {
         return new Response(JSON.stringify({ error: "Rate limited - slow down" }), {
           status: 429,
-          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*", "Cache-Control": "no-store" },
         });
       }
       return new Response(JSON.stringify({ exists: !!room, code }), {
-        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*", "Cache-Control": "no-store" },
       });
     }
 
@@ -613,7 +615,9 @@ export class RoomHubDO {
           { status: 404, headers: { "Content-Type": "text/html", "X-Frame-Options": "DENY", "Content-Security-Policy": "default-src 'none'" } }
         );
       }
-      const room = this.rooms.get(code);
+      const candidate = this.rooms.get(code);
+      const inviteToken = url.searchParams.get("invite");
+      const room = candidate && !P.roomAccessError(candidate, { inviteToken }, false) ? candidate : null;
       if (!this.failedJoinLimiter.check(this._requestIp(request))) {
         return new Response("Rate limited - slow down", {
           status: 429,
@@ -629,7 +633,9 @@ export class RoomHubDO {
         try {
           const r = new URL(videoUrl);
           r.searchParams.set("wt_room", code);
-          return Response.redirect(r.toString(), 302);
+          r.searchParams.set("wt_relay", url.origin.replace(/^http/, "ws"));
+          if (inviteToken && inviteToken === room.inviteToken) r.searchParams.set("wt_invite", inviteToken);
+          return new Response(null, { status: 302, headers: { Location: r.toString(), "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" } });
         } catch { /* fall through */ }
       }
       const safeCode = escapeHtml(code);
@@ -643,6 +649,7 @@ export class RoomHubDO {
             "Content-Type": "text/html",
             "X-Frame-Options": "DENY",
             "Referrer-Policy": "no-referrer",
+            "Cache-Control": "no-store",
             "X-Content-Type-Options": "nosniff",
             // No inline JavaScript on this page any more, so scripts get nothing at all.
             "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'",
@@ -711,6 +718,8 @@ export class RoomHubDO {
     if (!msg || typeof msg.type !== "string") return;
 
     const meta = this._meta(ws);
+    if (ws.readyState !== 1) return;
+    if (meta.currentRoom && this.rooms.get(meta.currentRoom)?.members.get(meta.userId)?.ws !== ws) return;
     if (!this._checkRate(meta.userId)) {
       this._sendTo(ws, { type: "error", message: "Rate limited - slow down" });
       return;
@@ -767,10 +776,16 @@ export class RoomHubDO {
       // TTL never expires mid-film, and nothing else.
       case "ping": {
         const pingRoom = this.rooms.get(meta.currentRoom);
-        if (pingRoom) pingRoom.lastActivity = Date.now();
+        if (pingRoom) {
+          pingRoom.lastActivity = Date.now();
+          this._sendTo(ws, { type: "pong" });
+        }
         return;
       }
       case "set-mode": return this._handleSetMode(ws, meta, msg);
+      case "set-room-access":
+      case "remove-member":
+      case "revoke-invites": return this._handleRoomAccess(ws, meta, msg);
       case "set-call-url": return this._handleSetCallUrl(ws, meta, msg);
       case "navigate": return this._handleNavigate(ws, meta, msg);
       case "voice-state": return this._handleVoiceState(ws, meta, msg);
@@ -840,28 +855,33 @@ export class RoomHubDO {
     const room = {
       code,
       hostId: meta.userId,
+      hostNonce: P.newHostNonce(),
       mode,
       persistent,
-      members: new Map([[meta.userId, { ws, userName, voiceActive: false }]]),
+      members: new Map([[meta.userId, { ws, userName, voiceActive: false, memberToken: "" }]]),
       videoUrl,
       playbackState: { playing: false, currentTime: 0, playbackRate: 1, lastUpdate: Date.now() },
       createdAt: Date.now(),
       lastActivity: Date.now(),
       ownerIp: meta.ip,
     };
+    const memberToken = P.issueMemberCredential(room);
+    room.members.get(meta.userId).memberToken = memberToken;
     this.rooms.set(code, room);
-    this._setMeta(ws, { userName, currentRoom: code });
+    this._setMeta(ws, { userName, currentRoom: code, memberToken });
     await this._persistRoom(code);
 
     this._sendTo(ws, {
       type: "room-created",
+      ...P.roomAccess(room),
+      memberToken,
       roomCode: code,
       userId: meta.userId,
       mode,
       persistent,
       isHost: true,
       // Replayed on every rejoin so a reload does not cost the host their own room.
-      hostToken: await mintHostToken(this.env.HOST_TOKEN_SECRET, code),
+      hostToken: await mintHostToken(this.env.HOST_TOKEN_SECRET, code, room.hostNonce),
       serverTime: Date.now(),
     });
     this._notifyHeartbeatLeader(room);
@@ -878,14 +898,8 @@ export class RoomHubDO {
     const code = typeof msg.roomCode === "string" ? msg.roomCode.toUpperCase().trim() : "";
     let room = this.rooms.get(code);
 
-    // Rooms live in the DO's in-memory cache, so a cold start between requests can lose
-    // one before storage is reloaded. A client that is REJOINING a room it was already in
-    // may rebuild it: it replays the code and the last playback position it saw, and the
-    // party carries on. Knowing the code is already the only credential this system has,
-    // so rebuilding with it grants nothing that joining would not.
-    //
-    // Only auto-rejoins set recreateIfMissing. A human typing an unknown code still gets a
-    // clean "Room not found" rather than silently landing in an empty room.
+    // Missing metadata means the access policy and revocations are gone too. Only a
+    // verified host may restore it, and every reconstruction starts fresh invitations.
     if (!room && msg.recreateIfMissing === true && code) {
       if (this.rooms.size >= MAX_ROOMS) {
         this._sendTo(ws, { type: "error", message: "Server is at capacity. Try again later." });
@@ -920,20 +934,18 @@ export class RoomHubDO {
           this._sendTo(ws, { type: "error", message: "Server is at capacity. Try again later." });
           return;
         }
+        if (!rebuildIsHost) {
+          this._sendTo(ws, { type: "error", message: "Room not found" });
+          return;
+        }
         room = {
           code,
-          // Rebuilding is not the same as being the host. Anyone who knows the code can ask
-          // for a rebuild, and there is nothing left to check them against but a token this
-          // Worker itself issued. Without one, a stranger who waited for a party to go quiet
-          // could come back as its exclusive controller.
-          hostId: rebuildIsHost ? meta.userId : null,
-          // And whether the "an unsteered room goes to whoever arrives first" rule below is
-          // allowed to fire for it. It must not be: the rebuilder IS the first arrival,
-          // always, so that rule handed host to them anyway and made the token check above
-          // decorative. mode was worse still, taken straight from the rebuild request, so
-          // asking for mode:"host" without any token produced a room locked to a stranger.
-          hostClaimable: rebuildIsHost,
-          mode: rebuildIsHost ? P.normalizeRoomMode(msg.mode) : P.ROOM_MODE_DEFAULT,
+          hostId: meta.userId,
+          hostNonce: P.hostTokenParts(msg.hostToken).nonce,
+          mode: P.normalizeRoomMode(msg.mode),
+          navigationMode: P.normalizeRoomMode(msg.navigationMode ?? msg.mode),
+          locked: msg.locked === true,
+          inviteRequired: true,
           persistent: CUSTOM_NAME_REGEX.test(code),
           members: new Map(),
           videoUrl: validateUrl(msg.videoUrl),
@@ -959,44 +971,57 @@ export class RoomHubDO {
       this._sendTo(ws, { type: "error", message: "Room not found" });
       return;
     }
-    if (room.members.size >= MAX_ROOM_MEMBERS) {
-      this._sendTo(ws, { type: "error", message: `Room is full (max ${MAX_ROOM_MEMBERS})` });
-      return;
-    }
-    if (meta.currentRoom) await this._leaveCurrentRoom(ws, meta);
-    this._markOccupied(code);
-
     const userName = sanitize(msg.userName, MAX_USERNAME_LENGTH) || "User";
-    // Same person, new connection: reloading the tab used to make the host a guest in
-    // their own party, because every reconnect gets a fresh user id.
-    const reclaimsHost = await isValidHostToken(this.env.HOST_TOKEN_SECRET, code, msg.hostToken);
-    // Crypto and leaving the previous room yield. Recheck immediately before publishing
-    // membership, with no await between the capacity check and members.set.
-    if (this.rooms.get(code) !== room || ws.readyState !== 1) return;
-    if (room.members.size >= MAX_ROOM_MEMBERS) {
-      this._sendTo(ws, { type: "error", message: `Room is full (max ${MAX_ROOM_MEMBERS})` });
+    // Crypto and leaving another room yield. Authorization and capacity are checked
+    // after each yield, before any admission side effects or membership publication.
+    const reclaimsHost = await isValidHostToken(this.env.HOST_TOKEN_SECRET, code, msg.hostToken, room.hostNonce || null);
+    if (msg.hostToken && !reclaimsHost) {
+      this._sendTo(ws, { type: "error", message: "Room not found" });
       return;
     }
+    const canJoin = () => {
+      if (this.rooms.get(code) !== room || ws.readyState !== 1) return false;
+      const accessError = P.roomAccessError(room, msg, reclaimsHost);
+      if (accessError) {
+        this._sendTo(ws, { type: "error", message: "Room not found", code: accessError });
+        return false;
+      }
+      if (room.members.size >= MAX_ROOM_MEMBERS) {
+        this._sendTo(ws, { type: "error", message: `Room is full (max ${MAX_ROOM_MEMBERS})` });
+        return false;
+      }
+      return true;
+    };
+    if (!canJoin()) return;
+    if (meta.currentRoom) {
+      await this._leaveCurrentRoom(ws, meta);
+      if (!canJoin()) return;
+    }
+    this._markOccupied(code);
     if (reclaimsHost) {
+      const previousHost = room.members.get(room.hostId);
+      if (previousHost && room.hostId !== meta.userId) this._sendTo(previousHost.ws, { type: "host-transferred", isHost: false });
       room.hostId = meta.userId;
       // They only reloaded. Call off the pending unlock.
       room.hostAbsentSince = null;
     }
     // A room whose host never came back has nobody steering; the first arrival takes it.
-    // Not a room rebuilt without a valid host token: see hostClaimable above.
     if ((room.hostId === null || room.hostId === undefined) && room.hostClaimable !== false) {
       room.hostId = meta.userId;
       room.hostClaimable = true;
     }
-    room.members.set(meta.userId, { ws, userName, voiceActive: false, adActive: false });
+    const memberToken = P.issueMemberCredential(room, msg.memberToken);
+    room.members.set(meta.userId, { ws, userName, voiceActive: false, adActive: false, memberToken });
     // A new arrival is watching the film, so a room that was entirely in ads is not.
     this._updateRoomAdFreeze(room);
     room.lastActivity = Date.now();
-    this._setMeta(ws, { userName, currentRoom: code });
+    this._setMeta(ws, { userName, currentRoom: code, memberToken });
     await this._persistRoom(code);
 
     this._sendTo(ws, {
       type: "room-joined",
+      ...P.roomAccess(room),
+      memberToken,
       roomCode: code,
       userId: meta.userId,
       mode: room.mode,
@@ -1004,7 +1029,7 @@ export class RoomHubDO {
       isHost: meta.userId === room.hostId,
       waitForSlow: !!room.waitForSlow,
       callUrl: room.callUrl || "",
-      hostToken: reclaimsHost ? await mintHostToken(this.env.HOST_TOKEN_SECRET, code) : undefined,
+      hostToken: reclaimsHost ? await mintHostToken(this.env.HOST_TOKEN_SECRET, code, room.hostNonce) : undefined,
       videoUrl: room.videoUrl || "",
       serverTime: Date.now(),
       playbackState: { ...room.playbackState, timestamp: this._positionTimestamp(room), serverTime: Date.now() },
@@ -1408,6 +1433,35 @@ export class RoomHubDO {
     this._broadcast(code, { type: "call-url", callUrl: room.callUrl, fromUser: meta.userName });
   }
 
+  async _handleRoomAccess(ws, meta, msg) {
+    const code = meta.currentRoom;
+    const room = this.rooms.get(code);
+    if (!room || room.hostId !== meta.userId) return;
+    P.ensureRoomAccess(room);
+    if (msg.type === "set-room-access") {
+      if (P.ROOM_MODES.includes(msg.navigationMode)) room.navigationMode = msg.navigationMode;
+      if (typeof msg.locked === "boolean") room.locked = msg.locked;
+    } else if (msg.type === "remove-member") {
+      const target = room.members.get(msg.userId);
+      if (!target || msg.userId === meta.userId
+        || (target.memberToken && target.memberToken === room.members.get(meta.userId)?.memberToken)) return;
+      if (target.memberToken) delete room.memberCredentials[target.memberToken];
+      P.revokeInvites(room);
+      for (const [id, member] of Array.from(room.members)) {
+        if (id !== msg.userId && (!target.memberToken || member.memberToken !== target.memberToken)) continue;
+        this._sendTo(member.ws, { type: "error", message: "Room not found", code: "MEMBER_REMOVED" });
+        this._removeMember(code, room, id, member, member.userName);
+        this._setMeta(member.ws, { currentRoom: null, memberToken: null, voiceActive: false });
+        try { member.ws.close(4003, "Room not found"); } catch {}
+      }
+    } else {
+      P.revokeInvites(room);
+    }
+    room.lastActivity = Date.now();
+    await this._persistRoom(code);
+    this._broadcast(code, { type: "room-access", ...P.roomAccess(room) });
+  }
+
   _handleSetMode(ws, meta, msg) {
     const code = meta.currentRoom;
     if (!code) return;
@@ -1423,6 +1477,7 @@ export class RoomHubDO {
     this._broadcast(code, {
       type: "mode-changed",
       mode: newMode,
+      navigationMode: P.navigationMode(room),
       waitForSlow: !!room.waitForSlow,
       fromUser: meta.userName,
     });
@@ -1433,7 +1488,7 @@ export class RoomHubDO {
     if (!code) return;
     const room = this.rooms.get(code);
     if (!room) return;
-    if (room.mode === "host" && room.hostId !== meta.userId) return;
+    if (P.navigationMode(room) === "host" && room.hostId !== meta.userId) return;
     const newUrl = validateUrl(msg.url);
     if (!newUrl) return;
     if (newUrl === room.videoUrl) return;

@@ -6,6 +6,39 @@ stand by reading 8,000 lines of source and a year of git log.
 Last updated: 2026-09-13. The dated audit section below supersedes historical
 release and test counts elsewhere in this document.
 
+## Reliability release, 2026-09-13
+
+Source is now **1.3.0**, under active verification on `feat/reliable-watch-parties`.
+It is not submitted to the extension stores. The six-workstream queue and release
+evidence live in `docs/RELIABILITY-RELEASE.md`. New UI wording and signed-in provider
+access were requested separately; neither is assumed approved or available.
+Cloudflare now serves pushed commit `2f72937`, Worker version
+`943e79e7-6575-4d88-b0e2-10c4e71f2102`. A live three-socket check passed locked-join
+denial, member rejoin, invitation rotation, playback, removal and instance-bound
+host proofs. The privacy correction remains identified below. Website cache deployment
+`dpl_6tJd6DKT4Wo5NUkYusq5rV45cE3F` now serves pushed `8cb16b1`; live asset headers
+require revalidation and live policy text still matches the approved source.
+Local full gate passes: 252 Node, 64 Vitest and 46 Worker tests, plus a real workerd
+integration test. PR 3 carries this release. Hosted run 34719871032 passed static, Node, Worker, package and all 12 Chrome
+browser scenarios. The rendered popup, overlay and room controls were reviewed.
+Firefox 155.0.1 BiDi cannot inspect extension pages; the harness now uses classic
+WebDriver/Marionette. Run 34720765445 passes its three real popup/playback/focus
+scenarios (four TAP tests including the parent), with zero skips. Final screenshot
+readiness now waits for the room entrance animation to complete. The hosted real YouTube
+attempt is blocked by a provider bot challenge, with zero decoded frames.
+
+```owner-actions
+what: Approve the eight proposed 1.3.0 UI labels in docs/RELIABILITY-RELEASE.md before store publication.
+why: The charter requires approval for new shipped copy; the implementation and labels are available for review.
+raised: 2026-09-13
+```
+
+```owner-actions
+what: Provide signed-in Netflix and JioHotstar playback sessions for the real-provider qualification matrix.
+why: Controlled browser tests cannot verify provider DRM, personalized ads, account login or real device sleep; no signed-in browser is available in this session.
+raised: 2026-09-13
+```
+
 ## Red-team repair, 2026-09-13
 
 Source and packages are now **1.2.4**. GitHub delivery: PR 1.

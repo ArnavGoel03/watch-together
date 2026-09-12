@@ -99,12 +99,10 @@ pages, mobile layout, keyboard operation, and reduced-motion behavior. The
 existing site CSP is restrictive and the message listener checks both embed
 origin and source; no bypass was established in this audit.
 
-### P2: compatibility and privacy marketing overstate evidence, open
+### P2: compatibility claims exceed evidence; privacy claims corrected
 
-`site/index.html:128` and `:136` say only the playhead crosses the network,
-contradicting both the protocol and the adjacent URL disclosure. The existing
-accurate policy list of playhead, URL, names, presence, chat, room codes, and IP
-processing should replace the claim when public copy is approved.
+The homepage's playhead-only claims were removed with the approved privacy
+correction. The live homepage, support page and policy were verified together.
 
 `store-listing.md` promises any HTML5 video site, exact synchronization, and
 live events. The browser suite uses bare local video, while the project's
@@ -126,12 +124,13 @@ with temporary storage and bounded cleanup. It passed in 1.17 seconds: health,
 malformed invite 404, two WebSocket upgrades, room creation/join, host-token shape
 and playback propagation. A full hibernation cycle still needs qualification.
 
-### P3: immutable caching uses mutable filenames, open
+### P3: immutable caching uses mutable filenames, corrected in source
 
 `site/vercel.json` gives `/assets/*` a one-year immutable cache lifetime, but
 assets such as `logo-256.png` and `og-card.png` have stable filenames. Replacing
 their contents cannot reliably update returning visitors until cache expiry.
-Use content-versioned asset paths or a cache policy that revalidates them.
+The policy now requires revalidation of those stable paths. Live header
+verification is recorded in the reliability release.
 
 ## Verification and handoff
 
@@ -152,5 +151,6 @@ Use content-versioned asset paths or a cache policy that revalidates them.
 
 Outstanding: store-dashboard listing update, Render dependency rollout
 verification, real provider/Firefox/Safari and actual hibernation qualification,
-the site gate gaps, cache policy and live store-state verification. Cloudflare
+the site gate gaps and live store-state verification. Cache header rollout is
+tracked in the reliability release. Cloudflare
 repair is deployed; root report carries its version identity.

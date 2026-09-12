@@ -379,3 +379,30 @@ test("limiter: prunes itself, because a map keyed by every address ever seen is 
   limiter.cleanup();
   assert.equal(limiter.hits.size, 0, "expired windows are still being held");
 });
+
+test("access credentials: bounded history preserves active members and rejects prototype or malformed keys", () => {
+  const room = { members: new Map() };
+  const active = P.issueMemberCredential(room);
+  room.members.set("active", { memberToken: active });
+  const oldestDisconnected = P.issueMemberCredential(room);
+  for (let i = 0; i < P.LIMITS.MAX_MEMBER_CREDENTIALS; i++) P.issueMemberCredential(room);
+  assert.equal(Object.keys(room.memberCredentials).length, P.LIMITS.MAX_MEMBER_CREDENTIALS);
+  assert.equal(P.memberCredentialValid(room, active), true);
+  assert.equal(P.memberCredentialValid(room, oldestDisconnected), false);
+  assert.equal(P.memberCredentialValid(room, "__proto__"), false);
+  assert.equal(P.memberCredentialValid(room, {}), false);
+  assert.equal(P.issueMemberCredential(room, active), active);
+  assert.equal(Object.keys(room.memberCredentials).length, P.LIMITS.MAX_MEMBER_CREDENTIALS);
+});
+
+test("access credentials: a supplied stale invitation never falls back to public code-only admission", () => {
+  const original = { members: new Map() };
+  const originalMember = P.issueMemberCredential(original);
+  const oldInvite = original.inviteToken;
+  const replacement = { members: new Map() };
+  P.ensureRoomAccess(replacement);
+  assert.equal(P.roomAccessError(replacement, { inviteToken: oldInvite, memberToken: originalMember }, false), "INVITE_REVOKED");
+  P.revokeInvites(original);
+  assert.equal(P.roomAccessError(original, { inviteToken: oldInvite, memberToken: originalMember }, false), null);
+  assert.equal(P.roomAccessError(replacement, {}, false), null, "legacy code-only join remains available for ordinary rooms");
+});

@@ -39,6 +39,50 @@
   const SERVER_URL = SERVER_URLS[0];
 
   root.__wtConfig = {
+    RELEASED_AT: "2026-09-12T20:42:18Z",
+    isNewerVersion(candidate, installed) {
+      const valid = value => typeof value === "string" && /^\d{1,5}(\.\d{1,5}){0,3}$/.test(value);
+      if (!valid(candidate)) return false;
+      const next = String(candidate).split(".").map(Number);
+      const current = valid(installed) ? String(installed).split(".").map(Number) : [0];
+      for (let index = 0; index < 4; index++) {
+        const difference = (next[index] || 0) - (current[index] || 0);
+        if (difference) return difference > 0;
+      }
+      return false;
+    },
+    DIAGNOSTIC_EVENTS: ["connecting", "connected", "disconnected", "reconnecting", "idle", "connect-timeout", "request-timeout", "ping", "pong", "send-failed", "room-joined"],
+
+    buildDiagnosticsReport(transport, driftSeconds = null) {
+      const source = transport && typeof transport === "object" ? transport : {};
+      const finite = (value, min, max) => typeof value === "number" && Number.isFinite(value) && value >= min && value <= max ? value : null;
+      return {
+        schemaVersion: 1,
+        connectionState: ["idle", "connecting", "connected", "reconnecting", "disconnected"].includes(source.connectionState) ? source.connectionState : "idle",
+        rttMs: finite(source.rttMs, 0, 60000),
+        driftSeconds: finite(driftSeconds, -86400, 86400),
+        reconnectAttempts: finite(source.reconnectAttempts, 0, 1000000) ?? 0,
+        events: (Array.isArray(source.events) ? source.events : []).slice(-100).filter(event => event && this.DIAGNOSTIC_EVENTS.includes(event.event) && finite(event.atMs, 0, Number.MAX_SAFE_INTEGER) !== null).map(event => {
+          const item = { atMs: event.atMs, event: event.event };
+          const value = finite(event.value, 0, 60000);
+          if (value !== null) item.value = value;
+          return item;
+        }),
+      };
+    },
+
+    buildInviteUrl({ videoUrl, roomCode, inviteToken, serverUrl }) {
+      if (!this.isJoinableCode(roomCode)) return "";
+      const relay = this.isValidServerUrl(serverUrl) ? serverUrl : this.SERVER_URL;
+      const url = new URL(this.isSafeNavigateUrl(videoUrl) ? videoUrl : `${relay.replace(/^wss:/, "https:").replace(/^ws:/, "http:")}/join/${encodeURIComponent(roomCode)}`);
+      const direct = this.isSafeNavigateUrl(videoUrl);
+      for (const key of ["wt_room", "wt_invite", "wt_relay"]) url.searchParams.delete(key);
+      if (direct) url.searchParams.set("wt_room", roomCode);
+      if (typeof inviteToken === "string" && /^[a-f0-9]{32,128}$/i.test(inviteToken)) url.searchParams.set(direct ? "wt_invite" : "invite", inviteToken);
+      if (direct) url.searchParams.set("wt_relay", relay);
+      return url.toString();
+    },
+
     // Every file that makes up the in-page half of the extension, in load order.
     //
     // Defined here because it is needed in two places that must never disagree: the
@@ -47,6 +91,7 @@
     // list and missing from the other produces an extension that loads and silently does
     // nothing, which is the worst kind of bug to diagnose.
     INJECT_FILES: [
+      "auto-join-extract.js",
       "config.js",
       "relay.js",
       "adapters/generic.js",
@@ -293,7 +338,7 @@
     // than WHICH video it is. Two URLs differing only by these are the same film, and an
     // offset measured on one has to be found again from the other.
     OFFSET_KEY_IGNORED_PARAMS: [
-      "wt_room", "t", "start", "time_continue", "si", "feature", "pp",
+      "wt_room", "wt_invite", "wt_relay", "t", "start", "time_continue", "si", "feature", "pp",
       "list", "index", "ab_channel", "utm_source", "utm_medium", "utm_campaign",
     ],
 

@@ -17,7 +17,7 @@
         <img class="logo-icon" src="../icons/icon48.png" alt="" width="30" height="30">
         <span class="logo-text">Watch Together</span>
       </div>
-      <div id="status" class="status-pill disconnected">
+      <div id="status" class="status-pill disconnected" role="status">
         <span class="status-dot"></span>
         <span id="statusText">Offline</span>
       </div>
@@ -38,8 +38,8 @@
       </div>
 
       <div class="mode-toggle">
-        <button id="modeEveryone" class="mode-btn mode-active" data-mode="everyone">Everyone controls</button>
-        <button id="modeHost" class="mode-btn" data-mode="host">Only I control</button>
+        <button id="modeEveryone" class="mode-btn mode-active" data-mode="everyone" aria-pressed="true">Everyone controls</button>
+        <button id="modeHost" class="mode-btn" data-mode="host" aria-pressed="false">Only I control</button>
       </div>
 
       <div class="input-group">
@@ -197,6 +197,14 @@
           </div>
           <div id="membersList" class="members-list"></div>
         </div>
+        <details id="roomAccess" class="server-config" hidden>
+          <summary>Room</summary>
+          <div class="pref-rows">
+            <label class="pref-row"><span class="pref-label">Allow guests to change video</span><input type="checkbox" id="guestNavigation"></label>
+            <label class="pref-row"><span class="pref-label">Lock room</span><input type="checkbox" id="lockRoom"></label>
+            <div class="pref-row"><button id="btnRevokeInvites" class="action-btn">Revoke invitations</button></div>
+          </div>
+        </details>
       </div>
 
       <!-- Chat -->
@@ -209,7 +217,7 @@
         <div id="typingIndicator" class="typing-indicator"></div>
         <div class="chat-input-row">
           <input type="text" id="chatInput" placeholder="Say something..." maxlength="500">
-          <button id="btnSend" class="send-btn">
+          <button id="btnSend" class="send-btn" aria-label="Send">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
           </button>
         </div>
@@ -221,7 +229,12 @@
       </button>
     </div>
 
-    <div id="toast" class="toast"></div>
+    <details id="connectionDetails" class="server-config">
+      <summary>Connection</summary>
+      <div class="diagnostic-row"><span id="latency">Latency: ...</span><button id="btnDownloadDiagnostics" class="action-btn" disabled>Download diagnostics</button></div>
+    </details>
+    <footer class="release"><span id="version"></span><time id="releasedAt"></time><span id="updateAvailable" role="status" hidden>Update available</span></footer>
+    <div id="toast" class="toast" role="status"></div>
   </div>
 
   <script src="../config.js"></script>
