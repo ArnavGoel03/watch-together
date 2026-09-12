@@ -207,7 +207,7 @@ async function openPopupFor(browser, marker) {
 
 async function popupState(popup) {
   return popup.evaluate(() => new Promise((resolve, reject) => {
-    const port = chrome.runtime.connect({name: "popup"});
+    const port = chrome.runtime.connect({name: "test-probe"});
     const timer = setTimeout(() => { port.disconnect(); reject(new Error("No background state")); }, 5000);
     port.onMessage.addListener(msg => {
       if (msg.type !== "state") return;
@@ -335,6 +335,11 @@ describe("Browser integration", () => {
 
   it("overlay keyboard focus returns, hotkey capture releases Tab, and volume survives remount", async () => {
     const page = await openVideoPage(hostBrowser, "keyboard");
+    const popup = await openPopupFor(hostBrowser, "keyboard");
+    await setServerUrl(popup);
+    await createRoom(popup, "Alice");
+    await popup.close();
+    await page.bringToFront();
     await page.click("#wt-overlay-btn");
     await page.waitForSelector("#wt-close");
     expect(await page.$eval("#wt-overlay-panel", el => el.getAttribute("role"))).toBe("dialog");
@@ -343,6 +348,7 @@ describe("Browser integration", () => {
     expect(await page.evaluate(() => document.activeElement.id)).toBe("wt-overlay-btn");
     expect(await page.$eval("#wt-overlay-btn", el => el.getAttribute("aria-expanded"))).toBe("false");
     await page.keyboard.press("Enter");
+    await page.waitForSelector("#wt-overlay-panel.wt-visible", {visible: true});
     await page.evaluate(() => {
       for (const el of document.querySelectorAll("#wt-overlay-panel details")) el.open = true;
     });
@@ -382,7 +388,7 @@ describe("Browser integration", () => {
     await hostPopup.click("#lockRoom");
     expect(await waitUntil(async () => guestPopup.$eval("#lockRoom", el => el.checked))).toBe(true);
     const diagnostics = await hostPopup.evaluate(() => new Promise(resolve => {
-      const port = chrome.runtime.connect({name: "popup"});
+      const port = chrome.runtime.connect({name: "test-diagnostics"});
       port.onMessage.addListener(msg => { if (msg.type === "diagnostics") { resolve(window.__wtConfig.buildDiagnosticsReport(msg.diagnostics)); port.disconnect(); } });
       port.postMessage({type: "get-diagnostics"});
     }));
@@ -418,6 +424,9 @@ describe("Browser integration", () => {
     const guestPopup = await openPopupFor(guestBrowser, "invite-guest");
     await setServerUrl(guestPopup);
     const inviteUrl = await hostPopup.evaluate(state => window.__wtConfig.buildInviteUrl({videoUrl: state.videoUrl, roomCode: state.currentRoom, inviteToken: state.inviteToken, serverUrl: state.serverUrl}), hostState);
+    invitedPage.setDefaultTimeout(10000);
+    invitedPage.setDefaultNavigationTimeout(10000);
+    await invitedPage.bringToFront();
     await invitedPage.goto(inviteUrl, {waitUntil: "load"});
     await invitedPage.waitForSelector("#wt-join-consent");
     expect(new URL(invitedPage.url()).searchParams.has("wt_invite")).toBe(false);
@@ -427,6 +436,7 @@ describe("Browser integration", () => {
     await bystander.waitForSelector("#wt-overlay-btn");
     await sleep(1500);
     expect(await bystander.$("#wt-join-consent")).toBeNull();
+    await invitedPage.bringToFront();
     await invitedPage.goto(hostPage.url(), {waitUntil: "load"});
     await invitedPage.waitForSelector("#wt-join-consent");
     await invitedPage.click("#wt-join-consent button");

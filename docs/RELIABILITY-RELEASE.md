@@ -19,6 +19,16 @@ The earlier storage and retention correction is already approved and live.
 
 ## Verification log
 
+- Cloudflare deployed from pushed commit `2f72937`, version
+  `943e79e7-6575-4d88-b0e2-10c4e71f2102`. The live relay passes
+  `node scripts/verify-live-relay.mjs wss://watch-together-cf.goelhome.workers.dev`:
+  instance-bound host proof, locked denial, credential rejoin, rotation, playback and removal.
+- PR 3, hosted run 34718782726: static, Node, Worker and package jobs passed.
+  Nine existing Chrome scenarios passed. Three new scenarios needed test setup repairs:
+  advanced controls require room membership, read-only probes must not replace the popup port,
+  and the invited tab must be foregrounded. Firefox loaded but BiDi refused direct extension-page
+  navigation. Its staged launcher now asks the extension to open its own popup. Rerun pending.
+
 - Full local `npm test` passes: lint, all six typecheck contexts, dash/version gates,
   252 Node tests, 64 Vitest tests and 46 Worker tests (362 tests).
 - Real local workerd: room creation, two-member playback, health and malformed invite checks pass.

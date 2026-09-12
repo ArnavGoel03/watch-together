@@ -12,9 +12,14 @@ Source is now **1.3.0**, under active verification on `feat/reliable-watch-parti
 It is not submitted to the extension stores. The six-workstream queue and release
 evidence live in `docs/RELIABILITY-RELEASE.md`. New UI wording and signed-in provider
 access were requested separately; neither is assumed approved or available.
-The previously deployed Worker and privacy correction remain identified below.
+Cloudflare now serves pushed commit `2f72937`, Worker version
+`943e79e7-6575-4d88-b0e2-10c4e71f2102`. A live three-socket check passed locked-join
+denial, member rejoin, invitation rotation, playback, removal and instance-bound
+host proofs. The privacy correction remains identified below.
 Local full gate passes: 252 Node, 64 Vitest and 46 Worker tests, plus a real workerd
-integration test. Hosted Chrome/Firefox and visual qualification are next.
+integration test. PR 3 carries this release. Hosted run 34718782726 passed static,
+Node, Worker and package jobs; its three new Chrome tests and Firefox navigation
+failed on harness setup defects. The harness corrections await the next run.
 
 ```owner-actions
 what: Approve the eight proposed 1.3.0 UI labels in docs/RELIABILITY-RELEASE.md before store publication.

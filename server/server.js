@@ -611,6 +611,7 @@ const server = http.createServer((req, res) => {
         connections: totalConnections,
         members: totalMembers,
         uptime: Math.floor(process.uptime()),
+        revision: /^[a-f0-9]{40}$/i.test(process.env.RENDER_GIT_COMMIT || "") ? process.env.RENDER_GIT_COMMIT : null,
       })
     );
     return;
