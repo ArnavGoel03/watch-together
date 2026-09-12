@@ -8,14 +8,16 @@ release and test counts elsewhere in this document.
 
 ## Red-team repair, 2026-09-13
 
-Source and packages are now **1.2.4**, on `fix/watch-together-red-team`.
+Source and packages are now **1.2.4**. GitHub delivery: PR 1.
 The audit and remaining risks are in `docs/RED-TEAM.md`, with separate extension
 and release/privacy detail. Local static gates, Node and Worker tests pass;
-all package audits are clean. Hosted CI run 34714445272 passed all five jobs, including nine browser
-tests and the real Worker integration. Cloudflare is live at Worker version
+all package audits are clean. Hosted CI runs 34714445272 and 34714686507 passed all five jobs: 202 Node,
+64 server, 35 Worker, nine browser tests and one real Worker integration (311).
+The popup and overlay screenshots from the latter run were visually reviewed
+and retained in `docs/evidence/red-team-2026-09-13/`. Cloudflare is live at Worker version
 `ba47c113-21a3-41ab-acb8-0077237bbd24` from pushed commit `fc3da47`.
-Render rollout and final screenshot review are in progress. Local Chrome failed to launch before nine browser tests ran, so
-there is no local browser/visual pass. Store versions and user counts below
+Render deployment identity remains unverified because its CLI token is expired. Local Chrome failed to launch before nine browser tests ran, so
+the browser and visual evidence comes from hosted CI, not the local session. Store versions and user counts below
 were last recorded in August and have not been reverified.
 
 The repair centralizes playback policy across all adapters, restores keepalive

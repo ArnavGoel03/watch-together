@@ -145,8 +145,10 @@ Use content-versioned asset paths or a cache policy that revalidates them.
   that enumerate the full Node test suite; its owner verifies its assertions.
 - Browser run did not reach tests: Chrome exited during launch with `Code:
   null`, empty stderr, and nine tests skipped. No browser pass is claimed.
-  Root owns the final browser run after concurrent source fixes finish.
+  Hosted CI runs 34714445272 and 34714686507 subsequently passed all nine
+  browser tests. Root visually reviewed the final retained screenshots.
 
-Outstanding: public privacy/listing correction, production dependency rollout,
-real-browser and worker runtime qualification, the site gate gaps, cache policy,
-and live store-state verification. Root owns the combined final gate and release.
+Outstanding: public privacy/listing correction, Render dependency rollout
+verification, real provider/Firefox/Safari and actual hibernation qualification,
+the site gate gaps, cache policy and live store-state verification. Cloudflare
+repair is deployed; root report carries its version identity.

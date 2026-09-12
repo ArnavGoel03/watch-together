@@ -14,8 +14,9 @@ claim that every streaming provider or browser combination is qualified.
 - Complete: local static gates, server suites, worker unit tests and packaging.
 - Complete: hosted browser verification (nine tests), real Worker smoke, pushed repair
   and Cloudflare deployment.
-- In progress: final screenshot review, merge and Render rollout.
-- Pending: final STATE and Atlas status reconciliation.
+- Complete: final screenshot review; GitHub delivery is PR 1.
+- Open: Render deployment identity, its CLI authentication has expired.
+- Complete: STATE, Atlas owner briefing and audit status records updated.
 - Open: policy/listing copy approval and live store-state verification.
 - Open: real streaming/DRM, Firefox and Safari qualification, residual risks below.
 
@@ -46,6 +47,8 @@ claim that every streaming provider or browser combination is qualified.
 `server/content-runtime.test.mjs` originally had 15 regression cases: all 15
 failed against an isolated copy of original HEAD and passed against the repair.
 It now has 17 cases, including deferred metadata and wait-for-slow recovery.
+The four new Worker regressions also fail against original main (31 pass, four
+fail), and all 35 pass after repair.
 `server/relay.test.mjs` executes actual background code, not copied algorithms.
 Existing copied-algorithm tests remain weaker evidence and were not treated as
 proof that browser integration works.
@@ -81,10 +84,15 @@ proof that browser integration works.
   Netflix/JioHotstar button retries were removed with duplicated adapter policy;
   actual provider playback is a required follow-up, not a proven compatibility
   claim. Firefox/Safari need real two-person sessions.
+- **P2, localhost permission:** required loopback grants also cover local admin
+  applications. The historical claim that they grant access to nobody's data is
+  incorrect. A development-only manifest would preserve test access without
+  distributing these grants; permission packaging remains a release follow-up.
 - **P2, accessibility/UI:** no complete screen-reader, focus-trap, keyboard,
   mobile Safari, zoom or high-contrast qualification was possible locally.
   Caption track listener lifecycle and whole-document mutation observation
-  remain performance concerns, not benchmarked failures.
+  remain performance concerns, not benchmarked failures. Popup version/release-time
+  footer, update indicator and Demo Data Mode are absent product-default gaps.
 - **P2, marketing/site gate:** the site check does not prove actual embedded
   playback and is absent from CI. Site claims exceed verified provider coverage.
   Detailed evidence is in the release audit.
@@ -99,18 +107,28 @@ availability only, not which commit is deployed. No production rooms were
 joined, enumerated or modified for this audit.
 
 Local `npm test` passed: 202 Node tests, 64 Vitest tests, 35 Worker tests.
-Hosted CI run 34714445272 passed all five jobs, including nine browser tests
-and the real Worker smoke. All three
+Hosted CI runs 34714445272 and 34714686507 passed all five jobs, including nine
+browser tests and the real Worker smoke. The latter verifies updated CI actions
+and has no project/dependency warning output. Total verified cases: 311. All three
 `npm audit` reports were clean after dependency updates. Both v1.2.4 extension
 packages build and pass package verification.
 
 Local Chrome launch failed before test execution with `Code: null`, empty
 stderr, nine skipped tests. The in-app browser also reported no available
-browser. Hosted CI browser tests passed; initial screenshots caught entrance animations
-mid-frame, so screenshot timing is being corrected before final visual review.
+browser. Hosted CI browser tests passed. The final popup and overlay screenshots from
+run 34714686507 were visually reviewed after waiting for entrance animations.
+They are retained in `docs/evidence/red-team-2026-09-13/`. Controls render
+legibly and the room/member/chat layout is intact at the tested desktop size.
+This is not a complete accessibility or responsive-layout qualification.
 No store publication is inferred from packaging.
 
 Cloudflare deployed from pushed commit `fc3da47`; version
 `ba47c113-21a3-41ab-acb8-0077237bbd24` is at 100 percent in the deployment API.
 Health is good after deploy; malformed path receives an edge HTTP 400 (the
 local runtime receives it and returns 404). Both outcomes refuse the request.
+
+
+Render CLI reports an expired token. Its public health endpoint is available,
+but a fresh deployment identity cannot be confirmed through the CLI. The
+Git-connected fallback receives main-branch changes; do not describe its patch
+as live without host-side evidence. Extension packages remain unsubmitted.
