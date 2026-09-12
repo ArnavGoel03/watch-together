@@ -23,8 +23,8 @@ jobs:
     name: Lint, types, and house rules
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.0.0
         with:
           node-version: "22"
           cache: npm
@@ -47,8 +47,8 @@ jobs:
     name: Server tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.0.0
         with:
           node-version: "22"
           cache: npm
@@ -63,8 +63,8 @@ jobs:
     name: Cloudflare worker tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.0.0
         with:
           node-version: "22"
           cache: npm
@@ -77,8 +77,8 @@ jobs:
     name: Two-browser sync harness
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.0.0
         with:
           node-version: "22"
           cache: npm
@@ -91,7 +91,7 @@ jobs:
         run: npm --prefix server run test:browser
         env:
           WT_SCREENSHOTS_DIR: ${{ runner.temp }}/watch-together-shots
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7.0.1
         if: always()
         with:
           name: browser-screenshots
@@ -102,13 +102,13 @@ jobs:
     name: Store package builds and is clean
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.0.0
         with:
           node-version: "22"
       - name: Build both store packages
         run: node scripts/package.mjs
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7.0.1
         with:
           name: extension-packages
           path: dist/*.zip

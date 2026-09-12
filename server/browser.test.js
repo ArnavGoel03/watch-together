@@ -304,6 +304,7 @@ describe("Browser integration", () => {
     expect(await popup.$("#btnJoin")).not.toBeNull();
     if (process.env.WT_SCREENSHOTS_DIR) {
       fs.mkdirSync(process.env.WT_SCREENSHOTS_DIR, { recursive: true });
+      await popup.evaluate(() => Promise.all(document.getAnimations().map(a => a.finished.catch(() => {}))));
       await popup.screenshot({ path: path.join(process.env.WT_SCREENSHOTS_DIR, "popup.png") });
     }
   }, 40000);
@@ -396,6 +397,7 @@ describe("Browser integration", () => {
     // You are always first, and always marked, so the row you care about is findable.
     expect(names[0]).toMatch(/\(you\)/);
     if (process.env.WT_SCREENSHOTS_DIR) {
+      await hostPage.evaluate(() => Promise.all(document.getAnimations().map(a => a.finished.catch(() => {}))));
       await hostPage.screenshot({ path: path.join(process.env.WT_SCREENSHOTS_DIR, "overlay.png") });
     }
   }, 120000);

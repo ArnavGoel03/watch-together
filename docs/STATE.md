@@ -11,8 +11,10 @@ release and test counts elsewhere in this document.
 Source and packages are now **1.2.4**, on `fix/watch-together-red-team`.
 The audit and remaining risks are in `docs/RED-TEAM.md`, with separate extension
 and release/privacy detail. Local static gates, Node and Worker tests pass;
-all package audits are clean. Hosted browser verification and deployment are
-in progress. Local Chrome failed to launch before nine browser tests ran, so
+all package audits are clean. Hosted CI run 34714445272 passed all five jobs, including nine browser
+tests and the real Worker integration. Cloudflare is live at Worker version
+`ba47c113-21a3-41ab-acb8-0077237bbd24` from pushed commit `fc3da47`.
+Render rollout and final screenshot review are in progress. Local Chrome failed to launch before nine browser tests ran, so
 there is no local browser/visual pass. Store versions and user counts below
 were last recorded in August and have not been reverified.
 

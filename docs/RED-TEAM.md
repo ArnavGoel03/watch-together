@@ -12,7 +12,9 @@ claim that every streaming provider or browser combination is qualified.
 - Complete: playback, adapter and overlay review with runtime regression tests.
 - Complete: dependency, privacy and package review.
 - Complete: local static gates, server suites, worker unit tests and packaging.
-- In progress: hosted browser verification, runtime smoke, commit and deployment.
+- Complete: hosted browser verification (nine tests), real Worker smoke, pushed repair
+  and Cloudflare deployment.
+- In progress: final screenshot review, merge and Render rollout.
 - Pending: final STATE and Atlas status reconciliation.
 - Open: policy/listing copy approval and live store-state verification.
 - Open: real streaming/DRM, Firefox and Safari qualification, residual risks below.
@@ -96,12 +98,19 @@ Both public health endpoints answered `status: ok` on 2026-09-13. This proves
 availability only, not which commit is deployed. No production rooms were
 joined, enumerated or modified for this audit.
 
-Local `npm test` passed after the first repair batch. Final counts and hosted
-browser/deployment results are recorded in STATE when available. All three
+Local `npm test` passed: 202 Node tests, 64 Vitest tests, 35 Worker tests.
+Hosted CI run 34714445272 passed all five jobs, including nine browser tests
+and the real Worker smoke. All three
 `npm audit` reports were clean after dependency updates. Both v1.2.4 extension
 packages build and pass package verification.
 
 Local Chrome launch failed before test execution with `Code: null`, empty
 stderr, nine skipped tests. The in-app browser also reported no available
-browser. Hosted CI screenshots and browser tests are requested; no visual pass
-or store publication is inferred from packaging.
+browser. Hosted CI browser tests passed; initial screenshots caught entrance animations
+mid-frame, so screenshot timing is being corrected before final visual review.
+No store publication is inferred from packaging.
+
+Cloudflare deployed from pushed commit `fc3da47`; version
+`ba47c113-21a3-41ab-acb8-0077237bbd24` is at 100 percent in the deployment API.
+Health is good after deploy; malformed path receives an edge HTTP 400 (the
+local runtime receives it and returns 404). Both outcomes refuse the request.
