@@ -28,8 +28,13 @@ that is availability evidence, not deployment identity.
 
 Privacy correction was **approved on 2026-09-13**. The exact approved storage
 and retention disclosure is applied to the policy and repository store listing;
-contradictory claims are removed from the homepage and support page. Publication
-and live verification are in progress. Store dashboard submissions remain separate.
+contradictory claims are removed from the homepage and support page. Published
+and verified at `https://watch.arnavgoel.dev/privacy` on 2026-09-13. Vercel
+deployment `dpl_7x3E9YwMS4tVyA5XQYCLDA1cJsWa` serves pushed commit `55c2545`.
+Live normalized HTML matches the approved paragraph exactly; fresh homepage
+and support scrapes confirm the old claims are absent. The rendered policy
+was reviewed and retained at `docs/evidence/privacy-2026-09-13.png`. CI run
+34716207330 passed all five jobs. Store dashboard submissions remain separate.
 Real provider/DRM, Firefox/Safari, accessibility and same-URL invite races remain
 explicitly unqualified in the audit.
 
