@@ -17,7 +17,9 @@ claim that every streaming provider or browser combination is qualified.
 - Complete: final screenshot review; GitHub delivery is PR 1.
 - Open: Render deployment identity, its CLI authentication has expired.
 - Complete: STATE, Atlas owner briefing and audit status records updated.
-- Open: policy/listing copy approval and live store-state verification.
+- Complete: policy/listing copy approved on 2026-09-13 and applied to source.
+- In progress: policy publication/live verification.
+- Open: live store-state verification and dashboard listing updates.
 - Open: real streaming/DRM, Firefox and Safari qualification, residual risks below.
 
 ## Confirmed defects and repairs
@@ -58,8 +60,9 @@ proof that browser integration works.
 - **P1, privacy disclosure:** Cloudflare persists room URL, raw creator IP,
   playback/settings and socket metadata despite public memory-only/no-database
   promises. Empty named rooms can survive seven days. Exact proposed correction
-  is in [the release audit](RED-TEAM-RELEASE.md). Public copy was not invented or
-  published without owner approval. Provider logging retention is unverified.
+  is in [the release audit](RED-TEAM-RELEASE.md). The owner approved it on
+  2026-09-13; source has been corrected. STATE records publication verification.
+  Provider logging retention remains unverified.
 - **P2, room trust:** default rooms deliberately let any member navigate everyone
   to any HTTP(S) page. Named rooms can be guessable; room codes are bearer
   credentials, not user authentication. Rate limits are per address and Worker

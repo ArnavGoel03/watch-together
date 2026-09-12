@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Watch Together - Privacy Policy</title>
-<meta name="description" content="What Watch Together knows, which is where the playhead is, and nothing else.">
+<meta name="description" content="The Cloudflare relay stores room metadata in Durable Object storage so rooms can survive hibernation.">
 <link rel="icon" href="/assets/favicon-32.png" sizes="32x32">
 <link rel="apple-touch-icon" href="/assets/logo-256.png">
 <link rel="canonical" href="https://watch.arnavgoel.dev/privacy">
@@ -22,26 +22,26 @@
 
 <main class="doc">
   <h1>Privacy policy</h1>
-  <p class="updated">Last updated 22 August 2026. It applies to version 1.2.0 of the extension.</p>
+  <p class="updated">Last updated 13 September 2026.</p>
 
-  <p>Watch Together keeps two video players at the same timestamp. To do that it needs to know where the playhead is, and which page the room is watching. It does not need anything else, and it is not built to collect anything else. There is no account, no sign in and no analytics.</p>
+  <p>Watch Together keeps two video players at the same timestamp. To do that it needs to know where the playhead is, and which page the room is watching. There is no account, no sign in and no analytics.</p>
 
   <h2>What crosses the network</h2>
   <div class="wire" aria-hidden="true"><div class="mini-s"><span class="mini-pic"></span><span class="mini-d"></span><span class="mini-t"><i></i></span></div><div class="wire-line"><span class="wire-pip">0:42</span></div><div class="mini-s"><span class="mini-pic"></span><span class="mini-d"></span><span class="mini-t"><i></i></span></div></div>
   <ul class="ledger ledger-in">
     <li><strong>The position of the playhead.</strong> Play, pause and seek events, as timestamps, passed between the people in your room while the room is open.</li>
-    <li><strong>The address of the one tab you attached a room to.</strong> This is what lets everybody follow when you switch video, and it is what a join link points at. It is held in the relay's memory for the life of the room and never written to a database. It is only ever sent for that one tab.</li>
-    <li><strong>The display name you chose.</strong> Shown to the other people in your room. Stored on your own device, not on the relay.</li>
+    <li><strong>The address of the one tab you attached a room to.</strong> This is what lets everybody follow when you switch video, and it is what a join link points at. It is only ever sent for that one tab.</li>
+    <li><strong>The display name you chose.</strong> Shown to the other people in your room.</li>
     <li><strong>Whether you are watching, in an advert, or buffering.</strong> This is what the member list shows, and it is what lets the room wait for somebody who is behind.</li>
-    <li><strong>Chat messages.</strong> Relayed between the people in your room as they are sent. Never stored, and gone when the room closes.</li>
-    <li><strong>Room codes.</strong> Randomly generated, held in memory while the room is open, deleted when everybody leaves or after a long idle period.</li>
-    <li><strong>Your IP address, transiently.</strong> Like any internet service, the relay sees the address your connection arrives from, and uses it only to limit how many rooms and connections one address can open. It is not stored in a database. Log lines carry a short one way hash instead of the address, which cannot be turned back into it.</li>
+    <li><strong>Chat messages.</strong> Chat messages are relayed without a chat-history database.</li>
+    <li><strong>Room codes.</strong> The Cloudflare relay stores room metadata in Durable Object storage so rooms can survive hibernation.</li>
+    <li><strong>Your IP address.</strong> Like any internet service, the relay sees the address your connection arrives from, and uses it only to limit how many rooms and connections one address can open.</li>
   </ul>
 
   <h2>What does not</h2>
   <ul class="ledger ledger-out">
     <li><strong>Your browsing history.</strong> Only the single tab with a room attached is ever reported, and only while that room is running. Every other tab you have open, and every moment you are not in a room, is never reported anywhere.</li>
-    <li><strong>The video itself.</strong> Nothing is recorded, captured or re-streamed. Only the position of the playhead is exchanged.</li>
+    <li><strong>The video itself.</strong> Nothing is recorded, captured or re-streamed.</li>
     <li><strong>Email addresses, accounts, passwords.</strong> There is nothing to sign up for.</li>
     <li><strong>Cookies, tracking, analytics or telemetry.</strong> None of it, on the extension or on this website.</li>
     <li><strong>Your microphone or camera.</strong> Voice is disabled in this version and no microphone permission is requested. If you start a Zoom or Google Meet call from the panel, that call runs in Zoom or Google's own product, under their policies, not this one.</li>
@@ -57,7 +57,8 @@
   </ul>
 
   <h2>Where the relay runs</h2>
-  <p>Rooms are held on Cloudflare Workers, with a second relay on Render as a fallback. Both hold room state in memory only. Neither writes room data to a database or to disk, and both discard it when the room empties.</p>
+  <p>The Cloudflare relay stores room metadata in Durable Object storage so rooms can survive hibernation. This includes the room code, the attached page's URL, playback state, room settings, and the creator's IP address for rate limiting. Connection metadata includes each connected member's display name and IP address. Chat messages are relayed without a chat-history database. The Render fallback keeps room state in memory.</p>
+  <p>Empty ordinary rooms are retained for up to 30 minutes; empty named rooms for up to seven days. Inactive ordinary rooms expire after 12 hours and inactive named rooms after 30 days. Cleanup runs on periodic sweeps, so these are retention targets rather than exact deletion timestamps.</p>
 
   <h2>Children</h2>
   <p>Watch Together does not knowingly collect information from children under 13. There is no account and no personal information is required to use it.</p>

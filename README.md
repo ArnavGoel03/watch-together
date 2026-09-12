@@ -289,6 +289,10 @@ that decides whether it works, and everything between here and the App Store.
 
 Hosted at: https://watch.arnavgoel.dev/privacy
 
+The policy discloses Cloudflare Durable Object room metadata/IP storage and
+retention, approved 2026-09-13. `site/privacy.html` is the canonical policy;
+`privacy-policy.html` redirects there. Store submission text is in `store-listing.md`.
+
 ## Browser Support
 
 | Browser | How |

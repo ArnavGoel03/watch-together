@@ -8,7 +8,7 @@ claims, not independently verified current facts.
 
 ## Findings
 
-### P1: privacy promises contradict durable room storage, open
+### P1: privacy promises contradict durable room storage, correction approved
 
 `site/privacy.html:33`, `:38`, and `:60` say URLs and IPs are never written to a
 database and both relays use memory only. `server-cf/src/worker.js` persists every
@@ -24,8 +24,8 @@ are 12 hours and 30 days respectively. `store-listing.md` also promises that roo
 data is deleted when everyone leaves and certification notes say nothing is
 stored. Those statements need correction before the next submission.
 
-No existing accurate public string covers this behavior. Proposed replacement
-copy, for owner review before changing the shipped policy:
+Owner approved the following exact replacement on 2026-09-13. It is applied
+to the policy and repository listing; publication evidence is in STATE:
 
 > The Cloudflare relay stores room metadata in Durable Object storage so rooms
 > can survive hibernation. This includes the room code, the attached page's URL,
