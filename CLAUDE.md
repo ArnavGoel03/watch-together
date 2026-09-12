@@ -144,3 +144,9 @@ The storage/retention disclosure in the release audit was approved on 2026-09-13
 `site/privacy.html` is canonical; the root privacy page redirects there. Keep
 homepage/support claims and `store-listing.md` consistent with its durable-storage
 and retention statements. Repository listing edits do not update store dashboards.
+
+**Firefox extension tests use classic WebDriver/Marionette.** Firefox 155 BiDi excludes
+extension contexts, so Puppeteer cannot inspect the popup. Keep GeckoDriver's
+`--allow-system-access` on its service, never in Firefox capabilities. Screenshot
+readiness must wait for the popup entrance animation; an active DOM class alone
+can capture a fully transparent room. CI 34720902419 verifies the actual popup.

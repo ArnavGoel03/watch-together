@@ -5,13 +5,13 @@ User requested all six proposed improvements. This is the persistent work queue.
 | Workstream | Status | Acceptance |
 | --- | --- | --- |
 | Real provider qualification | Blocked on provider access | Hosted YouTube attempt hit a bot challenge. Signed-in Netflix/JioHotstar access requested; real Safari playback unavailable. See `PROVIDER-QUALIFICATION.md`. |
-| Invitations and first join | Implemented, Chrome verified | Correct video and relay, revocable credentials, tab binding through login, optional-site extraction. Legacy global consent removed. |
+| Invitations and first join | Implemented, Chrome and Firefox verified | Correct video and relay, revocable credentials, tab binding through login, optional-site extraction. Legacy global consent removed. |
 | Recovery | Implemented, runtime and relay tests passed | 10s socket open, 25s waiting actions, 15s membership acknowledgement; cancellation, stable room relay, private override isolation. |
 | Host controls | Implemented, Chrome and live Cloudflare verified | Independent navigation permission, lock, removal and invite revocation on both relays. Lost-room recovery requires host and fresh invitations. |
 | Private diagnostics | Implemented, Chrome verified | Latency and drift, 100 local events, allowlisted export without URLs, IPs, chat, room codes, names or tokens. |
-| Accessibility and polish | Implemented, Chrome verified | Focus return and Tab exit, volume through player remount, version/release/update metadata. |
+| Accessibility and polish | Implemented, Chrome and Firefox verified | Focus return and Tab exit, volume through player remount, version/release/update metadata. |
 | Remaining audit cache correction | Live and verified | Stable marketing asset names now revalidate. Vercel deployment `dpl_6tJd6DKT4Wo5NUkYusq5rV45cE3F`; live asset response confirms the header. |
-| Release verification and shipping | Partially shipped | Local gates, Chrome, packages and live Worker pass. Firefox correction in progress. PR 3 pushed; STATE and Atlas updated. Store submissions require approved labels and publisher access. Render identity is pending main deployment. |
+| Release verification and shipping | Partially shipped | All six CI jobs pass, rendered Chrome/Firefox evidence reviewed, packages verified and Worker live. PR 3 merged at `68e7559`. Store submissions require approved labels and publisher access. Render reports merged `68e7559` and passes the live owned-room behavior check. |
 
 New UI labels were proposed for approval. Implementation is provisional until that reply:
 Lock room; Allow guests to change video; Remove; Revoke invitations; Download diagnostics;
@@ -19,6 +19,16 @@ Latency; Drift; Update available. Other UI wording reuses project strings.
 The earlier storage and retention correction is already approved and live.
 
 ## Verification log
+
+- PR 3 merged at `68e7559cbb933b2d4cb126cb2c3be55db73b8ca2`.
+  Main CI 34721017606 passes all six jobs. Render `/health` reports that exact
+  revision, and `scripts/verify-live-relay.mjs` passes instance-bound host proof,
+  locked denial, member rejoin, rotation, playback and removal on the fallback too.
+- Final CI run 34720902419 passes all six jobs: 362 Node/Vitest/Worker tests,
+  real workerd integration, 12 Chrome scenarios, three Firefox 155.0.1 scenarios
+  (four TAP tests including their parent), lint/types/version gates and both packages.
+  The final Firefox screenshot waits for full-opacity room rendering; it was visually
+  reviewed and retained with the Chrome evidence in `docs/evidence/reliability-2026-09-13/`.
 
 - Website cache correction deployed from pushed `8cb16b1`, Vercel deployment
   `dpl_6tJd6DKT4Wo5NUkYusq5rV45cE3F`. Live `/assets/logo-256.png` returns
@@ -62,7 +72,7 @@ The earlier storage and retention correction is already approved and live.
 - Local Chrome cannot launch in this sandbox. The browser suite fails in setup; its skipped tests
   are not passing evidence. Hosted Chrome CI supplies all 12 cases and rendered screenshots.
 - Firefox stable installation cannot mount its DMG here (`hdiutil: Device not configured`).
-  The Firefox harness fails explicitly with zero skips; hosted Linux CI must supply execution evidence.
+  Hosted Linux CI supplies the passing Firefox execution and rendered evidence.
 - Safari macOS arm64 Debug app builds. The final incremental build has zero compiler warnings,
   but ten unavailable CoreSimulator service errors; the earlier full build also logged App Intents
   extraction warnings. This is build evidence only, not real Safari popup/playback qualification.
@@ -91,3 +101,16 @@ public room with the same name; names do not have permanent ownership in the in-
 Pending invitations are local, bound to a tab and exact destination, capped at 32 entries, and
 expire after 30 minutes. Provider login may leave and return to that destination without losing
 the invitation. A private relay setting cannot be replaced by an invitation link.
+
+## Outstanding release boundaries
+
+- New UI labels still require the requested approval under the owner's copy rule.
+  Verified Chrome/Firefox 1.3.0 archives are in `dist/`; neither has been submitted.
+  Publisher/store account access is unavailable in this session.
+- Real YouTube qualification is blocked by the provider challenge. Netflix/JioHotstar
+  need authorized signed-in playback sessions; Safari, actual sleep, ads and cross-device
+  cases need real device/provider runs. See `PROVIDER-QUALIFICATION.md`.
+- Broader audit limits remain explicit in `RED-TEAM.md`: site-demo playback evidence,
+  real hibernation/load behavior, optional permission prompts, full assistive-technology
+  coverage, loopback permission packaging and provider request-log retention. They are
+  not established by this six-workstream implementation or its controlled browser tests.

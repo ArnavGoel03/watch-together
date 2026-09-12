@@ -8,24 +8,29 @@ release and test counts elsewhere in this document.
 
 ## Reliability release, 2026-09-13
 
-Source is now **1.3.0**, under active verification on `feat/reliable-watch-parties`.
-It is not submitted to the extension stores. The six-workstream queue and release
-evidence live in `docs/RELIABILITY-RELEASE.md`. New UI wording and signed-in provider
-access were requested separately; neither is assumed approved or available.
-Cloudflare now serves pushed commit `2f72937`, Worker version
+Source and verified packages are **1.3.0**, merged through PR 3 at
+`68e7559cbb933b2d4cb126cb2c3be55db73b8ca2`. They are not submitted to the stores.
+The six-workstream queue and release evidence live in `docs/RELIABILITY-RELEASE.md`.
+New UI wording and signed-in provider access were requested separately; neither
+is assumed approved or available.
+
+CI run 34720902419 passes all six jobs: static gates, 252 Node tests, 64 Vitest,
+46 Worker, real workerd integration, 12 Chrome scenarios and three Firefox 155.0.1
+scenarios (four TAP tests including the parent), plus both store packages.
+Chrome and Firefox screenshots were visually reviewed and retained under
+`docs/evidence/reliability-2026-09-13/`. Real YouTube playback is blocked by a
+provider bot challenge, with zero decoded frames. Paid-provider and real Safari
+qualification remain pending; the Safari macOS Debug build alone is insufficient.
+
+Cloudflare serves pushed commit `2f72937`, Worker version
 `943e79e7-6575-4d88-b0e2-10c4e71f2102`. A live three-socket check passed locked-join
 denial, member rejoin, invitation rotation, playback, removal and instance-bound
-host proofs. The privacy correction remains identified below. Website cache deployment
-`dpl_6tJd6DKT4Wo5NUkYusq5rV45cE3F` now serves pushed `8cb16b1`; live asset headers
-require revalidation and live policy text still matches the approved source.
-Local full gate passes: 252 Node, 64 Vitest and 46 Worker tests, plus a real workerd
-integration test. PR 3 carries this release. Hosted run 34719871032 passed static, Node, Worker, package and all 12 Chrome
-browser scenarios. The rendered popup, overlay and room controls were reviewed.
-Firefox 155.0.1 BiDi cannot inspect extension pages; the harness now uses classic
-WebDriver/Marionette. Run 34720765445 passes its three real popup/playback/focus
-scenarios (four TAP tests including the parent), with zero skips. Final screenshot
-readiness now waits for the room entrance animation to complete. The hosted real YouTube
-attempt is blocked by a provider bot challenge, with zero decoded frames.
+host proofs. Render `/health` identifies merged commit `68e7559cbb933b2d4cb126cb2c3be55db73b8ca2`;
+the same owned-room live check passes there. Main CI run 34721017606 also passes
+all six jobs. Both relay implementations are now deployed and behavior-verified.
+Website cache deployment `dpl_6tJd6DKT4Wo5NUkYusq5rV45cE3F` serves pushed `8cb16b1`;
+live asset headers require revalidation and live policy text still exactly
+matches the approved source. The original privacy approval remains recorded below.
 
 ```owner-actions
 what: Approve the eight proposed 1.3.0 UI labels in docs/RELIABILITY-RELEASE.md before store publication.
@@ -125,7 +130,7 @@ Consequences, in order of how often they bite:
   Durable Objects port of the same protocol and must match it. **It did not match it.**
   See "The relays had drifted" below.
 
-## Current status
+## Historical status recorded in August 2026
 
 - **HEAD is 1.2.3. 1.2.2 is what is in review at Chrome and Edge.** They are deliberately
   different: preparing Safari turned up four bugs, three of which are live in Chrome right

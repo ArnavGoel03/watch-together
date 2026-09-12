@@ -15,12 +15,13 @@ claim that every streaming provider or browser combination is qualified.
 - Complete: hosted browser verification (nine tests), real Worker smoke, pushed repair
   and Cloudflare deployment.
 - Complete: final screenshot review; GitHub delivery is PR 1.
-- Open: Render deployment identity, its CLI authentication has expired.
+- Complete: Render identifies merged `68e7559` and passes the live 1.3.0 room-control check.
 - Complete: STATE, Atlas owner briefing and audit status records updated.
 - Complete: policy/listing copy approved on 2026-09-13 and applied to source.
 - Complete: approved policy published and live text/render verified on 2026-09-13.
 - Open: live store-state verification and dashboard listing updates.
-- Open: real streaming/DRM, Firefox and Safari qualification, residual risks below.
+- Complete: controlled Firefox popup/playback/focus qualification in 1.3.0, CI 34720902419.
+- Open: real streaming/DRM and Safari qualification, residual risks below.
 
 ## Confirmed defects and repairs
 

@@ -44,13 +44,14 @@ If the relay changes its storage or retention during remediation, revise this
 proposal against the final implementation before publication. Cloud provider
 request-log retention has not been verified and is not covered by this proposal.
 
-### P1: vulnerable runtime WebSocket dependency, fixed locally
+### P1: vulnerable runtime WebSocket dependency, fixed and deployed
 
 The server lockfile resolved `ws` 8.20.0. The registry audit identified remote
 memory exhaustion from fragmented WebSocket messages
 (`GHSA-96hv-2xvq-fx4p`) and uninitialized memory disclosure
 (`GHSA-58qx-3vcg-4xpx`). The lockfile now resolves 8.21.3, retaining the compatible
-manifest range. Deployment is required for the fallback relay to receive it.
+manifest range. Render now reports merged commit `68e7559`, whose lockfile
+contains the patched runtime; the live relay behavior check passes.
 
 ### P2: development dependency advisories, fixed locally
 
@@ -107,9 +108,9 @@ correction. The live homepage, support page and policy were verified together.
 `store-listing.md` promises any HTML5 video site, exact synchronization, and
 live events. The browser suite uses bare local video, while the project's
 handover explicitly says real streaming players, DRM, permission prompts, and
-server-side personalized ads have not been verified. Firefox and Safari lack
-an automated real-browser suite; Safari has not completed a two-person sync
-test. These are release qualification gaps, not proof every named site fails.
+server-side personalized ads have not been verified. Firefox now has a passing real-browser popup/playback/focus suite in 1.3.0;
+real provider playback remains unqualified. Safari has not completed a two-person
+sync test. These are release qualification gaps, not proof every named site fails.
 
 ### P2: worker integration command was a false green, fixed locally
 
@@ -124,7 +125,7 @@ with temporary storage and bounded cleanup. It passed in 1.17 seconds: health,
 malformed invite 404, two WebSocket upgrades, room creation/join, host-token shape
 and playback propagation. A full hibernation cycle still needs qualification.
 
-### P3: immutable caching uses mutable filenames, corrected in source
+### P3: immutable caching uses mutable filenames, corrected and live
 
 `site/vercel.json` gives `/assets/*` a one-year immutable cache lifetime, but
 assets such as `logo-256.png` and `og-card.png` have stable filenames. Replacing
@@ -149,8 +150,8 @@ verification is recorded in the reliability release.
   Hosted CI runs 34714445272 and 34714686507 subsequently passed all nine
   browser tests. Root visually reviewed the final retained screenshots.
 
-Outstanding: store-dashboard listing update, Render dependency rollout
-verification, real provider/Firefox/Safari and actual hibernation qualification,
+Outstanding: store-dashboard listing update, real provider/Safari and actual
+hibernation qualification,
 the site gate gaps and live store-state verification. Cache header rollout is
 tracked in the reliability release. Cloudflare
 repair is deployed; root report carries its version identity.
