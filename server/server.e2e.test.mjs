@@ -11,14 +11,17 @@
 
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import http from "node:http";
+import { createHmac } from "node:crypto";
 import { fork } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { WebSocket } from "ws";
+import { waitForListening } from "./test-server.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const PORT = 4571; // distinct from vitest port to allow concurrent runs
+const TEST_HOST_SECRET = "restart-authority-test-secret";
+const hostTokenFor = (code) => createHmac("sha256", TEST_HOST_SECRET).update(code).digest("hex");
+let PORT;
 
 let serverProcess;
 
@@ -81,11 +84,12 @@ function closeAll(...clients) { clients.forEach((c) => (c.ws || c).close()); }
 
 // ---------- lifecycle ----------
 const TEST_GRACE_MS = 300;
-before(async () => {
+async function startServer() {
   serverProcess = fork(join(__dirname, "server.js"), [], {
     env: {
       ...process.env,
-      PORT: String(PORT),
+      PORT: "0",
+      HOST_TOKEN_SECRET: TEST_HOST_SECRET,
       MAX_CONNECTIONS_PER_IP: "50",
       RATE_LIMIT_MAX: "500",
       // Short grace so tests can verify both within-grace rejoin and
@@ -104,15 +108,9 @@ before(async () => {
     },
     silent: true,
   });
-  // Wait for server to be reachable
-  for (let i = 0; i < 40; i++) {
-    try {
-      await new Promise((res, rej) => http.get(`http://localhost:${PORT}/health`, (r) => { r.resume(); res(); }).on("error", rej));
-      return;
-    } catch { await sleep(50); }
-  }
-  throw new Error("Server failed to start");
-});
+  PORT = await waitForListening(serverProcess);
+}
+before(startServer);
 
 after(() => { if (serverProcess) serverProcess.kill("SIGTERM"); });
 
@@ -637,19 +635,15 @@ test("rebuild: rejoining a vanished room with recreateIfMissing restores it and 
   send(ws, {
     type: "join-room",
     roomCode: "GHOST1",
+    hostToken: hostTokenFor("GHOST1"),
     userName: "Returner",
     recreateIfMissing: true,
     resumeState: { playing: true, currentTime: 421.25, playbackRate: 1 },
   });
   const m = await waitFor(ws, "room-joined");
   assert.equal(m.roomCode, "GHOST1");
-  // Not host. Rebuilding a room proves you know its code, which is the same thing joining
-  // proves, so it cannot be what promotes you. This assertion used to read isHost === true,
-  // which is the hole below: the rebuilder is always the room's first arrival, so the
-  // "an unsteered room goes to whoever turns up first" rule handed host to them anyway and
-  // made the host-token check two lines above it decorative.
-  assert.equal(m.isHost, false, "a rebuild without a host token does not make you host");
-  assert.equal(m.mode, "everyone", "and the rebuilt room stays open, so the party can still drive it");
+  assert.equal(m.isHost, true, "only the creator may restore missing authority state");
+  assert.equal(m.inviteRequired, true, "restoration always revokes pre-restart invitations");
   assert.equal(m.playbackState.currentTime, 421.25, "rebuilt room resumes where the party actually was");
   assert.equal(m.playbackState.playing, true);
   closeAll({ ws });
@@ -670,18 +664,12 @@ test("rebuild: a stranger cannot rebuild a quiet room and lock everybody out of 
     hostToken: "f".repeat(64),
     resumeState: { playing: true, currentTime: 10, playbackRate: 1 },
   });
-  const joined = await waitFor(attacker, "room-joined");
-  assert.equal(joined.isHost, false, "a forged token is not a token");
-  assert.equal(joined.mode, "everyone", "and mode:host on the rebuild is not honoured either");
-
-  // set-mode is host-only, so it must do nothing at all for them.
+  assert.equal((await waitFor(attacker, "error")).message, "Room not found");
   send(attacker, { type: "set-mode", mode: "host" });
-  await assertNoMessage(attacker, "mode-changed", 250);
-
-  // A real member arriving afterwards can still drive their own film.
-  const member = await guest("GHOST9", "Member");
-  assert.equal(member.msg.mode, "everyone", "the room the party comes back to is not locked");
-  closeAll({ ws: attacker }, member);
+  await assertNoMessage(attacker, "mode-changed", 50);
+  const result = await fetch(`http://localhost:${PORT}/room/GHOST9`);
+  assert.equal((await result.json()).exists, false);
+  closeAll(attacker);
 });
 
 test("rebuild: the real host reclaims their room with the token the server issued", async () => {
@@ -723,6 +711,7 @@ test("rebuild: a garbage resumeState cannot poison the rebuilt room", async () =
   send(ws, {
     type: "join-room",
     roomCode: "GHOST2",
+    hostToken: hostTokenFor("GHOST2"),
     userName: "Returner",
     recreateIfMissing: true,
     resumeState: { playing: true, currentTime: -50, playbackRate: 99 },
@@ -738,13 +727,15 @@ test("rebuild: others can join the rebuilt room and land in sync", async () => {
   send(a, {
     type: "join-room",
     roomCode: "GHOST3",
+    hostToken: hostTokenFor("GHOST3"),
     userName: "First",
     recreateIfMissing: true,
     resumeState: { playing: false, currentTime: 90, playbackRate: 1 },
   });
-  await waitFor(a, "room-joined");
-
-  const g = await guest("GHOST3", "Second");
+  const restored = await waitFor(a, "room-joined");
+  const second = await createClient();
+  send(second, { type: "join-room", roomCode: "GHOST3", userName: "Second", inviteToken: restored.inviteToken });
+  const g = { ws: second, msg: await waitFor(second, "room-joined") };
   assert.equal(g.msg.playbackState.currentTime, 90, "a late joiner lands where the rebuilt room is");
   closeAll({ ws: a }, g);
 });
@@ -768,6 +759,7 @@ test("rebuild: an infinite resume time cannot be seeded into the room", async ()
   send(ws, {
     type: "join-room",
     roomCode: "GHOST4",
+    hostToken: hostTokenFor("GHOST4"),
     userName: "Returner",
     recreateIfMissing: true,
     resumeState: { playing: true, currentTime: "Infinity", playbackRate: 1 },
@@ -777,12 +769,7 @@ test("rebuild: an infinite resume time cannot be seeded into the room", async ()
   closeAll({ ws });
 });
 
-// Rebuilding a room and being its host are two different claims. Anyone who knows a code
-// can ask for a rebuild - that is the whole point, it is how a party survives the free
-// tier idling down - but honouring an unproven "mode: host" let a stranger wait for a room
-// to go quiet, rebuild it as locked, and own everyone's playback when the real members
-// came back. So a rebuild only restores host-only when the asker can produce the token
-// this server issued to the room's creator.
+// A valid host token is required before any missing room can be reconstructed.
 test("rebuild: a host-only room comes back host-only when the real host asks", async () => {
   const creator = await createClient();
   send(creator, { type: "create-room", userName: "Host", mode: "host", customName: "GHOSTHOST" });
@@ -816,8 +803,8 @@ test("rebuild: a stranger cannot claim host by rebuilding a room they know the c
     mode: "host",
     resumeState: { playing: false, currentTime: 10, playbackRate: 1 },
   });
-  const m = await waitFor(ws, "room-joined");
-  assert.equal(m.mode, "everyone", "no token, no lock: a rebuild must not hand control to whoever raced for it");
+  const m = await waitFor(ws, "error");
+  assert.equal(m.message, "Room not found");
   closeAll({ ws });
 });
 
@@ -832,8 +819,8 @@ test("rebuild: a forged host token is refused", async () => {
     hostToken: "f".repeat(64),
     resumeState: { playing: false, currentTime: 10, playbackRate: 1 },
   });
-  const m = await waitFor(ws, "room-joined");
-  assert.equal(m.mode, "everyone", "a token we did not issue proves nothing");
+  const m = await waitFor(ws, "error");
+  assert.equal(m.message, "Room not found");
   closeAll({ ws });
 });
 
@@ -1700,4 +1687,197 @@ test('HTTP: exhausted lookup budget also blocks existing-room disclosure', async
       assert.equal(response.status, 429);
     }
   } finally { closeAll(ws); }
+});
+
+test("access: guests cannot restrict navigation, lock, revoke or remove the host", async () => {
+  const h = await host();
+  const g = await guest(h.code);
+  for (const msg of [
+    { type: "set-room-access", locked: true, navigationMode: "host" },
+    { type: "revoke-invites" },
+    { type: "remove-member", userId: h.msg.userId },
+  ]) send(g.ws, msg);
+  send(g.ws, { type: "navigate", url: "https://example.com/allowed" });
+  assert.equal((await waitFor(h.ws, "navigate")).url, "https://example.com/allowed");
+  const late = await guest(h.code, "Late");
+  assert.equal(late.msg.inviteToken, h.msg.inviteToken);
+  assert.equal(late.msg.locked, false);
+  closeAll(h, g, late);
+});
+
+test("access: navigation and playback permissions are independent without changing legacy host defaults", async () => {
+  const h = await host({ mode: "host", videoUrl: "https://example.com/original" });
+  const g = await guest(h.code);
+  assert.equal(g.msg.navigationMode, "host");
+  send(h.ws, { type: "set-room-access", navigationMode: "everyone" });
+  await waitFor(g.ws, "room-access");
+  send(g.ws, { type: "navigate", url: "https://example.com/next" });
+  assert.equal((await waitFor(h.ws, "navigate")).url, "https://example.com/next");
+  send(g.ws, { type: "sync", playing: false, currentTime: 50, playbackRate: 1 });
+  assert.equal((await waitFor(g.ws, "error")).message, "Only the host can control playback");
+  send(h.ws, { type: "set-mode", mode: "everyone" });
+  await waitFor(g.ws, "mode-changed");
+  send(h.ws, { type: "set-room-access", navigationMode: "host" });
+  await waitFor(g.ws, "room-access");
+  send(g.ws, { type: "navigate", url: "https://example.com/rejected" });
+  send(g.ws, { type: "sync", playing: false, currentTime: 61, playbackRate: 1 });
+  assert.equal((await waitFor(h.ws, "sync")).currentTime, 61);
+  send(g.ws, { type: "request-state" });
+  assert.equal((await waitFor(g.ws, "sync")).videoUrl, "https://example.com/next");
+  closeAll(h, g);
+});
+
+test("access: locked rooms reject invite holders but admit existing member and host credentials", async () => {
+  const h = await host();
+  const g = await guest(h.code);
+  send(h.ws, { type: "set-room-access", locked: true });
+  await waitFor(g.ws, "room-access");
+  const newcomer = await createClient();
+  send(newcomer, { type: "join-room", roomCode: h.code, inviteToken: h.msg.inviteToken });
+  assert.equal((await waitFor(newcomer, "error")).code, "ROOM_LOCKED");
+  send(newcomer, { type: "join-room", roomCode: h.code, memberToken: g.msg.memberToken });
+  assert.equal((await waitFor(newcomer, "room-joined")).memberToken, g.msg.memberToken);
+  const returningHost = await createClient();
+  send(returningHost, { type: "join-room", roomCode: h.code, hostToken: h.msg.hostToken });
+  assert.equal((await waitFor(returningHost, "room-joined")).isHost, true);
+  closeAll(h, g, newcomer, returningHost);
+});
+
+test("access: guest removal invalidates its credential and every old invitation, while rotating for remaining members", async () => {
+  const h = await host({ videoUrl: "https://example.com/original" });
+  const g = await guest(h.code);
+  const duplicate = await createClient();
+  send(duplicate, { type: "join-room", roomCode: h.code, memberToken: g.msg.memberToken });
+  await waitFor(duplicate, "room-joined");
+  send(h.ws, { type: "remove-member", userId: g.msg.userId });
+  assert.equal((await waitFor(g.ws, "error")).code, "MEMBER_REMOVED");
+  assert.equal((await waitFor(duplicate, "error")).code, "MEMBER_REMOVED");
+  const access = await waitFor(h.ws, "room-access");
+  assert.equal(access.inviteRequired, true);
+  assert.notEqual(access.inviteToken, h.msg.inviteToken);
+  const newcomer = await createClient();
+  send(newcomer, { type: "join-room", roomCode: h.code, memberToken: g.msg.memberToken, inviteToken: h.msg.inviteToken });
+  assert.equal((await waitFor(newcomer, "error")).code, "INVITE_REVOKED");
+  send(newcomer, { type: "join-room", roomCode: h.code });
+  assert.equal((await waitFor(newcomer, "error")).code, "INVITE_REVOKED");
+  send(newcomer, { type: "join-room", roomCode: h.code, inviteToken: access.inviteToken });
+  const joined = await waitFor(newcomer, "room-joined");
+  assert.equal(joined.members.length, 2);
+  assert.equal(joined.members.some((member) => "memberToken" in member), false);
+  closeAll(h, g, duplicate, newcomer);
+});
+
+test("access: public HTTP hides revoked and locked rooms and carries valid invitation credentials", async () => {
+  const h = await host({ videoUrl: "https://example.com/video" });
+  send(h.ws, { type: "revoke-invites" });
+  const access = await waitFor(h.ws, "room-access");
+  for (const suffix of ["", `?invite=${h.msg.inviteToken}`]) {
+    const info = await fetch(`http://localhost:${PORT}/room/${h.code}${suffix}`);
+    assert.equal((await info.json()).exists, false);
+    const join = await fetch(`http://localhost:${PORT}/join/${h.code}${suffix}`, { redirect: "manual" });
+    assert.equal(join.status, 200);
+    assert.equal(join.headers.get("location"), null);
+  }
+  const valid = await fetch(`http://localhost:${PORT}/join/${h.code}?invite=${access.inviteToken}`, { redirect: "manual" });
+  assert.equal(valid.status, 302);
+  assert.equal(new URL(valid.headers.get("location")).searchParams.get("wt_invite"), access.inviteToken);
+  assert.equal(valid.headers.get("referrer-policy"), "no-referrer");
+  assert.equal(new URL(valid.headers.get("location")).searchParams.get("wt_relay"), `ws://localhost:${PORT}`);
+  send(h.ws, { type: "set-room-access", locked: true });
+  await waitFor(h.ws, "room-access");
+  const locked = await fetch(`http://localhost:${PORT}/join/${h.code}?invite=${access.inviteToken}`, { redirect: "manual" });
+  assert.equal(locked.headers.get("location"), null);
+  closeAll(h);
+});
+
+test("restart: guest credentials cannot erase locks or revocation; only host restores with fresh invitations", async () => {
+  const h = await host({ videoUrl: "https://example.com/private" });
+  const g = await guest(h.code);
+  send(h.ws, { type: "remove-member", userId: g.msg.userId });
+  await waitFor(g.ws, "error");
+  await waitFor(h.ws, "room-access");
+  send(h.ws, { type: "set-room-access", locked: true, navigationMode: "host" });
+  await waitFor(h.ws, "room-access");
+  await new Promise((resolve) => {
+    serverProcess.once("exit", resolve);
+    serverProcess.kill("SIGTERM");
+  });
+  await startServer();
+  const attacker = await createClient();
+  const resume = {
+    type: "join-room", roomCode: h.code, recreateIfMissing: true,
+    memberToken: g.msg.memberToken, inviteToken: g.msg.inviteToken,
+    locked: false, inviteRequired: false, navigationMode: "everyone",
+    videoUrl: "https://example.com/attacker",
+  };
+  send(attacker, resume);
+  assert.equal((await waitFor(attacker, "error")).message, "Room not found");
+  send(attacker, { ...resume, hostToken: "f".repeat(64) });
+  assert.equal((await waitFor(attacker, "error")).message, "Room not found");
+  const info = await fetch(`http://localhost:${PORT}/room/${h.code}`);
+  assert.equal((await info.json()).exists, false);
+  const returningHost = await createClient();
+  send(returningHost, {
+    ...resume, hostToken: h.msg.hostToken, locked: true, navigationMode: "host",
+    videoUrl: "https://example.com/private",
+  });
+  const restored = await waitFor(returningHost, "room-joined");
+  assert.equal(restored.isHost, true);
+  assert.equal(restored.locked, true);
+  assert.equal(restored.navigationMode, "host");
+  assert.equal(restored.inviteRequired, true);
+  assert.notEqual(restored.inviteToken, h.msg.inviteToken);
+  send(attacker, resume);
+  assert.equal((await waitFor(attacker, "error")).code, "ROOM_LOCKED");
+  send(returningHost, { type: "set-room-access", locked: false });
+  await waitFor(returningHost, "room-access");
+  send(attacker, resume);
+  assert.equal((await waitFor(attacker, "error")).code, "INVITE_REVOKED");
+  send(attacker, { type: "join-room", roomCode: h.code, inviteToken: restored.inviteToken });
+  assert.equal((await waitFor(attacker, "room-joined")).videoUrl, "https://example.com/private");
+  closeAll(attacker, returningHost);
+});
+
+test("startup: an occupied port fails instead of borrowing another test server's listener", async () => {
+  const collision = fork(join(__dirname, "server.js"), [], {
+    env: { ...process.env, PORT: String(PORT), HOST_TOKEN_SECRET: TEST_HOST_SECRET },
+    silent: true,
+  });
+  await assert.rejects(waitForListening(collision), /Server exited before listening[\s\S]*EADDRINUSE/);
+});
+
+test("restart: reusing a room name cannot mint historical host authority or admit returning guests", async () => {
+  const h = await host();
+  const g = await guest(h.code);
+  assert.match(h.msg.hostToken, /^[a-f0-9]{32}\.[a-f0-9]{64}$/);
+  await new Promise((resolve) => {
+    serverProcess.once("exit", resolve);
+    serverProcess.kill("SIGTERM");
+  });
+  await startServer();
+  const claimant = await createClient();
+  send(claimant, { type: "create-room", customName: h.code, userName: "New owner" });
+  const replacement = await waitFor(claimant, "room-created");
+  assert.notEqual(replacement.hostToken, h.msg.hostToken);
+  const returningGuest = await createClient();
+  send(returningGuest, { type: "join-room", roomCode: h.code, memberToken: g.msg.memberToken, inviteToken: g.msg.inviteToken });
+  assert.equal((await waitFor(returningGuest, "error")).code, "INVITE_REVOKED");
+  const returningHost = await createClient();
+  send(returningHost, { type: "join-room", roomCode: h.code, hostToken: h.msg.hostToken });
+  assert.equal((await waitFor(returningHost, "error")).message, "Room not found");
+  send(returningHost, { type: "join-room", roomCode: h.code, hostToken: hostTokenFor(h.code) });
+  assert.equal((await waitFor(returningHost, "error")).message, "Room not found", "legacy proof cannot reclaim a new incarnation");
+  await new Promise((resolve) => {
+    serverProcess.once("exit", resolve);
+    serverProcess.kill("SIGTERM");
+  });
+  await startServer();
+  const original = await createClient();
+  send(original, { type: "join-room", roomCode: h.code, recreateIfMissing: true, hostToken: h.msg.hostToken });
+  const restored = await waitFor(original, "room-joined");
+  assert.equal(restored.hostToken, h.msg.hostToken, "reconstruction restores the verified original incarnation");
+  const wrongIncarnation = await createClient();
+  send(wrongIncarnation, { type: "join-room", roomCode: h.code, hostToken: replacement.hostToken });
+  assert.equal((await waitFor(wrongIncarnation, "error")).message, "Room not found");
+  closeAll(original, wrongIncarnation);
 });

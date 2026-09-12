@@ -32,6 +32,8 @@ function harness(site = 'generic') {
     contains: el => el === video,
   });
   const storageCallbacks = [];
+  const storageWrites = [];
+  let sendFailure = false;
   const window = Object.assign(new Node(), { location: new URL(`https://${site === 'generic' ? 'example' : site}.com/watch`) });
   const context = vm.createContext({
     window, self: window, document, location: window.location, console, URL, URLSearchParams,
@@ -41,14 +43,14 @@ function harness(site = 'generic') {
     clearTimeout: id => timers.delete(id), setInterval: () => ++nextTimer, clearInterval() {},
     MutationObserver: class { observe() {} disconnect() {} },
     chrome: {
-      storage: { local: { get: (_keys, cb) => storageCallbacks.push(cb), set() {}, remove() {} }, onChanged: { addListener() {} } },
-      runtime: { connect: () => ({ postMessage: msg => sent.push(msg), onMessage: { addListener: fn => { context.receive = fn; } }, onDisconnect: { addListener() {} } }) },
+      storage: { local: { get: (_keys, cb) => storageCallbacks.push(cb), set: data => storageWrites.push(data), remove() {} }, onChanged: { addListener() {} } },
+      runtime: { connect: () => ({ postMessage: msg => { if (sendFailure) throw new Error('Port disconnected'); sent.push(msg); }, onMessage: { addListener: fn => { context.receive = fn; } }, onDisconnect: { addListener() {} } }) },
     },
   });
   for (const file of ['config.js', `adapters/${site}.js`, 'content.js']) {
     let src = readFileSync(new URL(`../extension/${file}`, import.meta.url), 'utf8');
     if (file === 'content.js') src = src.replace('  // Initialize', `
-      window.testCore = { applySync, sendHeartbeat, onVideoEvent, checkUrlChange,
+      window.testCore = { applySync, sendHeartbeat, onVideoEvent, checkUrlChange, sendMsg, connectToBackground,
         setOffset: n => { syncOffset = n; },
         setMembers: n => { roomMemberCount = n; },
         setAd: value => { markerDistrustUntil = value; },
@@ -60,8 +62,111 @@ function harness(site = 'generic') {
   }
   storageCallbacks.forEach(cb => cb({}));
   context.receive({ type: 'room-created', roomCode: 'ABCDEFGH', members: [{}, {}] });
-  return { video, window, document, sent, timers, receive: context.receive, advance: ms => { now += ms; }, core: window.testCore };
+  return { video, window, document, sent, timers, storageWrites, failSend: value => { sendFailure = value; }, receive: msg => context.receive(msg), advance: ms => { now += ms; }, core: window.testCore };
 }
+
+test('remote navigation strips invitation hints without publishing consent to other tabs', () => {
+  const h = harness();
+  const before = h.storageWrites.length;
+  h.receive({ type: 'navigate', url: 'https://example.com/episode?v=2&wt_room=OTHER&wt_invite=secret&wt_relay=wss%3A%2F%2Frelay.example#chapter' });
+  const redirect = [...h.timers.values()].find(timer => timer.ms === 250);
+  assert.ok(redirect);
+  redirect.fn();
+  assert.equal(h.window.location.href, 'https://example.com/episode?v=2#chapter');
+  assert.equal(h.storageWrites.length, before);
+  assert.equal(h.sent.some(message => message.type === 'join-room'), false);
+});
+
+test('a failed join retries only in its originating content context after port reconnection', () => {
+  const origin = harness();
+  const bystander = harness();
+  origin.receive({ type: 'room-ended' });
+  bystander.receive({ type: 'room-ended' });
+  origin.failSend(true);
+  origin.core.sendMsg({ type: 'join-room', roomCode: 'ABCDEF', inviteToken: 'secret' });
+  assert.equal(origin.sent.some(message => message.type === 'join-room'), false);
+  assert.equal(origin.storageWrites.length, 0);
+  bystander.core.connectToBackground();
+  assert.equal(bystander.sent.some(message => message.type === 'join-room'), false);
+  origin.failSend(false);
+  origin.core.connectToBackground();
+  const joins = origin.sent.filter(message => message.type === 'join-room');
+  assert.equal(joins.length, 1);
+  assert.equal(joins[0].inviteToken, 'secret');
+  origin.core.connectToBackground();
+  assert.equal(origin.sent.filter(message => message.type === 'join-room').length, 1);
+  assert.equal([...origin.timers.values()].some(timer => timer.ms === 20000), false);
+});
+
+for (const cancel of ['room-ended', 'navigate', 'spa', 'expired']) {
+  test(`local join retry is cancelled by ${cancel}`, () => {
+    const h = harness();
+    h.receive({ type: 'room-ended' });
+    h.failSend(true);
+    h.core.sendMsg({ type: 'join-room', roomCode: 'ABCDEF' });
+    if (cancel === 'spa') {
+      h.window.location.href = 'https://example.com/another';
+      h.core.checkUrlChange();
+    } else if (cancel === 'expired') {
+      h.advance(20001);
+      [...h.timers.values()].find(timer => timer.ms === 20000).fn();
+    } else h.receive({ type: cancel, url: 'https://example.com/another' });
+    h.failSend(false);
+    h.core.connectToBackground();
+    assert.equal(h.sent.some(message => message.type === 'join-room'), false);
+    assert.equal([...h.timers.values()].some(timer => timer.ms === 20000), false);
+  });
+}
+
+test('film volume survives remount while transient ducking leaves the preference intact', () => {
+  const h = harness();
+  h.window.__wtCore.setVolume(0.65);
+  assert.equal(h.video.volume, 0.65);
+  h.window.__wtCore.setVolume(0.15, true);
+  const replacement = Object.assign(new EventTarget(), { textTracks: [], playbackRate: 1, volume: 1 });
+  h.core.attachVideoListeners(replacement);
+  assert.equal(replacement.volume, 0.15);
+  assert.equal(h.window.__wtCore.getVolume(), 0.65);
+  h.window.__wtCore.setVolume(0.8);
+  assert.equal(replacement.volume, 0.8);
+  h.window.__wtCore.setVolume(NaN);
+  assert.equal(replacement.volume, 0.8);
+});
+
+test('diagnostics export constructs a safe schema and drops secret-bearing unknown fields', () => {
+  const h = harness();
+  const input = {
+    connectionState: 'connected', rttMs: 12, reconnectAttempts: 3,
+    url: 'https://private.example/video', roomCode: 'SECRET', token: 'secret', chat: 'private', ip: '127.0.0.1',
+    events: [{ event: 'connected', atMs: 1, token: 'secret' }, {event: 'https://private.example', atMs: 2}, { event: 'pong', atMs: 3, value: Infinity }],
+  };
+  const report = JSON.parse(JSON.stringify(h.window.__wtConfig.buildDiagnosticsReport(input, -0.5)));
+  assert.deepEqual(report, { schemaVersion: 1, connectionState: 'connected', rttMs: 12, driftSeconds: -0.5, reconnectAttempts: 3, events: [{event: 'connected', atMs: 1}, {event: 'pong', atMs: 3}] });
+  assert.equal(h.window.__wtConfig.buildDiagnosticsReport({...input, events: Array(200).fill(input.events[0])}).events.length, 100);
+});
+
+test('installed and older versions never leave a stale update indicator', () => {
+  const cfg = harness().window.__wtConfig;
+  assert.equal(cfg.isNewerVersion('1.3.0', '1.3.0'), false);
+  assert.equal(cfg.isNewerVersion('1.2.9', '1.3.0'), false);
+  assert.equal(cfg.isNewerVersion('1.10.0', '1.9.9'), true);
+  assert.equal(cfg.isNewerVersion('malformed', '1.3.0'), false);
+});
+
+test('invite builder carries authoritative credentials and removes stale invite parameters', () => {
+  const h = harness();
+  const cfg = h.window.__wtConfig;
+  const token = 'a'.repeat(64);
+  const url = new URL(cfg.buildInviteUrl({videoUrl: 'https://www.youtube.com/watch?v=video&wt_invite=stale', roomCode: 'ABCDEF', inviteToken: token, serverUrl: cfg.SERVER_URLS[1]}));
+  assert.equal(url.searchParams.get('v'), 'video');
+  assert.equal(url.searchParams.get('wt_invite'), token);
+  assert.equal(url.searchParams.get('wt_relay'), cfg.SERVER_URLS[1]);
+  assert.equal(cfg.offsetKeyFor(url.href), cfg.offsetKeyFor('https://www.youtube.com/watch?v=video'));
+  const fallback = new URL(cfg.buildInviteUrl({roomCode: 'ABCDEF', inviteToken: token, serverUrl: 'ws://localhost:4568'}));
+  assert.equal(fallback.origin, 'http://localhost:4568');
+  assert.equal(fallback.pathname, '/join/ABCDEF');
+  assert.equal(fallback.searchParams.get('invite'), token);
+});
 
 for (const site of ['generic', 'youtube', 'netflix', 'jiohotstar']) {
   test(`${site}: live sync never seeks the DVR timeline`, () => {

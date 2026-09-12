@@ -91,11 +91,40 @@ jobs:
         run: npm --prefix server run test:browser
         env:
           WT_SCREENSHOTS_DIR: ${{ runner.temp }}/watch-together-shots
+      - name: Record real YouTube qualification and external blockers
+        if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+        run: node server/provider.test.mjs
+        env:
+          WT_PROVIDER_REPORT: ${{ runner.temp }}/watch-together-shots/provider-qualification.json
       - uses: actions/upload-artifact@v7.0.1
         if: always()
         with:
           name: browser-screenshots
           path: ${{ runner.temp }}/watch-together-shots
+          if-no-files-found: warn
+
+  firefox:
+    name: Firefox MV2 qualification
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci --prefix server
+      - name: Install stable Firefox for Puppeteer BiDi
+        run: npx --prefix server puppeteer browsers install firefox@stable
+      - name: Real Firefox extension, popup and playback qualification
+        run: npm --prefix server run test:firefox
+        env:
+          WT_SCREENSHOTS_DIR: ${{ runner.temp }}/watch-together-firefox
+      - uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: firefox-screenshots
+          path: ${{ runner.temp }}/watch-together-firefox
           if-no-files-found: warn
 
   package:

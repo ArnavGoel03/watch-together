@@ -22,9 +22,10 @@ import { fork } from "child_process";
 import path from "path";
 import fs from "fs";
 import http from "http";
+import { waitForListening } from "./test-server.mjs";
 
-const SERVER_PORT = 4568;
-const EXT_PATH = path.resolve(__dirname, "..", "extension");
+let SERVER_PORT;
+let EXT_PATH;
 const VIDEO_FILE = path.resolve(__dirname, "fixtures", "test-video.webm");
 
 let serverProcess;
@@ -98,10 +99,19 @@ function launchBrowser() {
 
 beforeAll(async () => {
   serverProcess = fork("./server.js", [], {
-    env: { ...process.env, PORT: String(SERVER_PORT), MAX_CONNECTIONS_PER_IP: "50", RATE_LIMIT_MAX: "500" },
+    env: { ...process.env, PORT: "0", MAX_CONNECTIONS_PER_IP: "50", RATE_LIMIT_MAX: "500" },
     silent: true,
   });
-
+  SERVER_PORT = await waitForListening(serverProcess);
+  const dist = path.resolve(__dirname, "..", "dist");
+  fs.mkdirSync(dist, {recursive: true});
+  EXT_PATH = fs.mkdtempSync(path.join(dist, ".chrome-test-"));
+  fs.cpSync(path.resolve(__dirname, "..", "extension"), EXT_PATH, {recursive: true});
+  const configPath = path.join(EXT_PATH, "config.js");
+  const config = fs.readFileSync(configPath, "utf8");
+  const relays = /const SERVER_URLS = \[[\s\S]*?\];/;
+  expect(config).toMatch(relays);
+  fs.writeFileSync(configPath, config.replace(relays, `const SERVER_URLS = ["ws://localhost:${SERVER_PORT}"];`));
   const videoBytes = fs.readFileSync(VIDEO_FILE);
   videoServer = http.createServer((req, res) => {
     if (req.url.startsWith("/video.webm")) {
@@ -134,7 +144,6 @@ beforeAll(async () => {
   await new Promise((resolve) => videoServer.listen(0, resolve));
   VIDEO_PORT = videoServer.address().port;
 
-  await sleep(1000);
   [hostBrowser, guestBrowser] = await Promise.all([launchBrowser(), launchBrowser()]);
 }, 90000);
 
@@ -143,6 +152,7 @@ afterAll(async () => {
   if (guestBrowser) await guestBrowser.close();
   if (serverProcess) serverProcess.kill("SIGTERM");
   if (videoServer) videoServer.close();
+  if (EXT_PATH) fs.rmSync(EXT_PATH, {recursive: true, force: true});
 });
 
 async function extensionId(browser) {
@@ -193,6 +203,20 @@ async function openPopupFor(browser, marker) {
   await popup.goto(`chrome-extension://${extId}/popup/popup.html`, { waitUntil: "domcontentloaded" });
   await popup.waitForSelector("#btnCreate");
   return popup;
+}
+
+async function popupState(popup) {
+  return popup.evaluate(() => new Promise((resolve, reject) => {
+    const port = chrome.runtime.connect({name: "popup"});
+    const timer = setTimeout(() => { port.disconnect(); reject(new Error("No background state")); }, 5000);
+    port.onMessage.addListener(msg => {
+      if (msg.type !== "state") return;
+      clearTimeout(timer);
+      resolve(msg);
+      port.disconnect();
+    });
+    port.postMessage({type: "get-state"});
+  }));
 }
 
 // The extension holds exactly one room at a time, and it holds it in the background, not
@@ -308,6 +332,109 @@ describe("Browser integration", () => {
       await popup.screenshot({ path: path.join(process.env.WT_SCREENSHOTS_DIR, "popup.png") });
     }
   }, 40000);
+
+  it("overlay keyboard focus returns, hotkey capture releases Tab, and volume survives remount", async () => {
+    const page = await openVideoPage(hostBrowser, "keyboard");
+    await page.click("#wt-overlay-btn");
+    await page.waitForSelector("#wt-close");
+    expect(await page.$eval("#wt-overlay-panel", el => el.getAttribute("role"))).toBe("dialog");
+    expect(await page.evaluate(() => document.activeElement.id)).toBe("wt-close");
+    await page.keyboard.press("Escape");
+    expect(await page.evaluate(() => document.activeElement.id)).toBe("wt-overlay-btn");
+    expect(await page.$eval("#wt-overlay-btn", el => el.getAttribute("aria-expanded"))).toBe("false");
+    await page.keyboard.press("Enter");
+    await page.evaluate(() => {
+      for (const el of document.querySelectorAll("#wt-overlay-panel details")) el.open = true;
+    });
+    await page.click("#wt-hotkey");
+    await page.keyboard.press("Tab");
+    expect(await page.evaluate(() => document.activeElement.id)).not.toBe("wt-hotkey");
+    await page.focus("#wt-volume");
+    await page.keyboard.press("Home");
+    for (let step = 0; step < 13; step++) await page.keyboard.press("ArrowRight");
+    const volume = await page.$eval("video", el => el.volume);
+    expect(volume).toBeCloseTo(0.65);
+    await page.evaluate(() => {
+      const old = document.querySelector("video");
+      const replacement = old.cloneNode(true);
+      old.replaceWith(replacement);
+    });
+    expect(await waitUntil(async () => (await page.$eval("video", el => el.volume)) === 0.65)).toBe(true);
+  }, 30000);
+
+  it("room controls revoke invitations, export safe diagnostics and remove a guest", async () => {
+    await openVideoPage(hostBrowser, "controls-host");
+    const hostPopup = await openPopupFor(hostBrowser, "controls-host");
+    await setServerUrl(hostPopup);
+    const code = await createRoom(hostPopup, "Alice");
+    await openVideoPage(guestBrowser, "controls-guest");
+    const guestPopup = await openPopupFor(guestBrowser, "controls-guest");
+    await setServerUrl(guestPopup);
+    expect(await joinRoom(guestPopup, "Bob", code)).toBe(code);
+    await hostPopup.evaluate(() => { for (const el of document.querySelectorAll("details")) el.open = true; });
+    await hostPopup.waitForSelector(".member-remove");
+    expect(await hostPopup.$eval("#roomAccess", el => el.hidden)).toBe(false);
+    expect(await guestPopup.$eval("#roomAccess", el => el.hidden)).toBe(true);
+    const readInvite = async () => (await popupState(hostPopup)).inviteToken;
+    const oldInvite = await readInvite();
+    await hostPopup.click("#btnRevokeInvites");
+    expect(await waitUntil(async () => (await readInvite()) !== oldInvite)).toBe(true);
+    await hostPopup.click("#lockRoom");
+    expect(await waitUntil(async () => guestPopup.$eval("#lockRoom", el => el.checked))).toBe(true);
+    const diagnostics = await hostPopup.evaluate(() => new Promise(resolve => {
+      const port = chrome.runtime.connect({name: "popup"});
+      port.onMessage.addListener(msg => { if (msg.type === "diagnostics") { resolve(window.__wtConfig.buildDiagnosticsReport(msg.diagnostics)); port.disconnect(); } });
+      port.postMessage({type: "get-diagnostics"});
+    }));
+    expect(Object.keys(diagnostics).sort()).toEqual(["connectionState", "driftSeconds", "events", "reconnectAttempts", "rttMs", "schemaVersion"].sort());
+    expect(JSON.stringify(diagnostics)).not.toContain(code);
+    await hostPopup.evaluate(() => {
+      window.__testDiagnostics = null;
+      const createObjectURL = URL.createObjectURL.bind(URL);
+      URL.createObjectURL = blob => {
+        blob.text().then(text => { window.__testDiagnostics = JSON.parse(text); });
+        return createObjectURL(blob);
+      };
+    });
+    await hostPopup.waitForSelector("#btnDownloadDiagnostics:not([disabled])");
+    await hostPopup.click("#btnDownloadDiagnostics");
+    expect(await waitUntil(async () => hostPopup.evaluate(() => window.__testDiagnostics?.schemaVersion === 1))).toBe(true);
+    expect(await hostPopup.evaluate(() => JSON.stringify(window.__testDiagnostics))).not.toContain(code);
+    if (process.env.WT_SCREENSHOTS_DIR) {
+      await hostPopup.evaluate(() => Promise.all(document.getAnimations().map(a => a.finished.catch(() => {}))));
+      await hostPopup.screenshot({path: path.join(process.env.WT_SCREENSHOTS_DIR, "room-controls.png"), fullPage: true});
+    }
+    await hostPopup.click(".member-remove");
+    expect(await waitUntil(async () => guestPopup.$eval("#view-landing", el => el.classList.contains("active")))).toBe(true);
+  }, 45000);
+
+  it("an invitation survives login and cannot be consumed by another tab at the same URL", async () => {
+    const hostPage = await openVideoPage(hostBrowser, "invite-host");
+    const hostPopup = await openPopupFor(hostBrowser, "invite-host");
+    await setServerUrl(hostPopup);
+    const code = await createRoom(hostPopup, "Alice");
+    const hostState = await popupState(hostPopup);
+    const invitedPage = await openVideoPage(guestBrowser, "invite-guest");
+    const guestPopup = await openPopupFor(guestBrowser, "invite-guest");
+    await setServerUrl(guestPopup);
+    const inviteUrl = await hostPopup.evaluate(state => window.__wtConfig.buildInviteUrl({videoUrl: state.videoUrl, roomCode: state.currentRoom, inviteToken: state.inviteToken, serverUrl: state.serverUrl}), hostState);
+    await invitedPage.goto(inviteUrl, {waitUntil: "load"});
+    await invitedPage.waitForSelector("#wt-join-consent");
+    expect(new URL(invitedPage.url()).searchParams.has("wt_invite")).toBe(false);
+    await invitedPage.goto(`http://localhost:${VIDEO_PORT}/login`, {waitUntil: "load"});
+    const bystander = await guestBrowser.newPage();
+    await bystander.goto(hostPage.url(), {waitUntil: "load"});
+    await bystander.waitForSelector("#wt-overlay-btn");
+    await sleep(1500);
+    expect(await bystander.$("#wt-join-consent")).toBeNull();
+    await invitedPage.goto(hostPage.url(), {waitUntil: "load"});
+    await invitedPage.waitForSelector("#wt-join-consent");
+    await invitedPage.click("#wt-join-consent button");
+    expect(await waitUntil(async () => (await popupState(guestPopup)).currentRoom === code)).toBe(true);
+    const state = await popupState(guestPopup);
+    expect(state.serverUrl).toBe(hostState.serverUrl);
+    expect(state.userId).not.toBe(hostState.userId);
+  }, 45000);
 
   it("the content script attaches to the page and injects its overlay", async () => {
     const page = await openVideoPage(hostBrowser, "inject");

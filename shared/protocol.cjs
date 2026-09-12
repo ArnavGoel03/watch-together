@@ -41,6 +41,9 @@ const MESSAGE_TYPES = Object.freeze({
   AD_STATE: "ad-state",
   PING: "ping",
   SET_MODE: "set-mode",
+  SET_ROOM_ACCESS: "set-room-access",
+  REMOVE_MEMBER: "remove-member",
+  REVOKE_INVITES: "revoke-invites",
   SET_CALL_URL: "set-call-url",
   NAVIGATE: "navigate",
   VOICE_STATE: "voice-state",
@@ -109,6 +112,7 @@ const ROUTES = Object.freeze({
 // under LEADER_STALE_MS, or the watchdog demotes a leader who is healthy and merely quiet.
 const LIMITS = Object.freeze({
   MAX_ROOM_MEMBERS: 50,
+  MAX_MEMBER_CREDENTIALS: 500,
   MAX_ROOMS: 10000,
   MAX_MESSAGE_SIZE: 4096,
   MAX_CHAT_LENGTH: 500,
@@ -244,6 +248,81 @@ function randomChars(alphabet, length) {
   return out;
 }
 
+// Host proof includes the room incarnation, so reclaiming a deleted name cannot
+// mint the previous creator's credential. Legacy proofs remain readable for upgrades.
+function newHostNonce() {
+  return randomChars("0123456789abcdef", 32);
+}
+
+function hostTokenParts(token) {
+  if (typeof token !== "string") return null;
+  if (/^[a-f0-9]{64}$/.test(token)) return { nonce: null, signature: token };
+  const match = /^([a-f0-9]{32})\.([a-f0-9]{64})$/.exec(token);
+  return match ? { nonce: match[1], signature: match[2] } : null;
+}
+
+function hostTokenMessage(code, nonce) {
+  return nonce ? `${code}:${nonce}` : String(code);
+}
+
+// Access credentials remain room scoped and never appear in a public member list.
+function accessToken() {
+  return randomChars("0123456789abcdef", 64);
+}
+
+function ensureRoomAccess(room) {
+  if (!room.memberCredentials) room.memberCredentials = {};
+  if (!room.inviteToken) room.inviteToken = accessToken();
+}
+
+function navigationMode(room) {
+  return normalizeRoomMode(room.navigationMode ?? room.mode);
+}
+
+function roomAccess(room) {
+  ensureRoomAccess(room);
+  return {
+    navigationMode: navigationMode(room),
+    locked: !!room.locked,
+    inviteRequired: !!room.inviteRequired,
+    inviteToken: room.inviteToken,
+  };
+}
+
+function memberCredentialValid(room, token) {
+  return typeof token === "string" && /^[a-f0-9]{64}$/.test(token)
+    && Object.prototype.hasOwnProperty.call(room.memberCredentials || {}, token);
+}
+
+function roomAccessError(room, msg, isHost) {
+  if (isHost || memberCredentialValid(room, msg.memberToken)) return null;
+  if (room.locked) return "ROOM_LOCKED";
+  if ((room.inviteRequired || msg.inviteToken) && msg.inviteToken !== room.inviteToken) return "INVITE_REVOKED";
+  return null;
+}
+
+function issueMemberCredential(room, previous) {
+  ensureRoomAccess(room);
+  const token = memberCredentialValid(room, previous) ? previous : accessToken();
+  // Keep current members and the most recent disconnected members, with a hard bound.
+  if (!memberCredentialValid(room, token)) {
+    const keys = Object.keys(room.memberCredentials);
+    if (keys.length >= LIMITS.MAX_MEMBER_CREDENTIALS) {
+      const active = new Set(Array.from(room.members.values(), (m) => m.memberToken));
+      const oldest = keys.filter((k) => !active.has(k))
+        .sort((a, b) => room.memberCredentials[a] - room.memberCredentials[b])[0];
+      if (oldest) delete room.memberCredentials[oldest];
+    }
+  }
+  room.memberCredentials[token] = Date.now();
+  return token;
+}
+
+function revokeInvites(room) {
+  room.inviteRequired = true;
+  room.inviteToken = accessToken();
+}
+
 /**
  * A room code nobody is holding. `isTaken` is the caller's view of live rooms, because the
  * Node server keeps them in a Map and the Worker in a Durable Object cache.
@@ -371,6 +450,16 @@ class WindowedLimiter {
 }
 
 module.exports = {
+  newHostNonce,
+  hostTokenParts,
+  hostTokenMessage,
+  navigationMode,
+  ensureRoomAccess,
+  roomAccess,
+  memberCredentialValid,
+  roomAccessError,
+  issueMemberCredential,
+  revokeInvites,
   decodeRoomCode,
   MESSAGE_TYPES,
   CLIENT_MESSAGE_TYPES,

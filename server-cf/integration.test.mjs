@@ -110,7 +110,7 @@ test("local Worker: health, malformed invite, and two-member playback", { timeou
     await Promise.all([waitFor(host, "open"), waitFor(guest, "open")]);
     host.ws.send(JSON.stringify({ type: "create-room", userName: "Host", videoUrl: "https://example.com/video" }));
     const created = await waitFor(host, "room-created");
-    assert.match(created.hostToken, /^[0-9a-f]{64}$/);
+    assert.match(created.hostToken, /^[0-9a-f]{32}\.[0-9a-f]{64}$/);
     guest.ws.send(JSON.stringify({ type: "join-room", roomCode: created.roomCode, userName: "Guest" }));
     const joined = await waitFor(guest, "room-joined");
     assert.equal(joined.roomCode, created.roomCode);

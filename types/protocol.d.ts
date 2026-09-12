@@ -65,20 +65,23 @@ export interface JoinRoomMessage {
   roomCode: string;
   userName?: string;
   /**
-   * Set only by an automatic rejoin. The server keeps rooms in memory, so a restart wipes
-   * them and a live party would all get "Room not found" at once; this lets a returning
-   * member rebuild the room from the position they last saw.
+   * Set only by an automatic rejoin. Missing rooms can be reconstructed only with a
+   * valid hostToken. Rebuilding rotates invitations to preserve prior revocations.
    */
   recreateIfMissing?: boolean;
   resumeState?: PlaybackState;
   videoUrl?: string;
   mode?: RoomMode;
   /**
-   * HMAC of the room code, issued to whoever created it. Proves the same person is coming
+   * Opaque HMAC credential bound to the room incarnation, issued to its creator. Proves they are coming
    * back so a reload does not silently cost them their own room, and stops a stranger
    * claiming host by rebuilding a room they merely know the code for.
    */
   hostToken?: string;
+  locked?: boolean;
+  navigationMode?: RoomMode;
+  memberToken?: string;
+  inviteToken?: string;
   v?: ProtocolVersion;
 }
 
@@ -124,6 +127,9 @@ export type ClientMessage =
   | HeartbeatMessage
   | NavigateMessage
   | ChatMessage
+  | { type: "set-room-access"; navigationMode?: RoomMode; locked?: boolean; v?: ProtocolVersion }
+  | { type: "remove-member"; userId: string; v?: ProtocolVersion }
+  | { type: "revoke-invites"; v?: ProtocolVersion }
   | { type: "leave-room"; v?: ProtocolVersion }
   | { type: "request-state"; v?: ProtocolVersion }
   | {
@@ -166,7 +172,14 @@ export type ClientMessage =
 
 // ---------- server to client ----------
 
-export interface RoomCreatedMessage extends ServerStamped {
+export interface RoomAccess {
+  navigationMode?: RoomMode;
+  locked?: boolean;
+  inviteRequired?: boolean;
+  inviteToken?: string;
+}
+
+export interface RoomCreatedMessage extends ServerStamped, RoomAccess {
   type: "room-created";
   roomCode: string;
   userId: string;
@@ -175,9 +188,10 @@ export interface RoomCreatedMessage extends ServerStamped {
   isHost: true;
   /** Handed out once, to the creator only. */
   hostToken?: string;
+  memberToken?: string;
 }
 
-export interface RoomJoinedMessage extends ServerStamped {
+export interface RoomJoinedMessage extends ServerStamped, RoomAccess {
   type: "room-joined";
   roomCode: string;
   userId: string;
@@ -195,6 +209,7 @@ export interface RoomJoinedMessage extends ServerStamped {
   hostToken?: string;
   /** Set by the background when handing membership back to a reloaded party tab. */
   resumed?: boolean;
+  memberToken?: string;
 }
 
 export interface ServerSyncMessage extends ServerStamped, PlaybackState {
@@ -213,12 +228,14 @@ export interface ServerSyncMessage extends ServerStamped, PlaybackState {
 export type ServerMessage =
   | RoomCreatedMessage
   | RoomJoinedMessage
+  | ({ type: "pong" } & ServerStamped)
+  | ({ type: "room-access" } & ServerStamped & RoomAccess)
   | ServerSyncMessage
   | ({ type: "heartbeat"; fromUserId?: string; isLive?: boolean } & ServerStamped & PlaybackState)
   | ({ type: "heartbeat-role"; isLeader: boolean } & ServerStamped)
   | ({ type: "member-joined"; userId: string; userName: string; memberCount: number } & ServerStamped)
   | ({ type: "member-left"; userId: string; userName: string; memberCount: number } & ServerStamped)
-  | ({ type: "mode-changed"; mode: RoomMode; waitForSlow?: boolean; fromUser: string } & ServerStamped)
+  | ({ type: "mode-changed"; mode: RoomMode; navigationMode?: RoomMode; waitForSlow?: boolean; fromUser: string } & ServerStamped)
   | ({ type: "host-transferred"; isHost: boolean } & ServerStamped)
   | ({ type: "navigate"; url: string; fromUser?: string; fromUserId?: string } & ServerStamped)
   | ({ type: "chat"; message: string; userName: string; userId: string; timestamp: number } & ServerStamped)
@@ -237,7 +254,7 @@ export type ServerMessage =
   | ({ type: "call-url"; callUrl: string; fromUser: string } & ServerStamped)
   | ({ type: "voice-state"; userId: string; userName: string; active: boolean; activeUserIds: string[] } & ServerStamped)
   | ({ type: "voice-signal"; fromUserId: string; fromUserName: string; signal: unknown } & ServerStamped)
-  | ({ type: "error"; message: string } & ServerStamped)
+  | ({ type: "error"; message: string; code?: "MEMBER_REMOVED" | "ROOM_LOCKED" | "INVITE_REVOKED" } & ServerStamped)
   /** Sent first, before anything else, so a migrating client spends no time on the old relay. */
   | ({ type: "server-moved"; url: string } & ServerStamped);
 

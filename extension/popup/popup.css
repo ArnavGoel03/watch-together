@@ -729,6 +729,15 @@ header {
   letter-spacing: 0;
 }
 
+.member-state { color: var(--label-secondary); font-size: 11px; }
+.member-tag { max-width: 100%; }
+.member-tag > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.member-tag[data-offline]::before { background: var(--label-tertiary); }
+.member-remove { padding: 2px 5px; font-size: 10px; }
+#roomAccess[hidden] { display: none; }
+.diagnostic-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; color: var(--label-secondary); font-size: 11px; }
+.release { display: flex; flex-wrap: wrap; gap: 4px 8px; margin-top: 12px; color: var(--label-secondary); font-size: 10px; }
+
 .member-tag::before {
   content: '';
   width: 5px; height: 5px;

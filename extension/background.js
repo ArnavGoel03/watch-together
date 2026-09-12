@@ -16,6 +16,10 @@ let reconnectTimer = null;
 let reconnectAttempts = 0;
 // Retire queued room actions when the viewer leaves or starts a newer request.
 let roomRequestGeneration = 0;
+let pendingRoomRequest = false;
+let storageReady = false;
+let connectWhenReady = false;
+let relayPreferenceChanged = false;
 const connectedPorts = new Map(); // "tabId:portName" -> port
 let cachedMembers = []; // Latest known room members for serving popup re-opens
 let cachedMode = "everyone";
@@ -25,6 +29,12 @@ let cachedIsHost = false;
 // tab quietly cost the host their room: every reconnect is a brand new server-side user id,
 // so the host came back as an ordinary guest of their own party.
 let hostToken = null;
+let memberToken = null;
+let inviteToken = null;
+let cachedNavigationMode = "everyone";
+let cachedLocked = false;
+let cachedInviteRequired = false;
+let updateAvailableVersion = null;
 
 // The one tab the watch party is bound to. Playback traffic (sync, heartbeat,
 // navigate, cc-state) is routed ONLY to and from this tab. Without this, every
@@ -42,6 +52,42 @@ let cachedVideoUrl = "";
 // must not announce a move of its own. It outlives the page load, and the MV3 worker, on
 // purpose: the whole point is to still be true once the new content script wakes up.
 let navSuppressUntil = 0;
+
+const lifecycle = new self.__wtRelay.ConnectionLifecycle((diagnostics) => {
+  sendToParty({ type: "diagnostics", diagnostics });
+});
+
+const invitations = new self.__wtRelay.InviteStore(chrome.storage.local);
+chrome.runtime.onMessage.addListener((msg, sender, respond) => {
+  if (!["capture-invite", "get-pending-invite", "clear-pending-invite"].includes(msg?.type)) return false;
+  invitations.handle(msg, sender).then(respond, () => respond({ ok: false, pendingInvite: null }));
+  return true;
+});
+
+function retireConnection() {
+  connectWhenReady = false;
+  lifecycle.disarm();
+  lifecycle.cancelRequest();
+  lifecycle.cancelWaiters();
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  reconnectTimer = null;
+  const previous = ws;
+  ws = null; // Retire identity before close, which may synchronously dispatch.
+  if (previous) previous.close();
+}
+
+function beginRoomRequest(roomCode) {
+  roomRequestGeneration++;
+  lifecycle.cancelWaiters();
+  if (pendingRoomRequest || (currentRoom && currentRoom !== roomCode)) {
+    sendToServer({ type: "leave-room" });
+    sendToParty({ type: "room-ended", reason: "left" });
+    retireConnection();
+    clearRoomState();
+  }
+  pendingRoomRequest = true;
+  return roomRequestGeneration;
+}
 
 let lastPlaybackPersist = 0;
 function notePlayback(msg) {
@@ -62,10 +108,19 @@ function notePlayback(msg) {
 
 // Restore state from storage (survives MV3 service worker restarts)
 chrome.storage.local.get(
-  ["serverUrl", "movedServerUrl", "currentRoom", "userId", "partyTabId", "cachedPlayback", "cachedVideoUrl", "navSuppressUntil", "cachedMode", "cachedIsHost", "cachedMembers", "hostToken", "isHeartbeatLeader"],
+  ["serverUrl", "movedServerUrl", "roomRelayUrl", "currentRoom", "userId", "partyTabId", "cachedPlayback", "cachedVideoUrl", "navSuppressUntil", "cachedMode", "cachedIsHost", "cachedMembers", "hostToken", "memberToken", "inviteToken", "cachedNavigationMode", "cachedLocked", "cachedInviteRequired", "updateAvailableVersion", "isHeartbeatLeader"],
   /** @param {any} data */
   (data) => {
+    storageReady = true;
+    if (roomRequestGeneration !== 0) {
+      // A fresh user action retires stored membership, but the private-relay choice
+      // still has to load before the first socket can carry that action anywhere.
+      if (!relayPreferenceChanged) relay.hydrate({ serverUrl: data.serverUrl, movedServerUrl: data.movedServerUrl });
+      if (connectWhenReady) connect();
+      return;
+    }
     relay.hydrate(data);
+    if (self.__wtConfig.isNewerVersion(data.updateAvailableVersion, chrome.runtime.getManifest?.().version)) updateAvailableVersion = data.updateAvailableVersion;
     if (data.cachedPlayback) cachedPlayback = data.cachedPlayback;
     if (data.cachedVideoUrl) cachedVideoUrl = data.cachedVideoUrl;
     if (typeof data.navSuppressUntil === "number") navSuppressUntil = data.navSuppressUntil;
@@ -73,6 +128,11 @@ chrome.storage.local.get(
     if (typeof data.cachedIsHost === "boolean") cachedIsHost = data.cachedIsHost;
     if (Array.isArray(data.cachedMembers)) cachedMembers = data.cachedMembers;
     if (typeof data.hostToken === "string") hostToken = data.hostToken;
+    if (typeof data.memberToken === "string") memberToken = data.memberToken;
+    if (typeof data.inviteToken === "string") inviteToken = data.inviteToken;
+    if (data.cachedNavigationMode === "host") cachedNavigationMode = "host";
+    cachedLocked = data.cachedLocked === true;
+    cachedInviteRequired = data.cachedInviteRequired === true;
     // A worker killed mid-party used to come back believing it was not the heartbeat
     // leader, and stayed wrong until the server reassigned the role. Safari tears workers
     // down far more eagerly than Chrome, so the window this was hit in is about to get a
@@ -84,10 +144,21 @@ chrome.storage.local.get(
       partyTabId = typeof data.partyTabId === "number" ? data.partyTabId : null;
       connect(); // Reconnect and rejoin
     }
+    if (connectWhenReady) connect();
   }
 );
 
+// Store-provided update availability requires no additional network request.
+if (chrome.runtime.onUpdateAvailable) chrome.runtime.onUpdateAvailable.addListener((details) => {
+  if (!self.__wtConfig.isNewerVersion(details.version, chrome.runtime.getManifest?.().version)) return;
+  updateAvailableVersion = details.version;
+  chrome.storage.local.set({ updateAvailableVersion });
+  sendToParty({ type: "update-available", version: updateAvailableVersion });
+});
+
 function connect() {
+  if (!storageReady) { connectWhenReady = true; return; }
+  connectWhenReady = false;
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
 
   const target = relay.current();
@@ -97,6 +168,7 @@ function connect() {
     ws = socket;
   } catch (err) {
     console.error("[WatchTogether] Failed to create WebSocket:", err);
+    relay.onFailure();
     scheduleReconnect();
     return;
   }
@@ -109,11 +181,23 @@ function connect() {
   const isCurrent = () => ws === socket;
   // Count failure against this relay only if this particular socket never opened.
   let everConnected = false;
+  lifecycle.arm(() => {
+    if (!isCurrent() || everConnected) return;
+    ws = null;
+    socket.close();
+    if (relay.onFailure()) reconnectAttempts = 0;
+    sendToParty({ type: "connection-status", connected: false });
+    scheduleReconnect();
+  });
 
   ws.onopen = () => {
     if (!isCurrent()) return;
     console.log("[WatchTogether] Connected to server");
+    lifecycle.disarm();
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    reconnectTimer = null;
     reconnectAttempts = 0;
+    lifecycle.state("connected");
     relay.onConnected();
     everConnected = true;
     sendToParty({ type: "connection-status", connected: true });
@@ -130,6 +214,11 @@ function connect() {
           roomCode: currentRoom,
           userName: data.userName || "User",
           recreateIfMissing: true,
+          memberToken: memberToken || undefined,
+          inviteToken: inviteToken || undefined,
+          navigationMode: cachedNavigationMode,
+          locked: cachedLocked,
+          inviteRequired: cachedInviteRequired,
           resumeState: cachedPlayback,
           videoUrl: cachedVideoUrl,
           // Reclaims host if we were the host. The server only honours a token it issued.
@@ -154,24 +243,74 @@ function connect() {
     if (!msg || typeof msg !== "object") return;
 
     switch (msg.type) {
+      case "room-access":
+        cachedNavigationMode = (msg.navigationMode || msg.mode) === "host" ? "host" : "everyone";
+        cachedLocked = msg.locked === true;
+        cachedInviteRequired = msg.inviteRequired === true;
+        if (typeof msg.inviteToken === "string") inviteToken = msg.inviteToken;
+        saveState();
+        sendToParty(msg);
+        break;
+
+      case "error":
+        lifecycle.cancelRequest();
+        pendingRoomRequest = false;
+        sendToParty(msg);
+        if (msg.code === "MEMBER_REMOVED") {
+          roomRequestGeneration++;
+          sendToParty({ type: "room-ended", reason: "left" });
+          clearRoomState();
+          retireConnection();
+          lifecycle.state("idle");
+        }
+        break;
+
+      case "pong":
+        lifecycle.pong();
+        break;
+
       case "room-created":
+        pendingRoomRequest = false;
+        lifecycle.cancelRequest();
+        relay.pin(socket.url);
+        lifecycle.record("room-joined");
+        sendToServer({ type: "ping" });
+        msg.serverUrl = relay.current();
+        msg.videoUrl = msg.videoUrl || cachedVideoUrl;
         currentRoom = msg.roomCode;
         userId = msg.userId;
         cachedMembers = [{ id: msg.userId, userName: "" }];
         cachedMode = msg.mode || "everyone";
         cachedIsHost = true;
         if (typeof msg.hostToken === "string") hostToken = msg.hostToken;
+        if (typeof msg.memberToken === "string") memberToken = msg.memberToken;
+        if (typeof msg.inviteToken === "string") inviteToken = msg.inviteToken;
+        cachedNavigationMode = (msg.navigationMode || msg.mode) === "host" ? "host" : "everyone";
+        cachedLocked = msg.locked === true;
+        cachedInviteRequired = msg.inviteRequired === true;
         saveState();
         sendToParty(msg);
         break;
 
       case "room-joined":
+        pendingRoomRequest = false;
+        lifecycle.cancelRequest();
+        relay.pin(socket.url);
+        lifecycle.record("room-joined");
+        sendToServer({ type: "ping" });
+        msg.serverUrl = relay.current();
+        msg.videoUrl = msg.videoUrl || cachedVideoUrl;
         currentRoom = msg.roomCode;
         userId = msg.userId;
         cachedMembers = Array.isArray(msg.members) ? msg.members.slice() : [];
         cachedMode = msg.mode || "everyone";
         cachedIsHost = !!msg.isHost;
         if (typeof msg.hostToken === "string") hostToken = msg.hostToken;
+        if (typeof msg.memberToken === "string") memberToken = msg.memberToken;
+        if (typeof msg.inviteToken === "string") inviteToken = msg.inviteToken;
+        cachedNavigationMode = (msg.navigationMode || msg.mode) === "host" ? "host" : "everyone";
+        cachedLocked = msg.locked === true;
+        cachedInviteRequired = msg.inviteRequired === true;
         if (msg.videoUrl) cachedVideoUrl = msg.videoUrl;
         if (msg.playbackState) notePlayback(msg.playbackState);
         saveState();
@@ -192,6 +331,7 @@ function connect() {
 
       case "mode-changed":
         cachedMode = msg.mode;
+        cachedNavigationMode = (msg.navigationMode || msg.mode) === "host" ? "host" : "everyone";
         saveState();
         sendToParty(msg);
         break;
@@ -227,10 +367,10 @@ function connect() {
       // so it survives a restart, and a user's explicit choice in Settings still outranks it.
       case "server-moved":
         if (relay.acceptMove(msg.url)) {
-          chrome.storage.local.set({ movedServerUrl: msg.url });
+          chrome.storage.local.set({ movedServerUrl: msg.url, roomRelayUrl: relay.affinity });
           console.log(`[WatchTogether] Server moved to ${msg.url}, reconnecting`);
           sendToParty({ type: "server-moved", url: msg.url });
-          if (ws) ws.close();
+          retireConnection();
           connect();
         }
         break;
@@ -258,7 +398,6 @@ function connect() {
       case "call-url":
       case "voice-state":
       case "voice-signal":
-      case "error":
         sendToParty(msg);
         break;
     }
@@ -267,6 +406,9 @@ function connect() {
   ws.onclose = (event) => {
     if (!isCurrent()) return; // a socket we already replaced, finally finishing
     console.log(`[WatchTogether] Disconnected (code: ${event.code})`);
+    lifecycle.disarm();
+    lifecycle.cancelRequest();
+    lifecycle.state("disconnected", reconnectAttempts);
     ws = null;
     sendToParty({ type: "connection-status", connected: false });
     // A socket that never opened means this relay is not answering, not that the network
@@ -292,6 +434,7 @@ function scheduleReconnect() {
   // Exponential backoff: 1s, 2s, 4s, 8s, 16s, max 30s
   const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
   reconnectAttempts++;
+  lifecycle.state("reconnecting", reconnectAttempts);
   console.log(`[WatchTogether] Reconnecting in ${delay}ms (attempt ${reconnectAttempts})`);
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
@@ -302,7 +445,27 @@ function scheduleReconnect() {
 function sendToServer(msg) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     // One place stamps the protocol version, so no call site can forget to.
-    ws.send(JSON.stringify({ v: self.__wtConfig.PROTOCOL_VERSION, ...msg }));
+    try {
+      ws.send(JSON.stringify({ v: self.__wtConfig.PROTOCOL_VERSION, ...msg }));
+      if (msg.type === "ping") lifecycle.ping();
+      if (msg.type === "create-room" || msg.type === "join-room") {
+        pendingRoomRequest = true;
+        const generation = roomRequestGeneration;
+        const socket = ws;
+        lifecycle.request(() => {
+          if (generation !== roomRequestGeneration || ws !== socket) return;
+          pendingRoomRequest = false;
+          roomRequestGeneration++;
+          sendToParty({ type: "error", message: "Could not connect to server. Try again." });
+          retireConnection();
+          lifecycle.state("disconnected");
+          if (currentRoom) scheduleReconnect();
+        });
+      }
+    } catch {
+      lifecycle.record("send-failed");
+      return false;
+    }
     return true;
   }
   return false;
@@ -456,6 +619,9 @@ function saveState() {
   // failure the rebuild path was written to prevent.
   chrome.storage.local.set({
     currentRoom,
+    roomRelayUrl: currentRoom ? relay.affinity : null,
+    cachedVideoUrl,
+    cachedPlayback,
     userId,
     partyTabId,
     navSuppressUntil,
@@ -463,11 +629,27 @@ function saveState() {
     cachedIsHost,
     cachedMembers,
     hostToken,
+    memberToken,
+    inviteToken,
+    cachedNavigationMode,
+    cachedLocked,
+    cachedInviteRequired,
     isHeartbeatLeader,
   });
 }
 
 function clearRoomState() {
+  pendingRoomRequest = false;
+  relay.clearAffinity();
+  memberToken = null;
+  inviteToken = null;
+  cachedNavigationMode = "everyone";
+  cachedLocked = false;
+  cachedInviteRequired = false;
+  cachedVideoUrl = "";
+  cachedPlayback = { playing: false, currentTime: 0, playbackRate: 1 };
+  navSuppressUntil = 0;
+  lastPlaybackPersist = 0;
   currentRoom = null;
   userId = null;
   partyTabId = null;
@@ -494,6 +676,7 @@ chrome.runtime.onStartup.addListener(() => {
 // Closing the party tab must not end the session: keep the room and unbind, so
 // the next tab that joins (or the popup) can re-adopt it.
 chrome.tabs.onRemoved.addListener((tabId) => {
+  invitations.removeTab(tabId);
   if (tabId !== partyTabId) return;
   partyTabId = null;
   saveState();
@@ -524,6 +707,10 @@ chrome.runtime.onConnect.addListener((port) => {
       userId,
       mode: cachedMode,
       isHost: cachedIsHost,
+      navigationMode: cachedNavigationMode,
+      locked: cachedLocked,
+      inviteRequired: cachedInviteRequired,
+      inviteToken,
       members: cachedMembers,
       videoUrl: cachedVideoUrl,
       resumed: true,
@@ -534,6 +721,8 @@ chrome.runtime.onConnect.addListener((port) => {
 
   port.onMessage.addListener((msg) => {
     if (!msg || typeof msg !== "object") return;
+    if (connectedPorts.get(portKey) !== port) return;
+    if (["leave-room", "set-mode", "set-room-access", "remove-member", "revoke-invites", "set-call-url", "chat", "chat-typing", "voice-state", "voice-signal", "request-state"].includes(msg.type) && port.name !== "popup" && !isPartyTabPort(port)) return;
     // Playback traffic is only trusted from the tab the party is bound to. Otherwise
     // any other video the user has open can drive everyone else's playback.
     const PLAYBACK_TYPES = ["sync", "heartbeat", "navigate", "cc-state", "ad-state", "presence", "ping"];
@@ -545,7 +734,7 @@ chrome.runtime.onConnect.addListener((port) => {
         break;
 
       case "create-room": {
-        const generation = ++roomRequestGeneration;
+        const generation = beginRoomRequest(null);
         cachedVideoUrl = msg.videoUrl || "";
         resolvePartyTab(port, msg, (resolved) => {
           if (generation !== roomRequestGeneration) return;
@@ -578,17 +767,37 @@ chrome.runtime.onConnect.addListener((port) => {
           break;
         }
 
-        const generation = ++roomRequestGeneration;
+        const hint = typeof msg.relayUrl === "string" && msg.relayUrl ? msg.relayUrl : null;
+        const allowed = hint && (relay.override ? hint === relay.override : self.__wtConfig.SERVER_URLS.includes(hint));
+        if (hint && !allowed) {
+          port.postMessage({ type: "error", message: "Could not connect to server. Try again." });
+          break;
+        }
+        const generation = beginRoomRequest(roomCode);
+        if (allowed) {
+          const changed = relay.current() !== hint;
+          relay.pin(hint);
+          if (changed) retireConnection();
+        }
+        const requestedInvite = typeof msg.inviteToken === "string" && /^[a-f0-9]{32,128}$/i.test(msg.inviteToken) ? msg.inviteToken : undefined;
         resolvePartyTab(port, msg, (resolved) => {
           if (generation !== roomRequestGeneration) return;
           partyTabId = resolved;
           saveState();
           connect();
           waitForConnection(() => {
+            if (hint && relay.current() !== hint) {
+              pendingRoomRequest = false;
+              port.postMessage({ type: "error", message: "Could not connect to server. Try again." });
+              return;
+            }
             sendToServer({
               type: "join-room",
               roomCode,
               userName: msg.userName || "User",
+              inviteToken: requestedInvite,
+              memberToken: memberToken || undefined,
+              hostToken: hostToken || undefined,
             });
           });
         });
@@ -602,6 +811,8 @@ chrome.runtime.onConnect.addListener((port) => {
         // there claiming to be in a room nobody is in.
         sendToParty({ type: "room-ended", reason: "left" });
         clearRoomState();
+        retireConnection();
+        lifecycle.state("idle");
         break;
 
       case "sync":
@@ -655,6 +866,9 @@ chrome.runtime.onConnect.addListener((port) => {
         sendToServer(msg);
         break;
 
+      case "set-room-access":
+      case "remove-member":
+      case "revoke-invites":
       case "set-mode":
       case "set-call-url":
         sendToServer(msg);
@@ -671,18 +885,26 @@ chrome.runtime.onConnect.addListener((port) => {
           postTo("popup", { type: "error", message: "Server URL must start with wss://" });
           break;
         }
+        roomRequestGeneration++;
+        pendingRoomRequest = false;
+        relay.clearAffinity();
+        relayPreferenceChanged = true;
         relay.setOverride(wanted || null);
+        if (currentRoom) relay.pin();
+        saveState();
         chrome.storage.local.set({ serverUrl: wanted || null });
-        if (ws) ws.close();
+        retireConnection();
         connect();
         break;
       }
 
       // The party tab was closed but the room is still alive. Bind the party to the
       // tab the user is on now and pull the current playback state into it.
-      case "adopt-tab":
+      case "adopt-tab": {
         if (!currentRoom) break;
+        const generation = roomRequestGeneration;
         resolvePartyTab(port, msg, (resolved) => {
+          if (generation !== roomRequestGeneration || !currentRoom) return;
           if (resolved === null) {
             // The tab in front of the user cannot run the sync (chrome://, the Web Store,
             // a PDF). Say so rather than pretending we attached.
@@ -707,6 +929,10 @@ chrome.runtime.onConnect.addListener((port) => {
             userId,
             mode: cachedMode,
             isHost: cachedIsHost,
+          navigationMode: cachedNavigationMode,
+          locked: cachedLocked,
+          inviteRequired: cachedInviteRequired,
+          inviteToken,
             members: cachedMembers,
             videoUrl: cachedVideoUrl,
             resumed: true,
@@ -715,6 +941,7 @@ chrome.runtime.onConnect.addListener((port) => {
           waitForConnection(() => sendToServer({ type: "request-state" }));
         });
         break;
+      }
 
       // The viewer has just granted access to a site we did not have. Make it work in the
       // tab they are looking at, and keep working next time they visit.
@@ -728,6 +955,10 @@ chrome.runtime.onConnect.addListener((port) => {
         }
         break;
 
+      case "get-diagnostics":
+        port.postMessage({ type: "diagnostics", diagnostics: lifecycle.snapshot() });
+        break;
+
       case "get-state":
         port.postMessage({
           type: "state",
@@ -736,9 +967,15 @@ chrome.runtime.onConnect.addListener((port) => {
           connected: ws && ws.readyState === WebSocket.OPEN,
           isHeartbeatLeader,
           serverUrl: relay.current(),
+          videoUrl: cachedVideoUrl,
+          updateAvailableVersion,
           members: cachedMembers,
           mode: cachedMode,
           isHost: cachedIsHost,
+          navigationMode: cachedNavigationMode,
+          locked: cachedLocked,
+          inviteRequired: cachedInviteRequired,
+          inviteToken,
           partyTabId,
           hasPartyTab: partyTabId !== null,
         });
@@ -754,17 +991,20 @@ chrome.runtime.onConnect.addListener((port) => {
   });
 });
 
-function waitForConnection(callback, retries = 60, generation = roomRequestGeneration) {
-  if (generation !== roomRequestGeneration) return;
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    callback();
-  } else if (retries > 0) {
-    // Keep trying to connect if WebSocket is dead
-    if (!ws || ws.readyState === WebSocket.CLOSED) {
-      connect();
+function waitForConnection(callback, generation = roomRequestGeneration) {
+  lifecycle.wait(
+    () => !!ws && ws.readyState === WebSocket.OPEN,
+    () => generation === roomRequestGeneration,
+    () => { if (!reconnectTimer && (!ws || ws.readyState === WebSocket.CLOSED)) connect(); },
+    callback,
+    () => {
+      if (pendingRoomRequest || !currentRoom) {
+        roomRequestGeneration++;
+        pendingRoomRequest = false;
+        retireConnection();
+        lifecycle.state("disconnected");
+      }
+      sendToParty({ type: "error", message: "Could not connect to server. Try again." });
     }
-    setTimeout(() => waitForConnection(callback, retries - 1, generation), 1000);
-  } else {
-    sendToParty({ type: "error", message: "Could not connect to server. Try again." });
-  }
+  );
 }

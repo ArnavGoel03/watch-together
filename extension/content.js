@@ -31,6 +31,29 @@
 
   let port = null;
   let activeVideo = null;
+  let filmVolume = null;
+  let temporaryVolume = null;
+  let volumeChosen = false;
+  chrome.storage.local.get(["filmVolume"], (data) => {
+    if (volumeChosen) return;
+    const value = data.filmVolume;
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) return;
+    filmVolume = value;
+    if (activeVideo) activeVideo.volume = value;
+  });
+
+  function setFilmVolume(value, temporary = false) {
+    if (typeof value !== "number" || !Number.isFinite(value)) return;
+    const volume = Math.min(1, Math.max(0, value));
+    if (temporary) temporaryVolume = volume;
+    else {
+      volumeChosen = true;
+      filmVolume = volume;
+      temporaryVolume = null;
+      chrome.storage.local.set({ filmVolume: volume });
+    }
+    if (activeVideo) activeVideo.volume = volume;
+  }
   let adapter = null;
   let lastApplied = null; // the state the last remote sync wrote, so echoes can be told from real actions
   let heartbeatTimer = null;
@@ -38,7 +61,6 @@
   let calmTicks = 0;              // consecutive beats with no drift worth correcting
   let roomMemberCount = 1;        // no point heartbeating to an empty room
   let inRoom = false;
-  let currentRoom = null;
   let pendingPlaybackState = null; // for applying sync after video loads
   let metadataWaiter = null; // at most one loadedmetadata listener in flight
   let lastSyncTime = 0; // timestamp of last sync event (sent or received)
@@ -186,6 +208,7 @@
     }
     const isNewElement = video !== lastAttachedElement;
     activeVideo = video;
+    if (temporaryVolume !== null || filmVolume !== null) video.volume = temporaryVolume ?? filmVolume;
     lastAttachedElement = video;
     // Only a genuinely different element is a remount. Re-binding the same node after an
     // SPA navigation must not re-arm the jump guard, or a real rewind right afterwards
@@ -616,21 +639,45 @@
     });
   }
 
+  let localJoinRequest = null;
+  let localJoinTimer = null;
+
+  function clearLocalJoin() {
+    localJoinRequest = null;
+    clearTimeout(localJoinTimer);
+    localJoinTimer = null;
+  }
+
+  function retryLocalJoin() {
+    if (!localJoinRequest || !port) return;
+    if (inRoom || localJoinRequest.url !== normalizeUrl(location.href) || Date.now() >= localJoinRequest.expiresAt) {
+      clearLocalJoin();
+      return;
+    }
+    try {
+      port.postMessage(localJoinRequest.message);
+      clearLocalJoin();
+    } catch { /* Keep this tab's request until the next port connection or its deadline. */ }
+  }
+
   function sendMsg(msg) {
+    if (msg.type === "join-room") clearLocalJoin();
     if (port) {
       try {
         port.postMessage(msg);
-      } catch {
-        // Re-store pending join so it retries after reconnect
-        if (msg.type === "join-room" && msg.roomCode) {
-          // consented: the user already asked to join this one, we are only retrying.
-          chrome.storage.local.set({
-            pendingJoin: { roomCode: msg.roomCode, url: location.href, timestamp: Date.now(), consented: true },
-          });
-        }
-        connectToBackground();
-      }
+        return;
+      } catch { /* The background port can disappear between the check and the send. */ }
     }
+    // Consent is local to the tab that received it. A storage record lets another tab
+    // on the same URL consume that consent, so failed joins stay only in this context.
+    if (msg.type === "join-room" && msg.roomCode) {
+      localJoinRequest = { message: { ...msg }, url: normalizeUrl(location.href), expiresAt: Date.now() + 20000 };
+      localJoinTimer = setTimeout(() => {
+        clearLocalJoin();
+        if (!inRoom) showNotification("Join timed out. Enter the code in the extension.");
+      }, 20000);
+    }
+    connectToBackground();
   }
 
   // Cancel any in-flight rate nudge - used when a hard correction overrides it
@@ -675,6 +722,8 @@
     try {
       const u = new URL(raw);
       u.searchParams.delete("wt_room");
+      u.searchParams.delete("wt_invite");
+      u.searchParams.delete("wt_relay");
       u.hash = "";
       return u.toString().replace(/\/$/, "");
     } catch {
@@ -1075,8 +1124,8 @@
 
         case "room-created":
         case "room-joined":
+          clearLocalJoin();
           inRoom = true;
-          currentRoom = msg.roomCode;
           if (Array.isArray(msg.members)) roomMemberCount = Math.max(1, msg.members.length);
           if (typeof msg.serverTime === "number") updateClockOffset(msg.serverTime);
           adapter = getAdapter();
@@ -1133,8 +1182,8 @@
         // party to a different tab. Nothing else would tell us, and a tab that still
         // thinks it is in a room keeps a live overlay up and keeps trying to drive sync.
         case "room-ended":
+          clearLocalJoin();
           inRoom = false;
-          currentRoom = null;
           stopHeartbeat();
           stopKeepalive();
           cancelRateNudge(activeVideo);
@@ -1172,6 +1221,7 @@
       port = null;
       setTimeout(connectToBackground, 1000);
     });
+    retryLocalJoin();
   }
 
   // A small centred card the viewer can act on. Used for the two moments where the
@@ -1317,6 +1367,7 @@
     // before comparing; the sending side did not, so that rewrite broadcast a navigate
     // and hard-reloaded every peer's tab off a video nobody had left.
     if (wasSameVideo) return;
+    clearLocalJoin();
     // New video, new content length. Carrying the old one over would make a short clip
     // that follows a long film look like a permanent ad. Relearn it from scratch.
     contentDuration = 0;
@@ -1325,7 +1376,7 @@
     // that nobody can account for. Look up whatever belongs to THIS video, which is
     // usually nothing.
     loadOffsetForCurrentVideo();
-    if (!inRoom) return;
+    if (!inRoom) { checkExternalInvite(); return; }
     // If we just received and applied a remote navigate, don't echo it back.
     if (Date.now() < suppressNextNavigateUntil) return;
     // Reset state - fresh video, fresh broadcast guard
@@ -1359,12 +1410,16 @@
     let target;
     try {
       const u = new URL(msg.url);
-      // Append room code so even a fresh content-script context auto-rejoins
-      if (currentRoom) u.searchParams.set("wt_room", currentRoom);
+      // Background membership already follows the party tab across navigation. Copying
+      // invitation parameters here would create a second, unrelated join-consent flow.
+      u.searchParams.delete("wt_room");
+      u.searchParams.delete("wt_invite");
+      u.searchParams.delete("wt_relay");
       target = u.toString();
     } catch {
       return;
     }
+    clearLocalJoin();
 
     // Already where the room wants us: cancel any redirect still pending. This is the
     // tiebreaker when two people switch apps at the same instant. The server now echoes
@@ -1380,13 +1435,6 @@
     // Avoid a feedback loop: block our own URL-watcher from re-broadcasting after the redirect
     suppressNextNavigateUntil = Date.now() + 8000;
     showNotification(`${msg.fromUser || "Someone"} switched videos - joining…`);
-    // Persist a join hint so auto-join picks up if the new page lacks the param
-    if (currentRoom) {
-      // consented: we are already in this room, this is the room moving, not an invite.
-      chrome.storage.local.set({
-        pendingJoin: { roomCode: currentRoom, url: target, timestamp: Date.now(), consented: true },
-      });
-    }
     // A newer navigate supersedes an older one, so only ever hold one pending redirect.
     if (pendingNavigateTimer) clearTimeout(pendingNavigateTimer);
     pendingNavigateTimer = setTimeout(() => { pendingNavigateTimer = null; location.href = target; }, 250);
@@ -1424,56 +1472,33 @@
 
   observer.observe(document.body, { childList: true, subtree: true });
 
-  // A join hint belongs to its destination. Every permitted tab observes storage
-  // changes, so bystanders must neither consume the invite nor inherit its consent.
+  // The background owns invitations by tab ID, including redirects through login.
 
-  function checkPendingJoin() {
-    chrome.storage.local.get(["pendingJoin", "userName"], /** @param {any} data */ (data) => {
-      if (!data.pendingJoin) return;
-
-      const { roomCode, timestamp, url } = data.pendingJoin;
-
-      if (!window.__wtConfig.isSafeNavigateUrl(url)) return;
-      if (normalizeUrl(url) !== normalizeUrl(location.href)) return;
-      chrome.storage.local.remove("pendingJoin");
-
-      if (inRoom) return;
-      if (typeof timestamp !== "number" || !Number.isFinite(timestamp)) return;
-      const age = Date.now() - timestamp;
-      if (age < 0 || age > 120000) return;
-      if (!window.__wtConfig || !window.__wtConfig.isJoinableCode(roomCode)) return;
-
-      const name = data.userName || "User";
-
-      const join = () => {
-        if (normalizeUrl(url) !== normalizeUrl(location.href)) return;
-        showNotification(`Joining room ${roomCode}...`);
-        sendMsg({ type: "join-room", roomCode, userName: name });
-        // Timeout fallback
-        setTimeout(() => {
-          if (!inRoom) {
-            showNotification("Join timed out. Enter the code in the extension.");
-          }
-        }, 20000);
-      };
-
-      // A hint we wrote ourselves, because the room moved and we are following it, needs
-      // no permission: the user is already in that room. A hint that came off a page's
-      // ?wt_room= parameter is different. This content script runs on <all_urls>, so ANY
-      // page could hand out a code, and joining silently makes whoever sent the link a
-      // peer, with a peer's power to move this tab. That is one click's worth of consent.
-      if (data.pendingJoin.consented === true) {
-        join();
-        return;
-      }
-
-      showActionCard(
-        "wt-join-consent",
-        `Join room ${roomCode}?`,
-        "This link is inviting you into a watch party. Whoever is in the room can play, pause and change what this tab is showing.",
-        "Join room",
-        join
-      );
+  let displayedInvite = "";
+  function checkExternalInvite() {
+    if (inRoom || !chrome.runtime.sendMessage) return;
+    chrome.runtime.sendMessage({ type: "get-pending-invite" }, (reply) => {
+      if (chrome.runtime.lastError || inRoom) return;
+      const invite = reply?.pendingInvite;
+      if (!invite || normalizeUrl(invite.url) !== normalizeUrl(location.href)) return;
+      const identity = `${invite.roomCode}:${invite.inviteToken || ""}:${invite.url}`;
+      if (displayedInvite === identity) return;
+      displayedInvite = identity;
+      chrome.storage.local.get(["userName"], (data) => {
+        if (inRoom || normalizeUrl(invite.url) !== normalizeUrl(location.href)) return;
+        showActionCard(
+          "wt-join-consent", `Join room ${invite.roomCode}?`,
+          "This link is inviting you into a watch party. Whoever is in the room can play, pause and change what this tab is showing.",
+          "Join room", () => {
+            if (normalizeUrl(invite.url) !== normalizeUrl(location.href)) return;
+            chrome.runtime.sendMessage({ type: "clear-pending-invite", id: invite.id }, (result) => {
+              if (chrome.runtime.lastError || !result?.ok || normalizeUrl(invite.url) !== normalizeUrl(location.href)) return;
+              sendMsg({ type: "join-room", roomCode: invite.roomCode, inviteToken: invite.inviteToken, relayUrl: invite.relayUrl, userName: data.userName || "User" });
+            });
+          },
+          { onSecondary: () => chrome.runtime.sendMessage({ type: "clear-pending-invite", id: invite.id }, () => { void chrome.runtime.lastError; }) }
+        );
+      });
     });
   }
 
@@ -1499,6 +1524,8 @@
   // Shared handle for overlay.js. Both run in the same content-script world, so the
   // overlay can read sync health and force a resync without a background round trip.
   window.__wtCore = {
+    setVolume: setFilmVolume,
+    getVolume: () => filmVolume ?? activeVideo?.volume ?? null,
     resync: requestResync,
     isInRoom: () => inRoom,
     getVideo: () => activeVideo || findVideo(),
@@ -1522,22 +1549,16 @@
     if (v) attachVideoListeners(v);
   }, 1000);
 
-  // Check for pending join - retry until port is ready
+  // Check this tab's invitation while the background wakes.
   let joinCheckCount = 0;
   const joinCheck = setInterval(() => {
     joinCheckCount++;
     if (port && !inRoom) {
-      checkPendingJoin();
+      checkExternalInvite();
     }
     if (inRoom || joinCheckCount > 30) {
       clearInterval(joinCheck);
     }
   }, 1000);
 
-  // Also check on storage changes (for SPA navigation)
-  chrome.storage.onChanged.addListener((changes) => {
-    if (changes.pendingJoin && changes.pendingJoin.newValue && !inRoom && port) {
-      checkPendingJoin();
-    }
-  });
 })();

@@ -73,19 +73,17 @@ if (!process.env.HOST_TOKEN_SECRET) {
   console.warn("[start] HOST_TOKEN_SECRET is not set. Host status will not survive a server restart.");
 }
 
-function mintHostToken(roomCode) {
-  return crypto.createHmac("sha256", HOST_TOKEN_SECRET).update(String(roomCode)).digest("hex");
+function mintHostToken(roomCode, nonce = null) {
+  const signature = crypto.createHmac("sha256", HOST_TOKEN_SECRET)
+    .update(P.hostTokenMessage(roomCode, nonce)).digest("hex");
+  return nonce ? `${nonce}.${signature}` : signature;
 }
 
-function isValidHostToken(roomCode, token) {
-  if (typeof token !== "string" || token.length !== 64) return false;
-  const expected = mintHostToken(roomCode);
-  // Constant time: a token check that leaks its answer through timing is not a check.
-  try {
-    return crypto.timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(token, "hex"));
-  } catch {
-    return false;
-  }
+function isValidHostToken(roomCode, token, expectedNonce = undefined) {
+  const parts = P.hostTokenParts(token);
+  if (!parts || (expectedNonce !== undefined && parts.nonce !== expectedNonce)) return false;
+  const expected = P.hostTokenParts(mintHostToken(roomCode, parts.nonce));
+  return crypto.timingSafeEqual(Buffer.from(expected.signature, "hex"), Buffer.from(parts.signature, "hex"));
 }
 
 // --- State ---
@@ -547,6 +545,7 @@ function serveJoinPage(res, code, roomExists, memberCount) {
     "Content-Type": "text/html",
     "X-Frame-Options": "DENY",
     "Referrer-Policy": "no-referrer",
+    "Cache-Control": "no-store",
     "X-Content-Type-Options": "nosniff",
     "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'",
   });
@@ -592,6 +591,7 @@ const server = http.createServer((req, res) => {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
+    "Cache-Control": "no-store",
   };
 
   if (req.method === "OPTIONS") {
@@ -621,7 +621,9 @@ const server = http.createServer((req, res) => {
   if (req.url.startsWith("/room/")) {
     // Only expose minimal info - no videoUrl, no exact member count
     const code = req.url.split("/room/")[1]?.split("?")[0]?.toUpperCase();
-    const room = rooms.get(code);
+    const candidate = rooms.get(code);
+    const inviteToken = new URL(req.url, "http://localhost").searchParams.get("invite");
+    const room = candidate && !P.roomAccessError(candidate, { inviteToken }, false) ? candidate : null;
     // The same ceiling the socket path has. Without it this endpoint answers "does this
     // room exist" at whatever rate an attacker can ask, which is the enumeration the
     // socket-side limiter was built to stop, reachable over plain HTTP and, because of
@@ -650,7 +652,9 @@ const server = http.createServer((req, res) => {
       res.end("<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"UTF-8\"><title>Watch Together</title></head><body style=\"font-family:-apple-system,sans-serif;background:#0d0d0f;color:#fff;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0\"><p>That is not a valid room code.</p></body></html>");
       return;
     }
-    const room = rooms.get(code);
+    const candidate = rooms.get(code);
+    const inviteToken = new URL(req.url, "http://localhost").searchParams.get("invite");
+    const room = candidate && !P.roomAccessError(candidate, { inviteToken }, false) ? candidate : null;
     if (!rateLimitHttp(req)) {
       res.writeHead(429, { "Content-Type": "text/plain", "X-Frame-Options": "DENY" });
       res.end("Rate limited - slow down");
@@ -670,7 +674,12 @@ const server = http.createServer((req, res) => {
       try {
         const redirectUrl = new URL(videoUrl);
         redirectUrl.searchParams.set("wt_room", code);
-        res.writeHead(302, { "Location": redirectUrl.toString() });
+        // A hint only: clients validate this against their public list or explicit override.
+        const origin = new URL(`http://${req.headers.host || "localhost"}`);
+        origin.protocol = req.headers["x-forwarded-proto"] === "https" ? "wss:" : "ws:";
+        redirectUrl.searchParams.set("wt_relay", origin.origin);
+        if (inviteToken && inviteToken === room.inviteToken) redirectUrl.searchParams.set("wt_invite", inviteToken);
+        res.writeHead(302, { "Location": redirectUrl.toString(), "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" });
         res.end();
       } catch {
         // Bad URL, fall through to manual page
@@ -706,6 +715,11 @@ const server = http.createServer((req, res) => {
 });
 
 // --- WebSocket Server ---
+// Handle bind failure before ws relays it as an unhandled server error.
+server.on("error", (error) => {
+  console.error(`[start] Cannot listen: ${describeError(error)}`);
+  process.exit(1);
+});
 const wss = new WebSocketServer({
   server,
   maxPayload: MAX_MESSAGE_SIZE,
@@ -812,6 +826,8 @@ wss.on("connection", (ws, req) => {
     }
 
     if (!msg || typeof msg.type !== "string") return;
+    if (ws.readyState !== WebSocket.OPEN) return;
+    if (currentRoom && rooms.get(currentRoom)?.members.get(userId)?.ws !== ws) return;
 
     // Anything at all arriving from this member, other than the message that sets the flag,
     // is proof they are connected and doing something. The ad flag is edge-triggered, so
@@ -889,9 +905,10 @@ wss.on("connection", (ws, req) => {
         const room = {
           code: roomCode,
           hostId: userId,
+          hostNonce: P.newHostNonce(),
           mode,
           persistent,
-          members: new Map([[userId, { ws, userName }]]),
+          members: new Map([[userId, { ws, userName, memberToken: "", leave: leaveCurrentRoom }]]),
           videoUrl,
           playbackState: {
             playing: false,
@@ -904,11 +921,15 @@ wss.on("connection", (ws, req) => {
           peakMembers: 1,
           ownerIp: clientIp,
         };
+        const memberToken = P.issueMemberCredential(room);
+        room.members.get(userId).memberToken = memberToken;
         rooms.set(roomCode, room);
         currentRoom = roomCode;
 
         sendTo(ws, {
           type: "room-created",
+          ...P.roomAccess(room),
+          memberToken,
           roomCode,
           userId,
           mode: room.mode,
@@ -917,7 +938,7 @@ wss.on("connection", (ws, req) => {
           // Kept by the creator's extension and replayed on every rejoin. Reloading the
           // tab used to cost you your own room: each connection gets a fresh user id, so
           // the host came back as a guest and a host-only room fell open to everyone.
-          hostToken: mintHostToken(roomCode),
+          hostToken: mintHostToken(roomCode, room.hostNonce),
           serverTime: Date.now(),
         });
 
@@ -934,15 +955,9 @@ wss.on("connection", (ws, req) => {
         const code = typeof msg.roomCode === "string" ? msg.roomCode.toUpperCase().trim() : "";
         let room = rooms.get(code);
 
-        // Rooms live in memory, so a server restart (on a free tier, an idle spin-down is
-        // routine) wipes every one of them and a happily-watching party would all get
-        // "Room not found" at once. A client that is REJOINING a room it was already in
-        // may rebuild it: it replays the code and the last playback position it saw, and
-        // the party carries on. Knowing the code is already the only credential this
-        // system has, so rebuilding with it grants nothing that joining would not.
-        //
-        // Only auto-rejoins set recreateIfMissing. A human typing an unknown code still
-        // gets a clean "Room not found" rather than silently landing in an empty room.
+        // A restart loses the access policy and revoked member list. Only the creator's
+        // signed token may reconstruct a room, with fresh invitations. A guest holding
+        // its code or an older permissive snapshot must not erase a lock or removal.
         if (!room && msg.recreateIfMissing === true && code) {
           if (rooms.size >= MAX_ROOMS) {
             sendTo(ws, { type: "error", message: "Server is at capacity. Try again later." });
@@ -959,26 +974,19 @@ wss.on("connection", (ws, req) => {
 
           const seed = msg.resumeState && typeof msg.resumeState === "object" ? msg.resumeState : {};
 
-          // Rebuilding is not the same as being the host. Anyone who knows the code can
-          // ask for a rebuild, and the room is gone, so there is nothing to check them
-          // against except a token this server itself issued. Without one, the rebuilt
-          // room is a free-for-all: a stranger who waits for a party to go quiet must not
-          // be able to come back as its exclusive controller and drive everyone's
-          // playback (and their tab's location) when the real members reconnect.
-          const rebuildIsHost = isValidHostToken(code, msg.hostToken);
+          if (!isValidHostToken(code, msg.hostToken)) {
+            sendTo(ws, { type: "error", message: "Room not found" });
+            return;
+          }
           room = {
             code,
-            hostId: rebuildIsHost ? userId : null,
-            // Whether the "a room with nobody steering is taken by its first arrival" rule
-            // below is allowed to fire for this room. It must not be, here: the rebuilder
-            // IS the first arrival, always, so that rule handed host to whoever rebuilt the
-            // room and made the token check above decorative. A stranger who waited for a
-            // party to go quiet could rebuild it, be handed host, and lock everyone out
-            // with set-mode when the real members came back. A rebuilt room with no valid
-            // token simply has no host: everybody can drive playback, nobody can lock it,
-            // and the real host reclaims the moment they reconnect with their token.
-            hostClaimable: rebuildIsHost,
-            mode: rebuildIsHost ? P.normalizeRoomMode(msg.mode) : P.ROOM_MODE_DEFAULT,
+            hostId: userId,
+            hostNonce: P.hostTokenParts(msg.hostToken).nonce,
+            mode: P.normalizeRoomMode(msg.mode),
+            navigationMode: P.normalizeRoomMode(msg.navigationMode ?? msg.mode),
+            locked: msg.locked === true,
+            // Never reuse a client-supplied invitation: it may predate a revocation.
+            inviteRequired: true,
             persistent: CUSTOM_NAME_REGEX.test(code),
             members: new Map(),
             videoUrl: validateUrl(msg.videoUrl),
@@ -1005,6 +1013,16 @@ wss.on("connection", (ws, req) => {
           return;
         }
 
+        const reclaimsHost = isValidHostToken(code, msg.hostToken, room.hostNonce || null);
+        if (msg.hostToken && !reclaimsHost) {
+          sendTo(ws, { type: "error", message: "Room not found" });
+          return;
+        }
+        const accessError = P.roomAccessError(room, msg, reclaimsHost);
+        if (accessError) {
+          sendTo(ws, { type: "error", message: "Room not found", code: accessError });
+          return;
+        }
         if (room.members.size >= MAX_ROOM_MEMBERS) {
           sendTo(ws, { type: "error", message: `Room is full (max ${MAX_ROOM_MEMBERS})` });
           return;
@@ -1026,8 +1044,9 @@ wss.on("connection", (ws, req) => {
         // Reclaim host. The same person coming back to their own room after a reload, a
         // browser restart or a dropped connection arrives as a brand new user id, so
         // without this they were a guest in the party they started.
-        const reclaimsHost = isValidHostToken(code, msg.hostToken);
         if (reclaimsHost) {
+          const previousHost = room.members.get(room.hostId);
+          if (previousHost && room.hostId !== userId) sendTo(previousHost.ws, { type: "host-transferred", isHost: false });
           room.hostId = userId;
           // They only reloaded. Call off the pending unlock.
           if (room.hostAbsenceTimer) {
@@ -1036,13 +1055,13 @@ wss.on("connection", (ws, req) => {
           }
         }
         // A room whose host never came back has nobody steering; the first arrival takes it.
-        // Not for a room rebuilt without a valid host token: see hostClaimable above.
         if (room.hostId === null && room.hostClaimable !== false) {
           room.hostId = userId;
           room.hostClaimable = true;
         }
 
-        room.members.set(userId, { ws, userName, adActive: false });
+        const memberToken = P.issueMemberCredential(room, msg.memberToken);
+        room.members.set(userId, { ws, userName, adActive: false, memberToken, leave: leaveCurrentRoom });
         room.peakMembers = Math.max(room.peakMembers || 0, room.members.size);
         // A new arrival is watching the film, so a room that was entirely in ads is not
         // any more.
@@ -1053,6 +1072,8 @@ wss.on("connection", (ws, req) => {
         // Send current state to the joining user
         sendTo(ws, {
           type: "room-joined",
+          ...P.roomAccess(room),
+          memberToken,
           roomCode: code,
           userId,
           mode: room.mode,
@@ -1060,7 +1081,7 @@ wss.on("connection", (ws, req) => {
           isHost: userId === room.hostId,
           waitForSlow: !!room.waitForSlow,
           // Only ever handed back to someone who already proved they hold it.
-          hostToken: reclaimsHost ? mintHostToken(code) : undefined,
+          hostToken: reclaimsHost ? mintHostToken(code, room.hostNonce) : undefined,
           videoUrl: room.videoUrl || "",
           callUrl: room.callUrl || "",
           serverTime: Date.now(),
@@ -1226,7 +1247,7 @@ wss.on("connection", (ws, req) => {
         const navRoom = rooms.get(currentRoom);
         if (!navRoom) return;
         // In host mode, only host can change videos
-        if (navRoom.mode === "host" && navRoom.hostId !== userId) return;
+        if (P.navigationMode(navRoom) === "host" && navRoom.hostId !== userId) return;
         const newUrl = validateUrl(msg.url);
         if (!newUrl) return;
         // Ignore if url didn't actually change (avoid noise)
@@ -1385,6 +1406,36 @@ wss.on("connection", (ws, req) => {
         break;
       }
 
+      case "set-room-access":
+      case "remove-member":
+      case "revoke-invites": {
+        const room = rooms.get(currentRoom);
+        if (!room || room.hostId !== userId) return;
+        P.ensureRoomAccess(room);
+        if (msg.type === "set-room-access") {
+          if (P.ROOM_MODES.includes(msg.navigationMode)) room.navigationMode = msg.navigationMode;
+          if (typeof msg.locked === "boolean") room.locked = msg.locked;
+        } else if (msg.type === "remove-member") {
+          const target = room.members.get(msg.userId);
+          if (!target || msg.userId === userId
+            || (target.memberToken && target.memberToken === room.members.get(userId)?.memberToken)) return;
+          if (target.memberToken) delete room.memberCredentials[target.memberToken];
+          // Rotate before disconnecting: the removed member already knows the old link.
+          P.revokeInvites(room);
+          for (const [id, member] of Array.from(room.members)) {
+            if (id !== msg.userId && (!target.memberToken || member.memberToken !== target.memberToken)) continue;
+            sendTo(member.ws, { type: "error", message: "Room not found", code: "MEMBER_REMOVED" });
+            member.leave();
+            member.ws.close(4003, "Room not found");
+          }
+        } else {
+          P.revokeInvites(room);
+        }
+        room.lastActivity = Date.now();
+        broadcastToRoom(currentRoom, { type: "room-access", ...P.roomAccess(room) });
+        break;
+      }
+
       case "set-mode": {
         if (!currentRoom) return;
         const modeRoom = rooms.get(currentRoom);
@@ -1402,6 +1453,7 @@ wss.on("connection", (ws, req) => {
         broadcastToRoom(currentRoom, {
           type: "mode-changed",
           mode: newMode,
+          navigationMode: P.navigationMode(modeRoom),
           waitForSlow: !!modeRoom.waitForSlow,
           fromUser: userName,
         });
@@ -1423,6 +1475,7 @@ wss.on("connection", (ws, req) => {
         const pingRoom = rooms.get(currentRoom);
         if (!pingRoom) return;
         pingRoom.lastActivity = Date.now();
+        sendTo(ws, { type: "pong" });
         break;
       }
 
@@ -1547,6 +1600,7 @@ wss.on("connection", (ws, req) => {
               broadcastToRoom(lockedCode, {
                 type: "mode-changed",
                 mode: "everyone",
+                navigationMode: P.navigationMode(r),
                 fromUser: "System",
               });
             }, HOST_ABSENCE_GRACE_MS);
@@ -1616,7 +1670,10 @@ process.on("unhandledRejection", (reason) => {
 
 // --- Start ---
 server.listen(PORT, () => {
-  console.log(`[start] Watch Together server running on port ${PORT}`);
+  const address = server.address();
+  const listeningPort = typeof address === "object" && address ? address.port : PORT;
+  if (process.send && process.connected) process.send({ type: "listening", port: listeningPort });
+  console.log(`[start] Watch Together server running on port ${listeningPort}`);
   console.log(`[start] Max rooms: ${MAX_ROOMS}, Max members/room: ${MAX_ROOM_MEMBERS}, Room TTL: ${ROOM_TTL_MS / 3600000}h`);
   if (SERVER_MOVED_VALID) {
     console.log(`[start] RETIRED: telling every client to move to ${SERVER_MOVED_URL}`);

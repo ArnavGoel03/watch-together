@@ -33,20 +33,28 @@ function loadExtensionGlobals() {
 
 const { __wtConfig: config, __wtRelay: relayModule } = loadExtensionGlobals();
 
-function loadBackground(file) {
+function loadBackground(file, { initial = {}, create = true, deferStorage = false } = {}) {
   const sockets = [];
   const timers = [];
-  const storage = {};
+  const storage = { ...initial };
+  const storageCallbacks = [];
+  const activeTimers = new Map();
+  let now = 100000;
+  let nextTimer = 1;
   const registrations = [];
   const injections = [];
   let origins = [];
   const listener = () => ({ addListener(fn) { this.fn = fn; } });
   const chrome = {
     storage: { local: {
-      get(_keys, cb) { cb({ ...storage }); },
+      get(_keys, cb) {
+        const data = { ...storage };
+        if (deferStorage) storageCallbacks.push(() => cb(data));
+        else cb(data);
+      },
       set(data) { Object.assign(storage, data); },
     } },
-    runtime: { onConnect: listener(), onStartup: listener(), onInstalled: listener() },
+    runtime: { onMessage: listener(), onConnect: listener(), onUpdateAvailable: listener(), onStartup: listener(), onInstalled: listener() },
     tabs: { onRemoved: listener(), query(_query, cb) { cb([]); } },
     permissions: { onAdded: listener(), onRemoved: listener(), async getAll() { return { origins }; } },
     scripting: { async getRegisteredContentScripts() { return []; } },
@@ -74,7 +82,15 @@ function loadBackground(file) {
       tabs: { async executeScript(tabId, details) { injections.push({ tabId, ...details }); } },
     },
     console: { log() {}, error() {} },
-    setTimeout(fn) { timers.push(fn); return timers.length; }, clearTimeout() {},
+    Date: class extends Date { static now() { return now; } },
+    setTimeout(fn, delay) {
+      const id = nextTimer++;
+      const run = () => { if (activeTimers.delete(id)) fn(); };
+      activeTimers.set(id, { at: now + delay, run });
+      timers.push(run);
+      return id;
+    },
+    clearTimeout(id) { activeTimers.delete(id); },
   });
   const run = (name) => vm.runInContext(readFileSync(join(extensionDir, name), "utf8"), context, { filename: name });
   context.importScripts = (...files) => files.forEach(run);
@@ -90,11 +106,26 @@ function loadBackground(file) {
   }
   const content = port("content", 1);
   const popup = port("popup");
+  if (create) {
   popup.send({ type: "connect" });
   sockets[0].open();
   popup.send({ type: "create-room", tabId: 1, videoUrl: "https://video.example/film" });
   sockets[0].message({ type: "room-created", roomCode: "ABCDEF", userId: "host", hostToken: "proof", mode: "everyone" });
+  }
   return { sockets, timers, storage, content, popup, port, registrations, injections,
+    runtimeMessage(msg, sender) { return new Promise((resolve) => chrome.runtime.onMessage.fn(msg, sender, resolve)); },
+    update(version) { chrome.runtime.onUpdateAvailable.fn({ version }); },
+    hydrate() { deferStorage = false; for (const callback of storageCallbacks.splice(0)) callback(); },
+    advance(ms) {
+      const until = now + ms;
+      for (let i = 0; i < 1000; i++) {
+        const next = [...activeTimers.values()].sort((a, b) => a.at - b.at)[0];
+        if (!next || next.at > until) { now = until; return; }
+        now = next.at;
+        next.run();
+      }
+      throw new Error("unbounded timer loop");
+    },
     grant(sites) { origins = sites; return chrome.permissions.onAdded.fn(); } };
 }
 
@@ -157,6 +188,198 @@ for (const file of ["background.js", "background-firefox.js"]) {
     assert.doesNotThrow(() => bg.content.send({ type: "join-room", roomCode: 12 }));
   });
 
+  test(`${file}: a CONNECTING socket expires and cannot send a late join`, () => {
+    const bg = loadBackground(file, { create: false });
+    bg.popup.send({ type: "create-room", tabId: 1 });
+    const old = bg.sockets[0];
+    bg.advance(10000);
+    assert.equal(old.readyState, 2);
+    old.open();
+    assert.equal(old.sent.length, 0);
+    bg.advance(1000);
+    assert.equal(bg.sockets.length, 2);
+    bg.sockets[1].open();
+    bg.advance(250);
+    assert.equal(bg.sockets[1].sent.filter((msg) => msg.type === "create-room").length, 1);
+  });
+
+  test(`${file}: waiting for a connection expires after 25 seconds`, () => {
+    const bg = loadBackground(file, { create: false });
+    bg.popup.send({ type: "create-room", tabId: 1 });
+    bg.advance(25000);
+    assert.ok(bg.popup.messages.some((msg) => msg.type === "error"));
+    bg.sockets.at(-1).open();
+    bg.advance(1000);
+    assert.equal(bg.sockets.at(-1).sent.some((msg) => msg.type === "create-room"), false);
+  });
+
+  test(`${file}: active rooms retain one relay through reconnect failure and restart`, () => {
+    const bg = loadBackground(file);
+    const authority = bg.sockets[0].url;
+    assert.equal(bg.storage.roomRelayUrl, authority);
+    bg.sockets[0].finishClose();
+    bg.advance(30000);
+    assert.ok(bg.sockets.length >= 3);
+    assert.ok(bg.sockets.every((socket) => socket.url === authority));
+    const restarted = loadBackground(file, { initial: bg.storage, create: false });
+    assert.equal(restarted.sockets[0].url, authority);
+  });
+
+  test(`${file}: new rooms can fail over before membership is established`, () => {
+    const bg = loadBackground(file, { create: false });
+    bg.popup.send({ type: "create-room", tabId: 1 });
+    bg.advance(23000);
+    assert.equal(bg.sockets.at(-1).url, config.SERVER_URLS[1]);
+  });
+
+  test(`${file}: leaving retires late acknowledgements and every reconnect timer`, () => {
+    const bg = loadBackground(file);
+    const old = bg.sockets[0];
+    bg.popup.send({ type: "leave-room" });
+    old.message({ type: "room-joined", roomCode: "STALE1", userId: "old" });
+    old.finishClose();
+    bg.advance(60000);
+    assert.equal(bg.storage.currentRoom, null);
+    assert.equal(bg.sockets.length, 1);
+  });
+
+  test(`${file}: local diagnostics measure RTT and exclude wire content`, () => {
+    const bg = loadBackground(file);
+    const socket = bg.sockets[0];
+    for (let i = 0; i < 120; i++) {
+      bg.content.send({ type: "ping", userName: "SECRET-NAME" });
+      bg.advance(42);
+      socket.message({ type: "pong", message: "SECRET-CHAT", roomCode: "SECRET-ROOM", url: "https://secret.example", ip: "127.0.0.1", token: "SECRET-TOKEN" });
+    }
+    bg.popup.send({ type: "get-diagnostics" });
+    const diagnostics = bg.popup.messages.at(-1).diagnostics;
+    assert.equal(diagnostics.rttMs, 42);
+    assert.equal(diagnostics.connectionState, "connected");
+    assert.equal(diagnostics.events.length, 100);
+    assert.doesNotMatch(JSON.stringify(diagnostics), /SECRET|secret\.example|127\.0\.0\.1|ABCDEF|proof|video\.example/);
+    assert.equal(Object.hasOwn(bg.storage, "diagnostics"), false);
+  });
+
+  test(`${file}: removal clears authority and prevents automatic rejoining`, () => {
+    const bg = loadBackground(file);
+    bg.sockets[0].message({ type: "error", code: "MEMBER_REMOVED", message: "Room not found." });
+    bg.advance(60000);
+    assert.equal(bg.storage.currentRoom, null);
+    assert.equal(bg.storage.memberToken, null);
+    assert.ok(bg.content.messages.some((msg) => msg.type === "room-ended"));
+    assert.equal(bg.sockets.length, 1);
+  });
+
+  test(`${file}: an unanswered membership request expires and rejects its late reply`, () => {
+    const bg = loadBackground(file, { create: false });
+    bg.popup.send({ type: "connect" });
+    const socket = bg.sockets[0];
+    socket.open();
+    bg.popup.send({ type: "create-room", tabId: 1 });
+    bg.advance(15000);
+    socket.message({ type: "room-created", roomCode: "LATE12", userId: "late" });
+    assert.equal(bg.storage.currentRoom, null);
+    assert.ok(bg.popup.messages.some((msg) => msg.type === "error"));
+  });
+
+  test(`${file}: invite relay hints pin public authority without replacing private choice`, () => {
+    const bg = loadBackground(file, { create: false });
+    const inviteToken = "a".repeat(64);
+    bg.popup.send({ type: "join-room", roomCode: "ABCDEF", relayUrl: config.SERVER_URLS[1], inviteToken, tabId: 1 });
+    const socket = bg.sockets[0];
+    assert.equal(socket.url, config.SERVER_URLS[1]);
+    socket.open();
+    bg.advance(250);
+    assert.equal(socket.sent.at(-1).inviteToken, inviteToken);
+    bg.popup.send({ type: "set-server-url", url: "wss://private.example" });
+    bg.popup.send({ type: "join-room", roomCode: "NEW123", relayUrl: config.SERVER_URLS[0], tabId: 1 });
+    assert.equal(bg.sockets.at(-1).url, "wss://private.example");
+  });
+
+  test(`${file}: authority credentials survive reconnect and never enter local diagnostics`, () => {
+    const bg = loadBackground(file);
+    bg.sockets[0].message({ type: "room-joined", roomCode: "ABCDEF", userId: "host", memberToken: "MEMBER-SECRET", inviteToken: "INVITE-SECRET", navigationMode: "host", locked: true, inviteRequired: true });
+    bg.sockets[0].finishClose();
+    bg.advance(1000);
+    bg.sockets[1].open();
+    const join = bg.sockets[1].sent.find((msg) => msg.type === "join-room");
+    assert.equal(join.memberToken, "MEMBER-SECRET");
+    assert.equal(join.inviteToken, "INVITE-SECRET");
+    assert.equal(join.navigationMode, "host");
+    assert.equal(bg.storage.cachedLocked, true);
+    bg.popup.send({ type: "get-diagnostics" });
+    assert.doesNotMatch(JSON.stringify(bg.popup.messages.at(-1)), /SECRET/);
+  });
+
+  test(`${file}: update availability and authoritative share URL reach reopened popup`, () => {
+    const bg = loadBackground(file);
+    bg.update("1.3.0");
+    bg.popup.send({ type: "get-state" });
+    const state = bg.popup.messages.at(-1);
+    assert.equal(state.videoUrl, "https://video.example/film");
+    assert.equal(state.updateAvailableVersion, "1.3.0");
+    assert.equal(bg.storage.updateAvailableVersion, "1.3.0");
+  });
+
+  test(`${file}: invitations stay bound to one tab across login and restart`, async () => {
+    const bg = loadBackground(file, { create: false });
+    const url = "https://video.example/film";
+    const sender = { tab: { id: 10 }, url: url + "?wt_room=ABCDEF&wt_invite=" + "a".repeat(64), frameId: 0 };
+    const captured = await bg.runtimeMessage({ type: "capture-invite", roomCode: "ABCDEF", url, inviteToken: "a".repeat(64) }, sender);
+    assert.equal(captured.ok, true);
+    const wrongTab = await bg.runtimeMessage({ type: "get-pending-invite" }, { ...sender, tab: { id: 11 } });
+    assert.equal(wrongTab.pendingInvite, null);
+    const login = await bg.runtimeMessage({ type: "get-pending-invite" }, { ...sender, url: "https://video.example/login" });
+    assert.equal(login.pendingInvite, null);
+    const restarted = loadBackground(file, { initial: bg.storage, create: false });
+    const pending = (await restarted.runtimeMessage({ type: "get-pending-invite" }, sender)).pendingInvite;
+    assert.equal(pending.roomCode, "ABCDEF");
+    assert.equal(pending.url, url);
+    assert.equal((await restarted.runtimeMessage({ type: "get-pending-invite" }, sender)).pendingInvite.id, pending.id);
+    assert.equal((await restarted.runtimeMessage({ type: "clear-pending-invite", id: pending.id }, sender)).ok, true);
+    assert.equal((await restarted.runtimeMessage({ type: "get-pending-invite" }, sender)).pendingInvite, null);
+  });
+
+  test(`${file}: forged destinations and stale consent cannot claim an invite`, async () => {
+    const bg = loadBackground(file, { create: false });
+    const url = "https://video.example/film";
+    const sender = { tab: { id: 10 }, url, frameId: 0 };
+    const capture = { type: "capture-invite", roomCode: "ABCDEF", url };
+    assert.equal((await bg.runtimeMessage({ ...capture, url: "https://video.example/other" }, sender)).ok, false);
+    assert.equal((await bg.runtimeMessage(capture, { ...sender, frameId: 1 })).ok, false);
+    assert.equal((await bg.runtimeMessage(capture, { url })).ok, false);
+    await bg.runtimeMessage(capture, sender);
+    const old = (await bg.runtimeMessage({ type: "get-pending-invite" }, sender)).pendingInvite;
+    await bg.runtimeMessage({ ...capture, roomCode: "NEW123" }, sender);
+    assert.equal((await bg.runtimeMessage({ type: "clear-pending-invite", id: old.id }, sender)).ok, false);
+    assert.equal((await bg.runtimeMessage({ type: "get-pending-invite" }, sender)).pendingInvite.roomCode, "NEW123");
+  });
+
+  test(`${file}: pending invitation storage is bounded and expires`, async () => {
+    const bg = loadBackground(file, { create: false });
+    const url = "https://video.example/film";
+    for (let id = 1; id <= 40; id++) {
+      await bg.runtimeMessage({ type: "capture-invite", roomCode: "ABCDEF", url }, { tab: { id }, url, frameId: 0 });
+      bg.advance(1);
+    }
+    assert.equal(Object.keys(bg.storage.pendingInvitesByTab).length, 32);
+    bg.advance(1800000);
+    const expired = await bg.runtimeMessage({ type: "get-pending-invite" }, { tab: { id: 40 }, url, frameId: 0 });
+    assert.equal(expired.pendingInvite, null);
+    assert.equal(Object.keys(bg.storage.pendingInvitesByTab).length, 0);
+  });
+
+  test(`${file}: delayed hydration cannot leak an initial request to a public relay`, () => {
+    const bg = loadBackground(file, { create: false, deferStorage: true, initial: { serverUrl: "wss://private.example" } });
+    bg.popup.send({ type: "create-room", tabId: 1 });
+    assert.equal(bg.sockets.length, 0);
+    bg.hydrate();
+    assert.equal(bg.sockets[0].url, "wss://private.example");
+    bg.sockets[0].open();
+    bg.advance(250);
+    assert.ok(bg.sockets[0].sent.some((msg) => msg.type === "create-room"));
+  });
+
   test(`${file}: leaving cancels a join queued while disconnected`, () => {
     const bg = loadBackground(file);
     bg.sockets[0].finishClose();
@@ -183,35 +406,11 @@ test("Firefox: optional access registers future visits and injects the current t
   assert.equal(bg.registrations.length, 0);
 });
 
-test("join hints: only the destination consumes consent and malformed time expires", () => {
+test("join consent: no global storage hint can authorize another tab on the same URL", () => {
   const content = readFileSync(join(extensionDir, "content.js"), "utf8");
-  const normalizer = content.slice(content.indexOf("  function normalizeUrl("), content.indexOf("  function requestResync("));
-  const check = content.slice(content.indexOf("  function checkPendingJoin("), content.indexOf("  // A backgrounded tab"));
-  const now = Date.now();
-  for (const [destination, timestamp, consumes, joins] of [
-    ["https://video.example/film", now, true, true],
-    ["https://video.example/other", now, false, false],
-    ["https://different.example/film", now, false, false],
-    ["https://video.example/film", undefined, true, false],
-    ["https://video.example/film", now + 60000, true, false],
-    ["https://video.example/film", now - 121000, true, false],
-  ]) {
-    let removed = false;
-    const sent = [];
-    const context = vm.createContext({
-      URL, Date, location: { href: "https://video.example/film" },
-      window: { __wtConfig: config }, inRoom: false,
-      chrome: { storage: { local: {
-        get(_keys, cb) { cb({ pendingJoin: { roomCode: "ABCDEF", url: destination + "?wt_room=ABCDEF", timestamp, consented: true } }); },
-        remove() { removed = true; },
-      } } },
-      sendMsg(msg) { sent.push(msg); }, showNotification() {}, setTimeout() {},
-      showActionCard() { assert.fail("a consented hint needs no new prompt"); },
-    });
-    vm.runInContext(normalizer + check + "checkPendingJoin();", context);
-    assert.equal(removed, consumes, destination);
-    assert.equal(sent.some((msg) => msg.type === "join-room"), joins, destination);
-  }
+  assert.doesNotMatch(content, /pendingJoin|checkPendingJoin|consented\s*:/);
+  assert.match(content, /type: "get-pending-invite"/);
+  assert.match(content, /type: "clear-pending-invite", id: invite\.id/);
 });
 
 test("join consent: a page-script click cannot approve an invite", () => {

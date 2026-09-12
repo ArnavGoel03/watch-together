@@ -2,6 +2,17 @@
 
 All notable changes to Watch Together are documented here.
 
+## [1.3.0] - 2026-09-13
+
+- Bind invitations to one tab, preserve them through login, carry relay and revocable credentials.
+- Bound connection and room acknowledgement waits, cancel stale requests, and reconnect to the room's relay.
+- Add independently controlled guest navigation, room locks, guest removal and invitation revocation.
+- Add local diagnostics with latency, drift and a strictly filtered JSON export.
+- Restore keyboard focus, let Tab leave shortcut capture, remember film volume across player remounts,
+  and display version, release time and available updates.
+- Qualification and shipping evidence, including remaining account-dependent checks, is tracked in
+  `docs/RELIABILITY-RELEASE.md`.
+
 ## [1.2.4] - 2026-09-13
 
 ### Fixed

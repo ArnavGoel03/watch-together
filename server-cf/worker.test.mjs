@@ -498,11 +498,9 @@ test("rebuild: a stranger who knows a code cannot rebuild the room and lock it",
     hostToken: "f".repeat(64),
     resumeState: { playing: true, currentTime: 30, playbackRate: 1 },
   }));
-  const joined = ws.sent.find((m) => m.type === "room-joined");
-  assert.ok(joined, "the rebuild itself is allowed: knowing the code is what joining proves too");
-  assert.equal(joined.isHost, false, "but a forged token is not a token");
-  assert.equal(joined.mode, "everyone", "and mode:host on a rebuild request is not honoured");
-  assert.equal(hub.rooms.get("GHOST1").hostId, null, "nobody holds the room");
+  assert.equal(ws.sent.some((m) => m.type === "room-joined"), false);
+  assert.equal(ws.sent.at(-1).message, "Room not found");
+  assert.equal(hub.rooms.has("GHOST1"), false);
 });
 
 test("rebuild: the real host reclaims with the token this worker issued", async () => {
@@ -531,7 +529,7 @@ test("rebuild: two members reconnecting at once land in the same room, not two",
   const a = fakeSocket({ userId: "ua", userName: "A", currentRoom: null, ip: "1.1.1.1" });
   const b = fakeSocket({ userId: "ub", userName: "B", currentRoom: null, ip: "2.2.2.2" });
   state.sockets.push(a, b);
-  const rebuild = { type: "join-room", roomCode: "GHOST3", userName: "X", recreateIfMissing: true, resumeState: { playing: false, currentTime: 5, playbackRate: 1 } };
+  const rebuild = { type: "join-room", hostToken: await mintHostToken(SECRET, "GHOST3"), roomCode: "GHOST3", userName: "X", recreateIfMissing: true, resumeState: { playing: false, currentTime: 5, playbackRate: 1 } };
 
   await Promise.all([
     hub.webSocketMessage(a, JSON.stringify(rebuild)),
@@ -632,7 +630,7 @@ test("join: concurrent token checks cannot exceed room membership capacity", asy
   const guests = ['a', 'b'].map(userId => fakeSocket({ userId, currentRoom: null, ip: userId }));
   state.sockets.push(...guests);
   await Promise.all(guests.map(guest => hub.webSocketMessage(guest, JSON.stringify({
-    type: 'join-room', roomCode: created.roomCode, hostToken: '0'.repeat(64),
+    type: 'join-room', roomCode: created.roomCode, hostToken: created.hostToken,
   }))));
   assert.equal(room.members.size, 50);
   assert.equal(guests.flatMap(guest => guest.sent).filter(m => m.type === 'room-joined').length, 1);
@@ -651,4 +649,237 @@ test("HTTP: malformed encoded invites return a client error", async () => {
   const { hub } = await hubWithSocket();
   const result = await hub.fetch(new Request('https://relay.example/join/%ZZ'));
   assert.equal(result.status, 404);
+});
+
+async function accessFixture(mode = "everyone") {
+  const state = makeState();
+  const hub = new RoomHubDO(state, { HOST_TOKEN_SECRET: SECRET });
+  await hub.bootPromise;
+  const host = fakeSocket({ userId: "host", userName: "Host", ip: "host-ip" });
+  state.sockets.push(host);
+  await hub._handleCreate(host, hub._meta(host), { userName: "Host", mode, videoUrl: "https://example.com/video" });
+  const created = host.sent.find((m) => m.type === "room-created");
+  const guest = fakeSocket({ userId: "guest", userName: "Guest", ip: "guest-ip" });
+  state.sockets.push(guest);
+  await hub._handleJoin(guest, hub._meta(guest), { roomCode: created.roomCode });
+  const joined = guest.sent.find((m) => m.type === "room-joined");
+  return { hub, state, host, guest, created, joined, code: created.roomCode };
+}
+
+async function accessCommand(hub, socket, message) {
+  return hub.webSocketMessage(socket, JSON.stringify(message));
+}
+
+test("access: guests cannot change access, remove peers or revoke invitations", async () => {
+  const { hub, host, guest, code, created } = await accessFixture();
+  for (const msg of [
+    { type: "set-room-access", locked: true, navigationMode: "host" },
+    { type: "remove-member", userId: "host" },
+    { type: "revoke-invites" },
+  ]) await accessCommand(hub, guest, msg);
+  const room = hub.rooms.get(code);
+  assert.equal(!!room.locked, false);
+  assert.equal(room.inviteToken, created.inviteToken);
+  assert.equal(room.members.get("host").ws, host);
+});
+
+test("access: navigation can be restricted independently of playback and explicitly opened in host mode", async () => {
+  const { hub, host, guest, code } = await accessFixture();
+  await accessCommand(hub, host, { type: "set-room-access", navigationMode: "host" });
+  await accessCommand(hub, guest, { type: "navigate", url: "https://example.com/rejected" });
+  assert.equal(hub.rooms.get(code).videoUrl, "https://example.com/video");
+  await accessCommand(hub, guest, { type: "sync", playing: false, currentTime: 42, playbackRate: 1 });
+  assert.equal(hub.rooms.get(code).playbackState.currentTime, 42);
+  await accessCommand(hub, host, { type: "set-mode", mode: "host" });
+  await accessCommand(hub, host, { type: "set-room-access", navigationMode: "everyone" });
+  await accessCommand(hub, guest, { type: "navigate", url: "https://example.com/allowed" });
+  assert.equal(hub.rooms.get(code).videoUrl, "https://example.com/allowed");
+  await accessCommand(hub, guest, { type: "sync", playing: false, currentTime: 87, playbackRate: 1 });
+  assert.equal(hub.rooms.get(code).playbackState.currentTime, 0);
+});
+
+test("access: locked room admits returning members and host but rejects fresh invitation holders", async () => {
+  const { hub, host, guest, code, created, joined } = await accessFixture();
+  await accessCommand(hub, host, { type: "set-room-access", locked: true });
+  await hub._leaveCurrentRoom(guest, hub._meta(guest));
+  const fresh = fakeSocket({ userId: "fresh", ip: "fresh-ip" });
+  await hub._handleJoin(fresh, hub._meta(fresh), { roomCode: code, inviteToken: created.inviteToken });
+  assert.equal(fresh.sent.at(-1).code, "ROOM_LOCKED");
+  await hub._handleJoin(guest, hub._meta(guest), { roomCode: code, memberToken: joined.memberToken });
+  assert.equal(guest.sent.filter((m) => m.type === "room-joined").length, 2);
+  const returningHost = fakeSocket({ userId: "returning-host", ip: "returning-host-ip" });
+  await hub._handleJoin(returningHost, hub._meta(returningHost), { roomCode: code, hostToken: created.hostToken });
+  assert.equal(returningHost.sent.find((m) => m.type === "room-joined").isHost, true);
+});
+
+test("access: remove revokes every socket for a credential and prevents code or stale-token rejoin", async () => {
+  const { hub, host, guest, code, created, joined } = await accessFixture();
+  const duplicate = fakeSocket({ userId: "duplicate", ip: "duplicate-ip" });
+  await hub._handleJoin(duplicate, hub._meta(duplicate), { roomCode: code, memberToken: joined.memberToken });
+  await accessCommand(hub, host, { type: "remove-member", userId: "guest" });
+  assert.equal(guest.readyState, 3);
+  assert.equal(duplicate.readyState, 3);
+  assert.equal(hub.rooms.get(code).members.size, 1);
+  assert.equal(guest.sent.find((m) => m.code === "MEMBER_REMOVED").message, "Room not found");
+  const attacker = fakeSocket({ userId: "attacker", ip: "attacker-ip" });
+  await hub._handleJoin(attacker, hub._meta(attacker), { roomCode: code, memberToken: joined.memberToken, inviteToken: created.inviteToken });
+  assert.equal(attacker.sent.at(-1).code, "INVITE_REVOKED");
+  await accessCommand(hub, guest, { type: "navigate", url: "https://example.com/removed" });
+  assert.equal(hub.rooms.get(code).videoUrl, "https://example.com/video");
+  const access = host.sent.filter((m) => m.type === "room-access").at(-1);
+  assert.notEqual(access.inviteToken, created.inviteToken);
+  await hub._handleJoin(attacker, hub._meta(attacker), { roomCode: code, inviteToken: access.inviteToken });
+  assert.ok(attacker.sent.find((m) => m.type === "room-joined"));
+});
+
+test("access: revocation and member credentials survive hibernation without appearing in member lists", async () => {
+  const { hub, state, host, guest, code, joined } = await accessFixture();
+  await accessCommand(hub, host, { type: "revoke-invites" });
+  await accessCommand(hub, host, { type: "set-room-access", locked: true });
+  await hub._leaveCurrentRoom(guest, hub._meta(guest));
+  const awake = new RoomHubDO(state, { HOST_TOKEN_SECRET: SECRET });
+  await awake.bootPromise;
+  const room = awake.rooms.get(code);
+  assert.equal(room.locked, true);
+  assert.equal(room.inviteRequired, true);
+  assert.ok(room.memberCredentials[joined.memberToken]);
+  assert.equal(room.members.get("host").memberToken, hub._meta(host).memberToken);
+  await awake._handleJoin(guest, awake._meta(guest), { roomCode: code, memberToken: joined.memberToken });
+  const response = guest.sent.filter((m) => m.type === "room-joined").at(-1);
+  assert.equal(response.memberToken, joined.memberToken);
+  assert.equal(response.members.some((m) => "memberToken" in m), false);
+});
+
+test("access: HTTP never discloses locked rooms or stale invitations", async () => {
+  const { hub, host, code, created } = await accessFixture();
+  await accessCommand(hub, host, { type: "revoke-invites" });
+  const invite = hub.rooms.get(code).inviteToken;
+  for (const suffix of ["", `?invite=${created.inviteToken}`]) {
+    const metadata = await hub.fetch(new Request(`https://example.com/room/${code}${suffix}`));
+    assert.equal((await metadata.json()).exists, false);
+    const join = await hub.fetch(new Request(`https://example.com/join/${code}${suffix}`));
+    assert.equal(join.status, 200);
+    assert.equal(join.headers.get("location"), null);
+    assert.match(await join.text(), /Room not found/);
+  }
+  const valid = await hub.fetch(new Request(`https://example.com/join/${code}?invite=${invite}`));
+  assert.equal(valid.status, 302);
+  assert.equal(new URL(valid.headers.get("location")).searchParams.get("wt_invite"), invite);
+  assert.equal(valid.headers.get("cache-control"), "no-store");
+  assert.equal(new URL(valid.headers.get("location")).searchParams.get("wt_relay"), "wss://example.com");
+  await accessCommand(hub, host, { type: "set-room-access", locked: true });
+  const locked = await hub.fetch(new Request(`https://example.com/join/${code}?invite=${invite}`));
+  assert.equal(locked.headers.get("location"), null);
+});
+
+test("access: authorization is checked again after asynchronously leaving another room", async () => {
+  const { hub, host, code, created } = await accessFixture();
+  const newcomer = fakeSocket({ userId: "newcomer", ip: "newcomer-ip" });
+  await hub._handleCreate(newcomer, hub._meta(newcomer), { userName: "Newcomer" });
+  const originalLeave = hub._leaveCurrentRoom.bind(hub);
+  let release;
+  let entered;
+  const pendingLeave = new Promise((resolve) => { release = resolve; });
+  const enteredLeave = new Promise((resolve) => { entered = resolve; });
+  hub._leaveCurrentRoom = async (ws, meta) => {
+    entered();
+    await pendingLeave;
+    return originalLeave(ws, meta);
+  };
+  const joining = hub._handleJoin(newcomer, hub._meta(newcomer), { roomCode: code, inviteToken: created.inviteToken });
+  await enteredLeave;
+  await accessCommand(hub, host, { type: "revoke-invites" });
+  release();
+  await joining;
+  assert.equal(hub.rooms.get(code).members.has("newcomer"), false);
+  assert.equal(newcomer.sent.at(-1).code, "INVITE_REVOKED");
+});
+
+test("access: denied joins neither extend an empty room's lifetime nor abandon the caller's current room", async () => {
+  const { hub, host, guest, code } = await accessFixture();
+  await accessCommand(hub, host, { type: "set-room-access", locked: true });
+  await hub._leaveCurrentRoom(guest, hub._meta(guest));
+  await hub._leaveCurrentRoom(host, hub._meta(host));
+  const deadline = hub.rooms.get(code).emptySince;
+  await hub._handleCreate(guest, hub._meta(guest), { userName: "Guest" });
+  const ownCode = hub._meta(guest).currentRoom;
+  await hub._handleJoin(guest, hub._meta(guest), { roomCode: code });
+  assert.equal(guest.sent.at(-1).code, "ROOM_LOCKED");
+  assert.equal(hub.rooms.get(code).emptySince, deadline);
+  assert.equal(hub._meta(guest).currentRoom, ownCode);
+  assert.ok(hub.rooms.get(ownCode).members.has("guest"));
+});
+
+test("rebuild: missing durable metadata cannot be replaced by a removed guest or stale invitation", async () => {
+  const { hub, host, guest, code, created, joined } = await accessFixture();
+  await accessCommand(hub, host, { type: "remove-member", userId: "guest" });
+  const empty = new RoomHubDO(makeState(), { HOST_TOKEN_SECRET: SECRET });
+  await empty.bootPromise;
+  const attacker = fakeSocket({ userId: "attacker", ip: "attacker-ip" });
+  const resume = {
+    roomCode: code, recreateIfMissing: true, memberToken: joined.memberToken,
+    inviteToken: created.inviteToken, inviteRequired: false, locked: false,
+  };
+  await empty._handleJoin(attacker, empty._meta(attacker), resume);
+  assert.equal(attacker.sent.at(-1).message, "Room not found");
+  assert.equal(empty.rooms.size, 0);
+  const restoredHost = fakeSocket({ userId: "restored-host", ip: "host-ip" });
+  await empty._handleJoin(restoredHost, empty._meta(restoredHost), {
+    ...resume, hostToken: created.hostToken, locked: true, navigationMode: "host",
+  });
+  const restored = restoredHost.sent.find((m) => m.type === "room-joined");
+  assert.equal(restored.isHost, true);
+  assert.equal(restored.locked, true);
+  assert.equal(restored.navigationMode, "host");
+  assert.equal(restored.inviteRequired, true);
+  assert.notEqual(restored.inviteToken, created.inviteToken);
+  await accessCommand(empty, restoredHost, { type: "set-room-access", locked: false });
+  await empty._handleJoin(attacker, empty._meta(attacker), resume);
+  assert.equal(attacker.sent.at(-1).code, "INVITE_REVOKED");
+  assert.equal(guest.sent.some((m) => m.type === "room-access"), false, "removed members never learn the replacement invitation");
+});
+
+test("host token: new proofs bind code and nonce while legacy proofs cannot claim new rooms", async () => {
+  const nonce = "a".repeat(32);
+  const token = await mintHostToken(SECRET, "ABCDEF", nonce);
+  assert.match(token, /^[a-f0-9]{32}\.[a-f0-9]{64}$/);
+  assert.equal(await isValidHostToken(SECRET, "ABCDEF", token, nonce), true);
+  assert.equal(await isValidHostToken(SECRET, "ABCDEF", token, "b".repeat(32)), false);
+  assert.equal(await isValidHostToken(SECRET, "ABCDEF", token.replace(nonce, "b".repeat(32)), "b".repeat(32)), false, "the signature binds the nonce itself");
+  assert.equal(await isValidHostToken(SECRET, "OTHER1", token, nonce), false);
+  const legacy = await mintHostToken(SECRET, "ABCDEF");
+  assert.equal(await isValidHostToken(SECRET, "ABCDEF", legacy, nonce), false);
+  assert.equal(await isValidHostToken(SECRET, "ABCDEF", legacy, null), true);
+  assert.equal(await isValidHostToken(SECRET, "ABCDEF", token, null), false);
+});
+
+test("host token: replacement room names do not inherit host proof, including across hibernation", async () => {
+  const { code, created, joined } = await accessFixture();
+  const state = makeState();
+  const hub = new RoomHubDO(state, { HOST_TOKEN_SECRET: SECRET });
+  await hub.bootPromise;
+  const claimant = fakeSocket({ userId: "claimant", ip: "claimant-ip" });
+  state.sockets.push(claimant);
+  await hub._handleCreate(claimant, hub._meta(claimant), { customName: code });
+  const replacement = claimant.sent.find((m) => m.type === "room-created");
+  assert.notEqual(replacement.hostToken, created.hostToken);
+  const awake = new RoomHubDO(state, { HOST_TOKEN_SECRET: SECRET });
+  await awake.bootPromise;
+  assert.equal(awake.rooms.get(code).hostNonce, hub.rooms.get(code).hostNonce);
+  const oldGuest = fakeSocket({ userId: "old-guest", ip: "guest-ip" });
+  await awake._handleJoin(oldGuest, awake._meta(oldGuest), { roomCode: code, memberToken: joined.memberToken, inviteToken: joined.inviteToken });
+  assert.equal(oldGuest.sent.at(-1).code, "INVITE_REVOKED");
+  const oldHost = fakeSocket({ userId: "old-host", ip: "host-ip" });
+  await awake._handleJoin(oldHost, awake._meta(oldHost), { roomCode: code, hostToken: created.hostToken });
+  assert.equal(oldHost.sent.at(-1).message, "Room not found");
+  await awake._handleJoin(oldHost, awake._meta(oldHost), { roomCode: code, hostToken: await mintHostToken(SECRET, code) });
+  assert.equal(oldHost.sent.at(-1).message, "Room not found");
+  const empty = new RoomHubDO(makeState(), { HOST_TOKEN_SECRET: SECRET });
+  await empty.bootPromise;
+  await empty._handleJoin(oldHost, empty._meta(oldHost), { roomCode: code, recreateIfMissing: true, hostToken: created.hostToken });
+  assert.equal(oldHost.sent.at(-1).type, "heartbeat-role");
+  assert.equal(oldHost.sent.find((m) => m.type === "room-joined").hostToken, created.hostToken);
+  const attacker = fakeSocket({ userId: "attacker", ip: "attacker-ip" });
+  await empty._handleJoin(attacker, empty._meta(attacker), { roomCode: code, hostToken: replacement.hostToken });
+  assert.equal(attacker.sent.at(-1).message, "Room not found");
 });

@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import http from "http";
+import { waitForListening } from "./test-server.mjs";
 import { WebSocket } from "ws";
 import { execSync } from "child_process";
 import { readFileSync, readdirSync } from "fs";
 import { join } from "path";
 
-const PORT = 4567;
+let PORT;
 let serverProcess;
 
 // ========================
@@ -72,10 +73,10 @@ function close(...clients) { clients.forEach((c) => (c.ws || c).close()); }
 beforeAll(async () => {
   const { fork } = await import("child_process");
   serverProcess = fork("./server.js", [], {
-    env: { ...process.env, PORT: String(PORT), MAX_CONNECTIONS_PER_IP: "50", RATE_LIMIT_MAX: "200", HOST_ABSENCE_GRACE_MS: "400" },
+    env: { ...process.env, PORT: "0", MAX_CONNECTIONS_PER_IP: "50", RATE_LIMIT_MAX: "200", HOST_ABSENCE_GRACE_MS: "400" },
     silent: true,
   });
-  await sleep(800);
+  PORT = await waitForListening(serverProcess);
 });
 
 afterAll(() => { if (serverProcess) serverProcess.kill("SIGTERM"); });
@@ -170,7 +171,7 @@ describe("Static checks", () => {
   // undiagnosable from a bug report.
   it("the manifest and the runtime injection list agree, file for file", () => {
     const manifest = JSON.parse(readFileSync(join(extDir, "manifest.json"), "utf8"));
-    const fromManifest = manifest.content_scripts.flatMap((cs) => cs.js).filter((f) => f !== "auto-join-extract.js");
+    const fromManifest = manifest.content_scripts.flatMap((cs) => cs.js);
 
     const config = readFileSync(join(extDir, "config.js"), "utf8");
     const block = config.slice(config.indexOf("INJECT_FILES: ["));

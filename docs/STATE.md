@@ -6,6 +6,28 @@ stand by reading 8,000 lines of source and a year of git log.
 Last updated: 2026-09-13. The dated audit section below supersedes historical
 release and test counts elsewhere in this document.
 
+## Reliability release, 2026-09-13
+
+Source is now **1.3.0**, under active verification on `feat/reliable-watch-parties`.
+It is not submitted to the extension stores. The six-workstream queue and release
+evidence live in `docs/RELIABILITY-RELEASE.md`. New UI wording and signed-in provider
+access were requested separately; neither is assumed approved or available.
+The previously deployed Worker and privacy correction remain identified below.
+Local full gate passes: 252 Node, 64 Vitest and 46 Worker tests, plus a real workerd
+integration test. Hosted Chrome/Firefox and visual qualification are next.
+
+```owner-actions
+what: Approve the eight proposed 1.3.0 UI labels in docs/RELIABILITY-RELEASE.md before store publication.
+why: The charter requires approval for new shipped copy; the implementation and labels are available for review.
+raised: 2026-09-13
+```
+
+```owner-actions
+what: Provide signed-in Netflix and JioHotstar playback sessions for the real-provider qualification matrix.
+why: Controlled browser tests cannot verify provider DRM, personalized ads, account login or real device sleep; no signed-in browser is available in this session.
+raised: 2026-09-13
+```
+
 ## Red-team repair, 2026-09-13
 
 Source and packages are now **1.2.4**. GitHub delivery: PR 1.

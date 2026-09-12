@@ -12,7 +12,8 @@
     "test:node": "node --test server.e2e.test.mjs client-logic.test.mjs content-runtime.test.mjs relay.test.mjs protocol.test.mjs",
     "test:vitest": "vitest run server.test.js",
     "test:browser": "vitest run browser.test.js",
-    "test:all": "node --test server.e2e.test.mjs client-logic.test.mjs content-runtime.test.mjs relay.test.mjs protocol.test.mjs && vitest run",
+    "test:firefox": "node --test firefox.test.mjs",
+    "test:all": "node --test server.e2e.test.mjs client-logic.test.mjs content-runtime.test.mjs relay.test.mjs protocol.test.mjs && vitest run server.test.js browser.test.js && node --test firefox.test.mjs",
     "screenshots": "node store-screenshots.mjs"
   },
   "dependencies": {
