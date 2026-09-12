@@ -22,7 +22,9 @@ Local full gate passes: 252 Node, 64 Vitest and 46 Worker tests, plus a real wor
 integration test. PR 3 carries this release. Hosted run 34719871032 passed static, Node, Worker, package and all 12 Chrome
 browser scenarios. The rendered popup, overlay and room controls were reviewed.
 Firefox 155.0.1 BiDi cannot inspect extension pages; the harness now uses classic
-WebDriver/Marionette with real popup and playback assertions. Hosted verification is pending. The hosted real YouTube
+WebDriver/Marionette. Run 34720765445 passes its three real popup/playback/focus
+scenarios (four TAP tests including the parent), with zero skips. Final screenshot
+readiness now waits for the room entrance animation to complete. The hosted real YouTube
 attempt is blocked by a provider bot challenge, with zero decoded frames.
 
 ```owner-actions

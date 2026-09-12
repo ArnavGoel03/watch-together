@@ -207,6 +207,7 @@ test("Firefox extension qualification", { timeout: 90000 }, async (t) => {
     const driver = firefox.Driver.createSession(options, service);
     await bounded(driver.getSession(), 15000, "Firefox session startup");
     await driver.manage().setTimeouts({ pageLoad: 10000, script: 10000, implicit: 0 });
+    await driver.manage().window().setRect({ width: 800, height: 1050 });
     const browser = new FirefoxBrowser(driver);
     browsers.push(browser);
     assert.equal(await driver.installAddon(staging, true), ADDON_ID);
@@ -263,6 +264,13 @@ test("Firefox extension qualification", { timeout: 90000 }, async (t) => {
     await popup.waitForSelector("#view-room.active");
     assert.equal(await popup.$eval("#displayRoomCode", (el) => el.textContent.trim()), roomCode);
     assert.equal((await backgroundState(popup)).members.length, 2);
+    // Firefox can snapshot the first transparent frame of the room entrance animation.
+    // Require the actual room to be painted at full opacity before accepting evidence.
+    await popup.waitForFunction(() => {
+      const view = document.querySelector("#view-room");
+      return getComputedStyle(view).opacity === "1" && view.getBoundingClientRect().height > 100
+        && view.getAnimations().every((animation) => animation.playState !== "running");
+    });
     if (process.env.WT_SCREENSHOTS_DIR) {
       await mkdir(process.env.WT_SCREENSHOTS_DIR, { recursive: true });
       await popup.screenshot({ path: path.join(process.env.WT_SCREENSHOTS_DIR, "firefox-popup.png") });

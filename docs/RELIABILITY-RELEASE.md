@@ -46,7 +46,11 @@ The earlier storage and retention correction is already approved and live.
   driver cannot inspect extension contexts. The harness now uses classic WebDriver/Marionette
   with native input, real popup/background state, two actual players and the same assertions.
   This follows Firefox 155 source (`BrowsingContextUtils.sys.mjs`, extension contexts excluded)
-  and Puppeteer issue 14314. Hosted verification is pending.
+  and Puppeteer issue 14314.
+- Run 34720765445 passes the Firefox 155.0.1 scenarios: real popup create/join,
+  two-profile seek/play/pause, and popup reopen/keyboard focus. Four TAP tests
+  including the parent, zero skips. Its screenshot caught the initial transparent
+  animation frame; the final capture now requires full-opacity room rendering.
 - The hosted real YouTube attempt reached both player pages with the extension attached, but
   both returned a bot challenge, `LOGIN_REQUIRED`, zero decoded frames and no time progression.
   This is a recorded blocker, not a passing provider qualification.
