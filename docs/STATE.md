@@ -8,12 +8,22 @@ release and test counts elsewhere in this document.
 
 ## Website spacing refresh, 2026-09-15
 
-In progress on `fix/spacious-site`; not deployed yet. Restores section-owned block
-spacing, opens the features into two columns, separates setup and privacy layouts,
-and keeps all reading content visible. Existing copy is preserved.
-`npm test` passes all static checks and 362 tests. Local browser launch fails before
-checks execute; hosted layout/demo verification and deployment remain pending.
-The delivery checklist is `docs/SITE-REFRESH.md`.
+Live at `https://watch.arnavgoel.dev` from pushed application commit `62944e6`.
+Vercel deployment `dpl_CxxW3ymtmdaBXNuqjxzrZBJBZVFB` is Ready. Restored section
+spacing, wider two-column feature cards, open setup steps, split privacy layout,
+stronger muted-text contrast and visible keyboard focus. Existing copy is preserved.
+
+Verified: local static gates and 362 tests; all six CI jobs in run `34952106797`,
+including browser layout checks at 320, 390, 768 and 1440px and the interactive demo.
+Desktop and mobile viewport screenshots were visually reviewed and retained in
+`docs/evidence/site-refresh-2026-09-15/`. Live homepage, CSS, script, support and
+privacy responses match source byte for byte. First full-page captures omitted
+composited offscreen content; the gate now scrolls each section into view before
+capturing. Local Chrome still cannot launch, so rendered evidence comes from CI.
+
+Deploy with explicit `--scope arnavgoel03s-projects`: the unscoped CLI attempt
+returned `Not authorized` despite a valid login and project link. No account or
+billing change was required. Delivery checklist: `docs/SITE-REFRESH.md`.
 
 ## Reliability release, 2026-09-13
 

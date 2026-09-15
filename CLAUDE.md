@@ -40,7 +40,7 @@ stranded on 1.0.1 forever.
 Cloudflare needs `npm --prefix server-cf run deploy` after verified pushed code, which is the asymmetry to exploit: the server is redeployable in seconds and
 the extension takes days of review, so **prefer a server-side fix wherever one exists**.
 
-**Site:** `cd site && vercel deploy --prod --yes`. A git push does NOT deploy it. The
+**Site:** `cd site && vercel deploy --prod --yes --scope arnavgoel03s-projects`. A git push does NOT deploy it. The
 Vercel project is linked but its Git integration does not fire for this directory, so a
 push builds nothing and the change looks lost.
 
