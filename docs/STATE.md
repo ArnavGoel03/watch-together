@@ -3,8 +3,17 @@
 Read this before doing anything else. It exists so nobody has to re-derive where things
 stand by reading 8,000 lines of source and a year of git log.
 
-Last updated: 2026-09-13. The dated audit section below supersedes historical
+Last updated: 2026-09-15. The dated audit section below supersedes historical
 release and test counts elsewhere in this document.
+
+## Website spacing refresh, 2026-09-15
+
+In progress on `fix/spacious-site`; not deployed yet. Restores section-owned block
+spacing, opens the features into two columns, separates setup and privacy layouts,
+and keeps all reading content visible. Existing copy is preserved.
+`npm test` passes all static checks and 362 tests. Local browser launch fails before
+checks execute; hosted layout/demo verification and deployment remain pending.
+The delivery checklist is `docs/SITE-REFRESH.md`.
 
 ## Reliability release, 2026-09-13
 

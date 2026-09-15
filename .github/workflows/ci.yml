@@ -87,6 +87,8 @@ jobs:
         # Not implied by the install. Without this the harness reports 5 tests "skipped"
         # and exits non-zero in a way that reads like a pass at a glance.
         run: npx --prefix server puppeteer browsers install chrome
+      - name: Website layout and demo under production headers
+        run: npm run check:site
       - name: Real two-profile sync test
         run: npm --prefix server run test:browser
         env:
@@ -102,6 +104,14 @@ jobs:
           name: browser-screenshots
           path: ${{ runner.temp }}/watch-together-shots
           if-no-files-found: warn
+
+      - uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: site-layout-screenshots
+          path: .firecrawl/site-layout
+          include-hidden-files: true
+          if-no-files-found: error
 
   firefox:
     name: Firefox MV2 qualification

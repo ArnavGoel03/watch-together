@@ -7,6 +7,10 @@
 
 Sync video playback across any number of devices worldwide. Works on any website with an HTML5 video player: together in real time.
 
+The website lives in `site/` and uses plain HTML, CSS and a small interactive demo.
+Run `npm run check:site` for responsive layout and demo checks under production headers;
+desktop and mobile captures are saved in `.firecrawl/site-layout/`.
+
 ## How It Works
 
 ```

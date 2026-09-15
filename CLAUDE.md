@@ -150,3 +150,8 @@ extension contexts, so Puppeteer cannot inspect the popup. Keep GeckoDriver's
 `--allow-system-access` on its service, never in Firefox capabilities. Screenshot
 readiness must wait for the popup entrance animation; an active DOM class alone
 can capture a fully transparent room. CI 34720902419 verifies the actual popup.
+
+**Website spacing belongs to each section.** `.wrap` sets inline gutters only; never
+add a padding shorthand that resets header, section or footer block spacing. Reading
+content must remain fully visible at the document bottom. `check:site` checks widths
+from 320px to 1440px and exports desktop/mobile screenshots for the CI artifact.
