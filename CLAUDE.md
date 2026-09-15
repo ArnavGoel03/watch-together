@@ -40,7 +40,7 @@ stranded on 1.0.1 forever.
 Cloudflare needs `npm --prefix server-cf run deploy` after verified pushed code, which is the asymmetry to exploit: the server is redeployable in seconds and
 the extension takes days of review, so **prefer a server-side fix wherever one exists**.
 
-**Site:** `cd site && vercel deploy --prod --yes`. A git push does NOT deploy it. The
+**Site:** `cd site && vercel deploy --prod --yes --scope arnavgoel03s-projects`. A git push does NOT deploy it. The
 Vercel project is linked but its Git integration does not fire for this directory, so a
 push builds nothing and the change looks lost.
 
@@ -150,3 +150,8 @@ extension contexts, so Puppeteer cannot inspect the popup. Keep GeckoDriver's
 `--allow-system-access` on its service, never in Firefox capabilities. Screenshot
 readiness must wait for the popup entrance animation; an active DOM class alone
 can capture a fully transparent room. CI 34720902419 verifies the actual popup.
+
+**Website spacing belongs to each section.** `.wrap` sets inline gutters only; never
+add a padding shorthand that resets header, section or footer block spacing. Reading
+content must remain fully visible at the document bottom. `check:site` checks widths
+from 320px to 1440px and exports desktop/mobile screenshots for the CI artifact.

@@ -3,8 +3,7 @@
  * Same material as the product: near-black, hairline edges, one lit top edge on every
  * raised surface, colour spent only on status. No framework, because the page is one
  * document and a framework would cost more than it returns. Motion is done with CSS
- * scroll-driven animations where they are supported, so reveals run off the main thread
- * and cost no JavaScript at all.
+ * decorative animations, while reading content stays visible at every scroll position.
  */
 :root {
   --bg: #0b0b0d;
@@ -13,14 +12,16 @@
   --line: rgba(255,255,255,0.09);
   --line-2: rgba(255,255,255,0.16);
   --text: #f4f4f5;
-  --dim: rgba(244,244,245,0.64);
-  --faint: rgba(244,244,245,0.4);
+  --dim: rgba(244,244,245,0.7);
+  --faint: rgba(244,244,245,0.56);
   --good: #4ade80;
   --warn: #fbbf24;
   --info: #60a5fa;
   --r: 14px;
   --r-lg: 20px;
   --ease: cubic-bezier(.2,0,0,1);
+  --section-space: clamp(72px, 9vw, 128px);
+  --gutter: clamp(20px, 4vw, 48px);
 }
 
 * { margin:0; padding:0; box-sizing:border-box; }
@@ -34,7 +35,9 @@ body {
   overflow-x: hidden;
 }
 a { color: inherit; text-decoration: none; }
-.wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+/* Gutters must never reset the block padding owned by header, section and footer. */
+.wrap { max-width: 1248px; margin: 0 auto; padding-inline: var(--gutter); }
+:focus-visible { outline: 2px solid var(--text); outline-offset: 5px; }
 
 /* A single soft light above the fold, so the page has a direction rather than being
    uniformly dark. Fixed, so it does not scroll away and turn into a band. */
@@ -48,7 +51,7 @@ main, header, footer { position: relative; z-index: 1; }
 nav {
   position: sticky; top: 0; z-index: 20;
   display:flex; align-items:center; justify-content:space-between;
-  padding: 14px 24px;
+  padding: 18px var(--gutter);
   background: rgba(11,11,13,0.72);
   backdrop-filter: blur(20px) saturate(160%);
   -webkit-backdrop-filter: blur(20px) saturate(160%);
@@ -72,14 +75,16 @@ nav .brand img { width:28px; height:28px; border-radius:8px; }
 }
 .btn:hover { background: linear-gradient(180deg,#2e2e34 0%,#232328 100%); }
 .btn:active { transform: scale(.985); }
-.btn-sm { padding: 9px 16px; font-size: 13.5px; }
+.btn-sm { padding: 10px 16px; min-height:44px; font-size: 13.5px; }
+.cta .btn:first-child { background:var(--text); color:var(--bg); border-color:var(--text); }
+.cta .btn:first-child:hover { background:#dedee2; }
 .btn-quiet { background:none; box-shadow:none; border-color: var(--line); color: var(--dim); }
 .btn-quiet:hover { background: var(--raised); color: var(--text); }
 
 /* ---------- hero ---------- */
-header { padding: 76px 0 40px; text-align:center; }
+header { padding-block: clamp(72px, 8vw, 112px) var(--section-space); text-align:center; }
 h1 {
-  font-size: clamp(40px, 7vw, 76px);
+  font-size: clamp(38px, 6.5vw, 80px);
   line-height: 1.02; letter-spacing: -.038em; font-weight: 700;
 }
 h1 .line { display:block; overflow:hidden; }
@@ -91,7 +96,7 @@ h1 .line:nth-child(2) > span { animation-delay: 90ms; }
 @keyframes rise { from { transform: translateY(105%); } to { transform: translateY(0); } }
 
 .sub {
-  margin: 22px auto 0; max-width: 40ch;
+  margin: 30px auto 0; max-width: 40ch;
   font-size: clamp(17px, 2.2vw, 20px); color: var(--dim); letter-spacing:-.011em;
   animation: fade 900ms var(--ease) 240ms both;
 }
@@ -103,10 +108,10 @@ h1 .line:nth-child(2) > span { animation-delay: 90ms; }
 
 /* ---------- the demo ---------- */
 .stage {
-  margin: 54px auto 0; max-width: 980px;
+  margin: 72px auto 0; max-width: 1100px;
   animation: fade 1000ms var(--ease) 520ms both;
 }
-.screens { display:grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.screens { display:grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 24px; }
 @media (max-width: 720px) { .screens { grid-template-columns: 1fr; } }
 
 .screen {
@@ -195,24 +200,33 @@ h1 .line:nth-child(2) > span { animation-delay: 90ms; }
 }
 .time { font-size:12px; color: var(--faint); font-variant-numeric: tabular-nums; min-width:38px; }
 
-.stage-controls { margin-top:18px; display:flex; gap:10px; justify-content:center; flex-wrap:wrap; }
+.stage-controls { margin-top:28px; display:flex; gap:10px; justify-content:center; flex-wrap:wrap; }
 .stage-hint { margin-top:12px; font-size:13px; color:var(--faint); text-align:center; min-height:1.4em; }
 
 /* ---------- sections ---------- */
-section { padding: 88px 0; }
-h2 { font-size: clamp(26px,3.6vw,38px); letter-spacing:-.028em; line-height:1.12; font-weight:700; }
-.eyebrow { font-size:11px; font-weight:700; letter-spacing:.9px; text-transform:uppercase; color:var(--faint); margin-bottom:14px; }
-.lead { margin-top:14px; color:var(--dim); max-width:56ch; font-size:17px; }
+section { padding-block: var(--section-space); scroll-margin-top:80px; }
+main > section + section { border-top:1px solid var(--line); }
+h2 { font-size: clamp(30px,3.6vw,44px); letter-spacing:-.035em; line-height:1.15; font-weight:650; text-wrap:balance; }
+.eyebrow { font-size:11px; font-weight:700; letter-spacing:1.8px; text-transform:uppercase; color:var(--faint); margin-bottom:22px; }
+.lead { margin-top:24px; color:var(--dim); max-width:56ch; font-size:17px; line-height:1.8; }
+.section-heading { max-width:800px; }
+#how { border-top:1px solid var(--line); }
 
-.grid { margin-top:36px; display:grid; gap:14px; grid-template-columns: repeat(auto-fit, minmax(268px,1fr)); }
+.grid { margin-top:56px; display:grid; gap:24px; grid-template-columns: repeat(2, minmax(0,1fr)); }
 .card {
-  padding: 24px; border-radius: var(--r);
+  padding: clamp(28px, 3.3vw, 44px); border-radius: var(--r-lg); min-width:0;
   background: var(--raised); border:1px solid var(--line);
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.05);
   transition: background 200ms var(--ease), transform 200ms var(--ease), border-color 200ms var(--ease);
 }
 .card:hover { background: var(--raised-2); border-color: var(--line-2); transform: translateY(-2px); }
-.card h3 { font-size:16.5px; font-weight:650; letter-spacing:-.014em; margin-bottom:8px; }
+.card h3 { font-size:20px; line-height:1.35; font-weight:650; letter-spacing:-.02em; margin-bottom:14px; }
+.card .mini { height:110px; max-width:340px; margin-bottom:36px; }
+.steps { grid-template-columns:repeat(3,minmax(0,1fr)); gap:40px; }
+.steps .card { padding:0; border:0; border-radius:0; background:none; box-shadow:none; }
+.steps .card:hover { transform:none; }
+.steps .mini { height:100px; margin-bottom:32px; }
+.steps .card + .card { border-left:1px solid var(--line); padding-left:40px; }
 
 /* ---------- card demonstrations ----------
  *
@@ -432,32 +446,51 @@ h2 { font-size: clamp(26px,3.6vw,38px); letter-spacing:-.028em; line-height:1.12
   .m-switch .p2 { opacity:1; }
 }
 
-.card p { font-size:14.5px; color:var(--dim); }
+.card p { font-size:16px; line-height:1.8; color:var(--dim); max-width:48ch; }
 
-/* Reveal on scroll, off the main thread where the browser supports it. */
-.reveal { opacity:0; transform: translateY(18px); }
-@supports (animation-timeline: view()) {
-  .reveal {
-    animation: reveal 1ms linear both;
-    animation-timeline: view();
-    animation-range: entry 8% cover 26%;
-  }
-  @keyframes reveal { to { opacity:1; transform:none; } }
-}
-@supports not (animation-timeline: view()) {
-  .reveal { opacity:1; transform:none; }
-}
-
-.privacy li { font-size:15px; color:var(--dim); margin: 0 0 9px 20px; }
+/* Reading content stays visible, including the last items above the footer. */
+.privacy { display:grid; grid-template-columns:minmax(0,.9fr) minmax(0,1.1fr); gap:80px; align-items:start; }
+.privacy .wire { margin-block:40px; gap:12px; }
+.privacy .wire .mini-s { width:clamp(84px,9vw,116px); height:auto; aspect-ratio:16/10; }
+.privacy ul { list-style:none; }
+.privacy li { font-size:16px; line-height:1.8; color:var(--dim); padding:24px 0; border-bottom:1px solid var(--line); }
+.privacy li:first-child { padding-top:0; }
+.privacy li:last-child { border-bottom:0; padding-bottom:0; }
+.privacy li strong { display:block; margin-bottom:4px; }
 .privacy strong { color:var(--text); font-weight:600; }
+.privacy .note a { text-decoration:underline; text-underline-offset:5px; }
 
-footer { padding: 44px 0 68px; border-top:1px solid var(--line); display:flex; justify-content:space-between; gap:16px; flex-wrap:wrap; font-size:13px; color:var(--faint); }
+footer { padding-block: 36px 48px; border-top:1px solid var(--line); display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; font-size:13px; color:var(--faint); }
+footer a { display:inline-flex; align-items:center; min-height:44px; }
 footer a:hover { color: var(--text); }
+
+@media (max-width: 900px) {
+  .privacy { gap:40px; }
+  .steps { gap:24px; }
+  .steps .card + .card { padding-left:24px; }
+}
+@media (max-width: 720px) {
+  nav { padding-block:12px; gap:12px; }
+  nav .brand { font-size:14px; gap:8px; }
+  nav .brand img { width:24px; height:24px; }
+  nav .btn { padding-inline:12px; font-size:12px; }
+  h1 { font-size:clamp(34px,7vw,50px); }
+  .stage { margin-top:48px; }
+  .screens { gap:16px; }
+  .grid { grid-template-columns:minmax(0,1fr); margin-top:36px; }
+  .steps { gap:36px; }
+  .steps .card + .card { padding:36px 0 0; border-left:0; border-top:1px solid var(--line); }
+  .steps .mini { max-width:340px; }
+  .privacy { grid-template-columns:minmax(0,1fr); gap:36px; }
+  .privacy .wire { max-width:400px; }
+  .privacy .wire .mini-s { width:100px; }
+  .privacy .note { margin-top:0; }
+  .stage-controls .btn { flex:1 1 auto; justify-content:center; }
+}
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration:1ms !important; animation-delay:0ms !important; transition-duration:1ms !important; }
   html { scroll-behavior:auto; }
-  .reveal { opacity:1; transform:none; }
 }
 
 /* Start affordance. Sits over both screens, because pressing it starts the room, not one

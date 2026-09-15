@@ -9,7 +9,7 @@
 // Run: node scripts/check-site.mjs
 
 import { createServer } from "node:http";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
@@ -91,6 +91,50 @@ try {
       && document.querySelectorAll(".track").length === 2,
   }));
   if (!applied.styled) problems.push("stylesheet did not apply: the CSP is blocking the site's own CSS");
+
+  // The container once reset section padding to zero. Check actual geometry so a
+  // valid stylesheet cannot silently bring that cramped layout back.
+  const evidence = fileURLToPath(new URL("../.firecrawl/site-layout/", import.meta.url));
+  await mkdir(evidence, { recursive: true });
+  await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "reduce" }]);
+  for (const width of [320, 390, 768, 1440]) {
+    await page.setViewport({ width, height: 1000 });
+    const layout = await page.evaluate(() => {
+      const sections = [...document.querySelectorAll("header.wrap, main > section.wrap")];
+      const bounds = [...document.querySelectorAll("nav, h1, h2, .card, .screen, .stage-controls, .privacy-intro, .privacy ul, footer")];
+      return {
+        spaced: sections.every((el) => parseFloat(getComputedStyle(el).paddingTop) >= 64
+          && parseFloat(getComputedStyle(el).paddingBottom) >= 64),
+        contained: bounds.every((el) => {
+          const r = el.getBoundingClientRect();
+          return r.left >= -1 && r.right <= innerWidth + 1;
+        }),
+        footer: parseFloat(getComputedStyle(document.querySelector("footer")).paddingTop) >= 24,
+      };
+    });
+    for (const [check, passed] of Object.entries(layout)) {
+      if (!passed) problems.push(`${width}px layout failed: ${check}`);
+    }
+    if (width === 390 || width === 1440) {
+      // Full-page captures can omit offscreen composited content after resizing.
+      // Bring each section into the viewport and let layout/paint settle first.
+      const targets = ["header", "#how", "#how .card:nth-child(3)", "#how .card:nth-child(5)", "#getting-started", ".privacy", "footer"];
+      for (const [index, target] of targets.entries()) {
+        await page.$eval(target, (el) => window.scrollTo({
+          top: el.getBoundingClientRect().top + window.scrollY - 90, behavior: "instant",
+        }));
+        await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        await page.screenshot({ path: join(evidence, `homepage-${width}-${index}.png`) });
+      }
+    }
+  }
+  await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "no-preference" }]);
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  const readable = await page.evaluate(() => [...document.querySelectorAll(".privacy li, .privacy .note")]
+    .every((el) => getComputedStyle(el).opacity === "1" && getComputedStyle(el).visibility === "visible"));
+  if (!readable) problems.push("privacy text is hidden or faded at the bottom of the page");
+  await page.setViewport({ width: 1280, height: 900 });
+  await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
 
   // Press play, then confirm two embeds appeared and the room drives them.
   await page.click("[data-start]");

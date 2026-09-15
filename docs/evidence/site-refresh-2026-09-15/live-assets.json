@@ -1,0 +1,32 @@
+[
+  {
+    "route": "/",
+    "status": 200,
+    "sha256": "a145b4453ac0b0454e91cb5041ff186e129a4940957db759bd51a3e5e1da00c5",
+    "matches_source": true
+  },
+  {
+    "route": "/styles.css",
+    "status": 200,
+    "sha256": "3393927885d2393cb8d73dbff5cec91ea9fcb45f0321aa55b8fb459e96f5e20b",
+    "matches_source": true
+  },
+  {
+    "route": "/app.js",
+    "status": 200,
+    "sha256": "32073a4e3688133cf708f5f3fb463d627315359e286ce2cadf9f368633afd9f5",
+    "matches_source": true
+  },
+  {
+    "route": "/privacy",
+    "status": 200,
+    "sha256": "7168b87aab39ef4c9b91a469957f3355c6fc934567ba46a3926eff4d4455a360",
+    "matches_source": true
+  },
+  {
+    "route": "/support",
+    "status": 200,
+    "sha256": "aa383606ed47aa8c15a9c34a9c7649269c9e378e66c116b43ea42b52807d4945",
+    "matches_source": true
+  }
+]
