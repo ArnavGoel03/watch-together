@@ -116,7 +116,16 @@ try {
       if (!passed) problems.push(`${width}px layout failed: ${check}`);
     }
     if (width === 390 || width === 1440) {
-      await page.screenshot({ path: join(evidence, `homepage-${width}.png`), fullPage: true });
+      // Full-page captures can omit offscreen composited content after resizing.
+      // Bring each section into the viewport and let layout/paint settle first.
+      const targets = ["header", "#how", "#how .card:nth-child(3)", "#how .card:nth-child(5)", "#getting-started", ".privacy", "footer"];
+      for (const [index, target] of targets.entries()) {
+        await page.$eval(target, (el) => window.scrollTo({
+          top: el.getBoundingClientRect().top + window.scrollY - 90, behavior: "instant",
+        }));
+        await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        await page.screenshot({ path: join(evidence, `homepage-${width}-${index}.png`) });
+      }
     }
   }
   await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "no-preference" }]);
