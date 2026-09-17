@@ -1,5 +1,32 @@
 # Watch Together: state of the project
 
+## Canonical service resumed, website update quota-blocked, 18 September 2026
+
+The owner-authorized project resume restored https://watch.arnavgoel.dev to
+HTTP 200 on 2026-09-17 20:55:11 UTC. Vercel confirms `paused: false`; the
+active production remains `dpl_CxxW3ymtmdaBXNuqjxzrZBJBZVFB`, source `62944e6`.
+Live `app.js` matches that older release and differs from current main.
+Home HTML, CSS, privacy and support match current main because those files did
+not change. The merged scheduling repair is not yet on the canonical host.
+
+The documented scoped site deployment was refused by
+`api-deployments-free-per-day`: more than 100 deployments, retry in 24 hours.
+No repeated attempt, Git merge, plan upgrade, budget reset or spending-limit
+change was performed. The active Hobby plan remains unchanged.
+
+The existing GitHub Pages deployment is a separate available surface:
+https://arnavgoel03.github.io/watch-together/site/ . Deployment 6511394636
+published main `f52074af6eb3fb5117dd16541f1551ac3c9c7e58` successfully.
+Home HTML, app.js, styles.css, privacy, support and logo returned 200 and matched
+that source byte for byte. Its exact-head CI run 35270179970 passes all six jobs;
+full desktop/phone and extension screenshots were already inspected for the
+unchanged application source in run 35269720484. The Pages URL is not the
+canonical domain and does not inherit Vercel's custom security headers.
+
+Remaining: retry the canonical site deployment after the quota reset, then
+verify the new live script. Protected-provider, native and store qualification
+remain separate. Earlier pause receipts below describe the pre-resume state.
+
 ## Stack upgrade integrated, 18 September 2026
 
 ESLint 10.10.0 and relay Vitest 5.0.1 are merged through PR6 as
