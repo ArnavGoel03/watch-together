@@ -1,5 +1,16 @@
 # Watch Together: state of the project
 
+## Stack upgrade candidate, 18 September 2026
+
+ESLint moves to 10.10.0 and the Node relay Vitest suite to 5.0.1. Existing native TypeScript 7.0.2 remains. No extension, site or relay production behavior was edited.
+
+Lint, six TypeScript configurations, dash/version checks, 258 Node tests, 64 Vitest tests, 46 Worker tests and both extension package-content checks pass. Browser and Worker integration acceptance will use the existing public CI workflow; no local browser launch was retried.
+
+Candidate only: fresh browser acceptance is unavailable in this session.
+Existing publication, copy, provider and other release holds remain in force.
+No hosting pause, billing setting, production data or credentials changed.
+
+
 ## Availability and regression reconciliation, 18 September 2026
 
 https://watch.arnavgoel.dev/ returns HTTP 503 `DEPLOYMENT_PAUSED`.
