@@ -1,15 +1,22 @@
 # Watch Together: state of the project
 
-## Stack upgrade candidate, 18 September 2026
+## Stack upgrade integrated, 18 September 2026
 
-ESLint moves to 10.10.0 and the Node relay Vitest suite to 5.0.1. Existing native TypeScript 7.0.2 remains. No extension, site or relay production behavior was edited.
+ESLint 10.10.0 and relay Vitest 5.0.1 are merged through PR6 as
+71fc44e722fa1c716547ff559fb854fb5e279f79. Native TypeScript 7.0.2 remains.
+No extension, site or relay application behavior changed.
 
-Lint, six TypeScript configurations, dash/version checks, 258 Node tests, 64 Vitest tests, 46 Worker tests and both extension package-content checks pass. Browser and Worker integration acceptance will use the existing public CI workflow; no local browser launch was retried.
+Local lint, six TypeScript configurations, dash/version checks, 258 Node tests,
+64 Vitest tests, 46 Worker tests and both package-content checks pass. Fresh
+public CI run 35269720484 passes all six jobs, including real workerd integration,
+two Chrome profiles, Firefox and responsive site/demo acceptance. All 18 supplied
+screenshots were inspected: desktop/mobile sections, popup, room controls and
+overlay. Receipts are in docs/evidence/stack-upgrade-2026-09-18.
 
-Candidate only: fresh browser acceptance is unavailable in this session.
-Existing publication, copy, provider and other release holds remain in force.
-No hosting pause, billing setting, production data or credentials changed.
-
+The provider probe still encounters a YouTube bot challenge with zero decoded
+frames. Real protected-provider and native/store qualification remain open.
+The website provider pause remains; no website or relay deployment or store
+submission was performed for this tooling-only upgrade.
 
 ## Availability and regression reconciliation, 18 September 2026
 

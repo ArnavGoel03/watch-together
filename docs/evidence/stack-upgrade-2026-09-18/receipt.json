@@ -1,0 +1,81 @@
+{
+  "source": "d498e0563454cf42378c74fdf34405e19ac62fcd",
+  "run": "https://github.com/ArnavGoel03/watch-together/actions/runs/35269720484",
+  "conclusion": "success",
+  "merge": "71fc44e722fa1c716547ff559fb854fb5e279f79",
+  "inspectedScreenshots": [
+    {
+      "path": "site-layout-screenshots/homepage-390-4.png",
+      "sha256": "543c99f85553268731d124615160c6970967a5647c993f638b1118f9dae45c97"
+    },
+    {
+      "path": "site-layout-screenshots/homepage-390-5.png",
+      "sha256": "70fccc104da1ad20a9a5b15aedbd8916d08c3549fa4fbb7dc6078a406b1c4f2a"
+    },
+    {
+      "path": "site-layout-screenshots/homepage-390-6.png",
+      "sha256": "02c7223ac5f6fd598deffa4e152035d0a14572b9e077f303bdfdb7dc8787e203"
+    },
+    {
+      "path": "site-layout-screenshots/homepage-390-2.png",
+      "sha256": "b1e1796dc93ab28f83fb710efe3999ae4a8896fcb4880b15ca7144b36abb73c9"
+    },
+    {
+      "path": "site-layout-screenshots/homepage-390-3.png",
+      "sha256": "915d78a74dcd31ca3c881c35fddd255faebb41771ac62314ae11589b12fb8d6c"
+    },
+    {
+      "path": "site-layout-screenshots/homepage-390-1.png",
+      "sha256": "28dcca6cc139958c89ec9db263267badac8e63ee02ee4fa01e092e36e5d0e728"
+    },
+    {
+      "path": "site-layout-screenshots/homepage-390-0.png",
+      "sha256": "6cb6c65ee7b040609aded017db7f1f79ecfc09bb6ea32ff52d524dfd227bbffa"
+    },
+    {
+      "path": "site-layout-screenshots/homepage-1440-4.png",
+      "sha256": "d1463162489444d45ddf8ce192b8118d969a8e6fed249425109ae2d99d126b85"
+    },
+    {
+      "path": "site-layout-screenshots/homepage-1440-5.png",
+      "sha256": "1d9ee8d573b7994a807d226afc71eed5edfb2c172076952e1086bcb5d076fdc7"
+    },
+    {
+      "path": "site-layout-screenshots/homepage-1440-6.png",
+      "sha256": "1d9ee8d573b7994a807d226afc71eed5edfb2c172076952e1086bcb5d076fdc7"
+    },
+    {
+      "path": "site-layout-screenshots/homepage-1440-2.png",
+      "sha256": "5b376b4714c6f02f4660982d05de0051158186480feec8c02d4e6e1d766c3aff"
+    },
+    {
+      "path": "site-layout-screenshots/homepage-1440-3.png",
+      "sha256": "8957c33ae3f09c16f6367aa8db8b66b04f9ffa50efc6d058d42128ca0c028890"
+    },
+    {
+      "path": "site-layout-screenshots/homepage-1440-1.png",
+      "sha256": "f0ea3974c9a009ad53c09d1bc48c367583403c29bbef93e04f8e8d9a580e32c0"
+    },
+    {
+      "path": "site-layout-screenshots/homepage-1440-0.png",
+      "sha256": "9247735b574a517e63ed4df7647419fd1e3a68fac48128bd77472c82a7501a1b"
+    },
+    {
+      "path": "firefox-screenshots/firefox-popup.png",
+      "sha256": "9aabccab30e617a29d8f88cdad19a8dd8725bc82dfb23aad4327ab3c0b67846c"
+    },
+    {
+      "path": "browser-screenshots/popup.png",
+      "sha256": "83c27fc0c5f715bf3349797e8721711b2971e3c41c9e2248ffb91276630116aa"
+    },
+    {
+      "path": "browser-screenshots/overlay.png",
+      "sha256": "591259995753bf4f9c0edd4235e8f81b1486724bfbd5bf14da173abfb5da1ae1"
+    },
+    {
+      "path": "browser-screenshots/room-controls.png",
+      "sha256": "df66a139aaf2c68baedc0ebe23bc1ce1e5fc8361a8c23224963352aabc4b0833"
+    }
+  ],
+  "providerQualification": "YouTube bot challenge, zero decoded frames; real-provider playback remains blocked"
+}

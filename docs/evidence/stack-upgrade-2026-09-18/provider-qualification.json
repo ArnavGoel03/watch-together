@@ -1,0 +1,143 @@
+{
+  "schemaVersion": 1,
+  "provider": "YouTube",
+  "scope": "public-video-two-profile-baseline",
+  "outcome": "blocked",
+  "baselinePassed": false,
+  "blocker": {
+    "stage": "provider-playback",
+    "reason": "provider-bot-challenge"
+  },
+  "versions": {
+    "extension": "1.3.0",
+    "puppeteer": "25.10.0",
+    "node": "22.23.2",
+    "browser": "152.0.7977.75",
+    "platform": "linux",
+    "architecture": "x64"
+  },
+  "participants": [
+    {
+      "role": "host",
+      "navigationStatus": 200,
+      "playbackProgressed": false,
+      "before": {
+        "videoCount": 1,
+        "extensionAttached": false,
+        "readyState": 0,
+        "networkState": 0,
+        "mediaErrorCode": null,
+        "currentTime": 0,
+        "durationSeconds": null,
+        "paused": true,
+        "decodedFrames": 0,
+        "playerStatus": "LOGIN_REQUIRED",
+        "adPresent": false,
+        "error153": false,
+        "botChallenge": false,
+        "loginRequired": false,
+        "consentRequired": false,
+        "playerErrorVisible": false
+      },
+      "playRequest": "timed-out",
+      "after": {
+        "videoCount": 1,
+        "extensionAttached": true,
+        "readyState": 0,
+        "networkState": 0,
+        "mediaErrorCode": null,
+        "currentTime": 0,
+        "durationSeconds": null,
+        "paused": false,
+        "decodedFrames": 0,
+        "playerStatus": "LOGIN_REQUIRED",
+        "adPresent": false,
+        "error153": false,
+        "botChallenge": true,
+        "loginRequired": false,
+        "consentRequired": false,
+        "playerErrorVisible": false
+      },
+      "blocker": "provider-bot-challenge"
+    },
+    {
+      "role": "guest",
+      "navigationStatus": 200,
+      "playbackProgressed": false,
+      "before": {
+        "videoCount": 1,
+        "extensionAttached": false,
+        "readyState": 0,
+        "networkState": 0,
+        "mediaErrorCode": null,
+        "currentTime": 0,
+        "durationSeconds": null,
+        "paused": true,
+        "decodedFrames": 0,
+        "playerStatus": "LOGIN_REQUIRED",
+        "adPresent": false,
+        "error153": false,
+        "botChallenge": false,
+        "loginRequired": false,
+        "consentRequired": false,
+        "playerErrorVisible": false
+      },
+      "playRequest": "timed-out",
+      "after": {
+        "videoCount": 1,
+        "extensionAttached": true,
+        "readyState": 0,
+        "networkState": 0,
+        "mediaErrorCode": null,
+        "currentTime": 0,
+        "durationSeconds": null,
+        "paused": false,
+        "decodedFrames": 0,
+        "playerStatus": "LOGIN_REQUIRED",
+        "adPresent": false,
+        "error153": false,
+        "botChallenge": true,
+        "loginRequired": false,
+        "consentRequired": false,
+        "playerErrorVisible": false
+      },
+      "blocker": "provider-bot-challenge"
+    }
+  ],
+  "cases": {
+    "content-playback": {
+      "status": "blocked"
+    },
+    "extension-attached": {
+      "status": "not-run"
+    },
+    "two-profile-membership": {
+      "status": "not-run"
+    },
+    "play-pause-sync": {
+      "status": "not-run"
+    },
+    "seek-sync": {
+      "status": "not-run"
+    },
+    "relay-reconnect": {
+      "status": "not-run"
+    },
+    "provider-ads": {
+      "status": "not-run"
+    },
+    "episode-change": {
+      "status": "not-run"
+    },
+    "provider-buffering": {
+      "status": "not-run"
+    },
+    "operating-system-sleep": {
+      "status": "not-run"
+    },
+    "cross-device": {
+      "status": "not-run"
+    }
+  },
+  "elapsedMs": 16954
+}
