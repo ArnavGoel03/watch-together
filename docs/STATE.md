@@ -1,5 +1,41 @@
 # Watch Together: state of the project
 
+## Canonical website deployment requalification, 18 September 2026
+
+Website source is qualified, but the canonical update is still quota-blocked.
+Main `51bea4f` differs from verified `f52074a` only in STATE.md. The exact
+`f52074af6eb3fb5117dd16541f1551ac3c9c7e58` CI run 35270179970 passes all six
+jobs; the prior 18 inspected captures remain applicable to unchanged source.
+No browser or application suite was repeated for this documentation-only delta.
+
+Fresh Vercel metadata reports `paused: false`, no Git link/production branch,
+no persistent root/build/install/output override, and Node 24.x. The GitHub
+repository's default branch is main. The old site was uploaded from `site/`;
+an exact-source GitHub deployment therefore requested a deployment-scoped
+`rootDirectory: site` and empty build/install commands for this static website.
+No persistent project setting, billing control or pause was changed.
+
+One authenticated POST to `/v13/deployments` with that exact GitHub SHA was
+refused HTTP 402 `payment_required`, resource `api-deployments-free-per-day`:
+100 total, 0 remaining. The provider reports reset **2026-09-18 23:12:40 UTC**
+(**2026-09-19 04:42:40 IST**). No deployment was created and no retry was made.
+The request, refusal and byte-level readback are retained in
+`docs/evidence/stack-upgrade-2026-09-18/website-qualification.json`.
+
+At 2026-09-17 23:13:33 UTC the canonical alias still points to
+`dpl_CxxW3ymtmdaBXNuqjxzrZBJBZVFB`, source `62944e6`. All eight website
+resources return 200 and match that source byte for byte, with the intended
+CSP, nosniff, referrer and frame-denial headers. Seven also match `f52074a`;
+`app.js` still differs, so the scheduling repair is not live on the canonical
+host. The existing qualified GitHub Pages surface below remains separate.
+
+Remaining: a single exact-source website deployment after the provider quota
+resets, followed by alias/source/asset readback. No scheduled retry was created.
+Protected YouTube bot challenges, two real signed-in participants, native/Safari,
+extension-store and relay qualification/releases remain outside this website task.
+No extension package, relay deployment or store submission was changed.
+
+
 ## Canonical service resumed, website update quota-blocked, 18 September 2026
 
 The owner-authorized project resume restored https://watch.arnavgoel.dev to

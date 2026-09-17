@@ -1,0 +1,103 @@
+{
+  "checkedAt": "2026-09-17T23:13:33.795910+00:00",
+  "requestedGitSource": "f52074af6eb3fb5117dd16541f1551ac3c9c7e58",
+  "activeGitSource": "62944e6084b6066cbd002b9d394c53a43b6c43c7",
+  "deploymentRequest": {
+    "project": "prj_OPhLnEtsGETejjrZu1AYv51phjUf",
+    "name": "watch-together",
+    "target": "production",
+    "gitSource": {
+      "type": "github",
+      "repoId": "1212697957",
+      "ref": "f52074af6eb3fb5117dd16541f1551ac3c9c7e58"
+    },
+    "projectSettings": {
+      "framework": null,
+      "rootDirectory": "site",
+      "buildCommand": "",
+      "installCommand": "",
+      "outputDirectory": null
+    }
+  },
+  "deploymentFailure": {
+    "code": "payment_required",
+    "message": "Resource is limited - try again in 24 hours (more than 100, code: \"api-deployments-free-per-day\").",
+    "limit": {
+      "total": 100,
+      "remaining": 0,
+      "reset": 1789773160564
+    },
+    "resource": "api-deployments-free-per-day"
+  },
+  "quotaResetUTC": "2026-09-18T23:12:40.564000+00:00",
+  "alias": {
+    "alias": "watch.arnavgoel.dev",
+    "deploymentId": "dpl_CxxW3ymtmdaBXNuqjxzrZBJBZVFB"
+  },
+  "resources": [
+    {
+      "route": "/app.js",
+      "status": 200,
+      "sha256": "32073a4e3688133cf708f5f3fb463d627315359e286ce2cadf9f368633afd9f5",
+      "matchesPreviousSource": true,
+      "matchesRequestedSource": false,
+      "securityHeadersMatch": true
+    },
+    {
+      "route": "/assets/favicon-32.png",
+      "status": 200,
+      "sha256": "80ad67c94fc00b1ee1a4fc214c975e213b157e647d362dafb9c82e9a2980a5b8",
+      "matchesPreviousSource": true,
+      "matchesRequestedSource": true,
+      "securityHeadersMatch": true
+    },
+    {
+      "route": "/assets/logo-256.png",
+      "status": 200,
+      "sha256": "ce14211d8e860fa9c7183c43694a1d358109e475b14ca6b208d4e2e74e0ea90f",
+      "matchesPreviousSource": true,
+      "matchesRequestedSource": true,
+      "securityHeadersMatch": true
+    },
+    {
+      "route": "/assets/og-card.png",
+      "status": 200,
+      "sha256": "3a08794fb4a85651f7519fe469b1b1544451a09d95f6f74e1469763735166cf0",
+      "matchesPreviousSource": true,
+      "matchesRequestedSource": true,
+      "securityHeadersMatch": true
+    },
+    {
+      "route": "/",
+      "status": 200,
+      "sha256": "a145b4453ac0b0454e91cb5041ff186e129a4940957db759bd51a3e5e1da00c5",
+      "matchesPreviousSource": true,
+      "matchesRequestedSource": true,
+      "securityHeadersMatch": true
+    },
+    {
+      "route": "/privacy",
+      "status": 200,
+      "sha256": "7168b87aab39ef4c9b91a469957f3355c6fc934567ba46a3926eff4d4455a360",
+      "matchesPreviousSource": true,
+      "matchesRequestedSource": true,
+      "securityHeadersMatch": true
+    },
+    {
+      "route": "/styles.css",
+      "status": 200,
+      "sha256": "3393927885d2393cb8d73dbff5cec91ea9fcb45f0321aa55b8fb459e96f5e20b",
+      "matchesPreviousSource": true,
+      "matchesRequestedSource": true,
+      "securityHeadersMatch": true
+    },
+    {
+      "route": "/support",
+      "status": 200,
+      "sha256": "aa383606ed47aa8c15a9c34a9c7649269c9e378e66c116b43ea42b52807d4945",
+      "matchesPreviousSource": true,
+      "matchesRequestedSource": true,
+      "securityHeadersMatch": true
+    }
+  ]
+}
