@@ -1,5 +1,15 @@
 # Watch Together: state of the project
 
+## Availability and regression reconciliation, 18 September 2026
+
+https://watch.arnavgoel.dev/ returns HTTP 503 `DEPLOYMENT_PAUSED`.
+GitHub confirms run 35256998101 succeeded at `6bd977a`; site source is unchanged
+through HEAD. The idle/paused/offscreen/resume and desktop/phone layout receipts
+therefore remain valid historical fixture acceptance. The merged scheduling
+repair is still not publicly deployed. Real protected-provider playback, separate
+signed-in participants and physical/native extension acceptance remain open.
+No identical suite rerun, release upload or manual Vercel deploy. Repo is public.
+
 Read this before doing anything else. It exists so nobody has to re-derive where things
 stand by reading 8,000 lines of source and a year of git log.
 
