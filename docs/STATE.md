@@ -3,8 +3,38 @@
 Read this before doing anything else. It exists so nobody has to re-derive where things
 stand by reading 8,000 lines of source and a year of git log.
 
-Last updated: 2026-09-15. The dated audit section below supersedes historical
+Last updated: 2026-09-17. The dated audit section below supersedes historical
 release and test counts elsewhere in this document.
+
+## Website demo scheduling candidate, 2026-09-17
+
+Branch `perf/idle-site-demo`, based on main `baa54cf`, not deployed. The demo
+requests frames only while visible and playing or counting down an interruption.
+Paused controls still redraw when used. Offscreen simulated time freezes instead
+of jumping forward on return; real player position remains authoritative, and
+offscreen messages cannot seek a player back to the sleeping simulation clock.
+Late embeds recover from their existing origin/source-checked messages, replacing
+the unbounded one-second polling interval. Existing public copy is unchanged.
+
+Six tests execute the actual site script with controlled frame/message events.
+The original script failed all four initial idle/visibility/recovery checks.
+Verification passes: lint, all TypeScript configurations, dash/version checks,
+258 Node tests, 64 Vitest tests, 46 Worker tests, and both package-content checks.
+An initial combined gate was cancelled at its 30-second command budget; the
+remaining suites then completed with a 25-second inactivity watchdog. The site
+has no compilation step. Dependency installation reported existing npm script
+approval warnings; the source gates above emitted no warnings.
+
+The browser gate now checks idle, paused, offscreen and resumed frame activity
+alongside the existing responsive layout and shared-advert clock checks. It has
+not passed for this candidate: the pinned local Chrome is absent, and an attempt
+with installed Chrome failed at process launch. CI and rendered verification
+remain required before publication. No battery or user-latency gain is claimed.
+
+Current public homepage returns HTTP 503 `DEPLOYMENT_PAUSED`. Vercel's team event
+log identifies a spend-management budget pause across projects. No cap or pause
+was changed, and no deployment was attempted. Previous live receipts below are
+historical; extension and relay releases remain outside this site-only change.
 
 ## Website spacing refresh, 2026-09-15
 

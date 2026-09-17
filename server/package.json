@@ -6,14 +6,14 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "test": "node --test server.e2e.test.mjs client-logic.test.mjs content-runtime.test.mjs relay.test.mjs protocol.test.mjs && vitest run server.test.js",
+    "test": "node --test server.e2e.test.mjs client-logic.test.mjs content-runtime.test.mjs relay.test.mjs protocol.test.mjs site-demo.test.mjs && vitest run server.test.js",
     "test:e2e": "node --test server.e2e.test.mjs",
     "test:logic": "node --test client-logic.test.mjs",
-    "test:node": "node --test server.e2e.test.mjs client-logic.test.mjs content-runtime.test.mjs relay.test.mjs protocol.test.mjs",
+    "test:node": "node --test server.e2e.test.mjs client-logic.test.mjs content-runtime.test.mjs relay.test.mjs protocol.test.mjs site-demo.test.mjs",
     "test:vitest": "vitest run server.test.js",
     "test:browser": "vitest run browser.test.js",
     "test:firefox": "node --test firefox.test.mjs",
-    "test:all": "node --test server.e2e.test.mjs client-logic.test.mjs content-runtime.test.mjs relay.test.mjs protocol.test.mjs && vitest run server.test.js browser.test.js && node --test firefox.test.mjs",
+    "test:all": "node --test server.e2e.test.mjs client-logic.test.mjs content-runtime.test.mjs relay.test.mjs protocol.test.mjs site-demo.test.mjs && vitest run server.test.js browser.test.js && node --test firefox.test.mjs",
     "screenshots": "node store-screenshots.mjs"
   },
   "dependencies": {

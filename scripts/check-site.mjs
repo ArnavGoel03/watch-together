@@ -65,6 +65,14 @@ const browser = await puppeteer.launch({
 
 try {
   const page = await browser.newPage();
+  await page.evaluateOnNewDocument(() => {
+    const request = window.requestAnimationFrame;
+    window.__siteFrames = 0;
+    window.requestAnimationFrame = (callback) => request.call(window, (now) => {
+      window.__siteFrames++;
+      callback(now);
+    });
+  });
 
   page.on("console", (m) => {
     if (m.type() !== "error") return;
@@ -82,6 +90,7 @@ try {
   });
 
   await page.goto(`${base}/`, { waitUntil: "networkidle2", timeout: 20000 });
+  if (await page.evaluate(() => window.__siteFrames) !== 0) problems.push("idle demo scheduled animation frames before play");
 
   // The stylesheet and script must have actually APPLIED, not merely returned 200.
   const applied = await page.evaluate(() => ({
@@ -149,6 +158,21 @@ try {
   if (!frames.every((o) => o === "https://www.youtube-nocookie.com")) {
     problems.push(`embeds point somewhere unexpected: ${frames.join(", ")}`);
   }
+
+  await page.click("[data-play]");
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const pausedFrames = await page.evaluate(() => window.__siteFrames);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  if (await page.evaluate(() => window.__siteFrames) !== pausedFrames) problems.push("paused demo kept scheduling frames");
+  await page.click("[data-play]");
+  await page.evaluate(() => window.scrollTo({ top: document.body.scrollHeight, behavior: "instant" }));
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  const hiddenFrames = await page.evaluate(() => window.__siteFrames);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  if (await page.evaluate(() => window.__siteFrames) !== hiddenFrames) problems.push("offscreen demo kept scheduling frames");
+  await page.$eval("[data-demo]", (el) => el.scrollIntoView({ behavior: "instant", block: "center" }));
+  await page.waitForFunction((before) => window.__siteFrames > before, { timeout: 2000 }, hiddenFrames)
+    .catch(() => problems.push("visible playing demo did not resume frames"));
 
   // The clock must hold when an advert catches everyone. This is the differentiator, and
   // it is checked here rather than trusted, because it is the thing most easily broken by
