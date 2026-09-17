@@ -336,12 +336,41 @@ function start() {
   const playBtn = stage.querySelector("[data-play]");
   const soundBtn = stage.querySelector("[data-sound]");
   const say = (text) => { hint.textContent = text; };
+  let frame = null;
+  let visible = !("IntersectionObserver" in window);
+  let suspended = false;
 
   room.onchange = () => {
+    const active = visible && !document.hidden && !suspended;
+    const moving = room.playing || room.members.some((m) => m.state !== "watching");
+    if ((!active || !moving) && frame !== null) {
+      cancelAnimationFrame(frame);
+      frame = null;
+    }
+    if (!active) return;
     const dark = room.dark;
     you.render(dark);
     them.render(dark);
     playBtn.textContent = room.playing ? "Pause" : "Play";
+    if (moving && frame === null) {
+      // Hidden simulation time does not become a jump on return. A real player
+      // remains authoritative and supplies its current position on the next tick.
+      room.last = performance.now();
+      frame = requestAnimationFrame((now) => {
+        frame = null;
+        room.tick(now);
+      });
+    }
+  };
+
+  const recoverEmbeds = () => {
+    if (!stage.classList.contains("is-fallback") || !room.members.some((m) => m.player?.engaged)) return;
+    for (const m of room.members) {
+      if (m.player) m.player.failed = false;
+    }
+    stage.classList.remove("is-fallback");
+    stage.classList.add("is-live");
+    say("Two separate players, one room. Interrupt either one.");
   };
 
   // One message channel for both frames; each member claims the ones from its own.
@@ -362,7 +391,16 @@ function start() {
       if (room.playing && member.state === "watching") member.player.play();
       return;
     }
-    if (data.event === "infoDelivery" && data.info) member.player.accept(data.info);
+    if (data.event === "infoDelivery" && data.info) {
+      member.player.accept(data.info);
+      // The authenticated frame message is the recovery signal. A blocked embed
+      // needs no lifetime polling, and a late one can still recover at any time.
+      recoverEmbeds();
+      // Offscreen players may keep playing. Do not pull one back to the sleeping
+      // simulation clock; the next visible tick adopts the leader's position.
+      if (visible && !document.hidden && !suspended) member.reconcile();
+      if (frame === null) room.onchange();
+    }
   });
 
   let live = false;
@@ -387,18 +425,6 @@ function start() {
       stage.classList.add("is-fallback");
       say("The embeds are blocked here, so this is the room clock on its own. Everything below still holds.");
 
-      // Giving up is not final. A slow embed that arrives late is put back rather than
-      // left hidden behind a poster for the rest of the visit.
-      const recover = setInterval(() => {
-        if (!room.members.some((m) => m.player?.engaged)) return;
-        clearInterval(recover);
-        for (const m of room.members) {
-          if (m.player) m.player.failed = false;
-        }
-        stage.classList.remove("is-fallback");
-        stage.classList.add("is-live");
-        say("Two separate players, one room. Interrupt either one.");
-      }, 1000);
     }, EMBED_TIMEOUT_MS);
   };
 
@@ -454,6 +480,7 @@ function start() {
   const interrupt = (fn, message) => () => {
     if (!live) { goLive(); }
     fn();
+    room.onchange();
     say(message);
   };
 
@@ -472,8 +499,18 @@ function start() {
     "Her connection stalls. You can see why, rather than watching her drift and guessing.",
   ));
 
-  const loop = (now) => { room.tick(now); requestAnimationFrame(loop); };
-  requestAnimationFrame(loop);
+  // Paused controls still redraw on input. Only playback and interruption
+  // countdowns need frames, and only while this demonstration can be seen.
+  if ("IntersectionObserver" in window) {
+    new IntersectionObserver(([entry]) => {
+      visible = entry.isIntersecting;
+      room.onchange();
+    }).observe(stage);
+  }
+  document.addEventListener("visibilitychange", () => room.onchange());
+  window.addEventListener("pagehide", () => { suspended = true; room.onchange(); });
+  window.addEventListener("pageshow", () => { suspended = false; room.onchange(); });
+  room.onchange();
 
 }
 
